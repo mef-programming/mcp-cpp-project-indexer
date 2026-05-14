@@ -645,6 +645,49 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "search_source",
+            "description": (
+                "Search raw source text in indexed files. This is a plain line-based text search, "
+                "not semantic C++ reference resolution. It searches comments and strings too. "
+                "Use filePattern or file to narrow broad queries."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Literal source text to search for, e.g. 'TMT_ATLASRECT' or 'g_AtlasCache'.",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Optional fileId or project-relative path to search in one file.",
+                    },
+                    "filePattern": {
+                        "type": "string",
+                        "description": "Optional glob pattern over project-relative paths, e.g. 'Shared/Windows/UXTheme/*'.",
+                    },
+                    "caseSensitive": {
+                        "type": "boolean",
+                        "default": False,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 100,
+                    },
+                    "contextLines": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 20,
+                        "default": 0,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -1124,6 +1167,33 @@ class CodeIndexTools:
         return make_json_text_result(result)
 
 
+    def search_source(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = require_string(arguments, "query")
+        file = arguments.get("file")
+        file_pattern = arguments.get("filePattern")
+
+        if file is not None and not isinstance(file, str):
+            raise McpError(-32602, "file must be a string when provided")
+
+        if file_pattern is not None and not isinstance(file_pattern, str):
+            raise McpError(-32602, "filePattern must be a string when provided")
+
+        case_sensitive = optional_bool(arguments, "caseSensitive", False)
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
+        context_lines = clamp_int(arguments.get("contextLines", 0), minimum=0, maximum=20)
+
+        result = self.index.search_source(
+            project_root=self.project_root,
+            query=query,
+            file=file,
+            file_pattern=file_pattern,
+            case_sensitive=case_sensitive,
+            limit=limit,
+            context_lines=context_lines,
+        )
+        return make_json_text_result(result)
+
+
 # ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
@@ -1209,6 +1279,7 @@ class McpServer:
             "get_data_leading_comment": self.tools.get_data_leading_comment,
             "get_file_header_comment": self.tools.get_file_header_comment,
             "get_module_header_comment": self.tools.get_module_header_comment,
+            "search_source": self.tools.search_source,
         }
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:

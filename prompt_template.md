@@ -179,6 +179,45 @@ get_file_structure({"file": "...", "includeOutline": false})
 
 For detailed navigation, include the outline and then read only the needed source ranges.
 
+## Raw Source Search Rules
+
+Use `search_source(query, file?, filePattern?, limit?, contextLines?)` when metadata search is not enough and you need to find literal source text.
+
+This is a raw line-based source search. It is not semantic C++ reference resolution.
+
+It searches:
+
+- code
+- comments
+- string literals
+- preprocessor text
+
+Good use cases:
+
+```text
+search_source({"query": "g_AtlasCache", "file": "Shared/Windows/UXTheme/UXThemeUtils.cpp"})
+search_source({"query": "TMT_ATLASRECT", "filePattern": "Shared/Windows/UXTheme/*"})
+search_source({"query": "PurgeCache", "limit": 100})
+```
+
+Prefer narrowing broad queries with file or filePattern.
+
+Use contextLines when the surrounding source helps classify the match:
+
+search_source({"query": "g_AtlasCache", "file": "...", "contextLines": 1})
+
+Describe results as source text matches or occurrences, not as references.
+
+Correct:
+
+The raw source text `g_AtlasCache` appears at these locations.
+
+Avoid:
+
+`g_AtlasCache` is referenced by these functions.
+
+After finding a relevant match, use read_range, find_symbol, or read_symbol to inspect the surrounding code before making behavior claims.
+
 ## Glob/Pattern Search Rules
 
 Use glob tools only for metadata discovery.

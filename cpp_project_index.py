@@ -16,6 +16,7 @@ from cpp_index_utils import save_json
 from cpp_lexer import find_matching_token, tokenize_lines, token_values
 from cpp_structural_scan import extract_function_name
 from cpp_comment_context import extract_file_header_comment, extract_leading_comment
+from cpp_comment_context import format_source_lines
 
 
 DEFAULT_SOURCE_EXTENSIONS = {
@@ -1288,4 +1289,133 @@ class LoadedProjectIndex:
             "sections": sections,
             "outline": outline,
             "diagnostics": diagnostics,
+        }
+
+
+    def iter_search_files(
+        self,
+        *,
+        file: str | None = None,
+        file_pattern: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if file:
+            file_item = self.get_file_item(file) if hasattr(self, "get_file_item") else None
+
+            if file_item is None:
+                file_id = file
+
+                if file_id not in self.file_by_id:
+                    file_id = self.file_id_by_relative_path.get(file, "")
+
+                if not file_id:
+                    return []
+
+                file_item = self.file_by_id.get(file_id)
+
+            return [file_item] if file_item is not None else []
+
+        pattern = normalize_glob_pattern(file_pattern or "*").casefold()
+        results: list[dict[str, Any]] = []
+
+        for file_item in self.manifest["files"]:
+            relative_path = str(file_item.get("relativePath") or "")
+
+            if fnmatchcase(relative_path.casefold(), pattern):
+                results.append(file_item)
+
+        return results
+
+
+    def search_source(
+        self,
+        *,
+        project_root: Path,
+        query: str,
+        file: str | None = None,
+        file_pattern: str | None = None,
+        case_sensitive: bool = False,
+        limit: int = 100,
+        context_lines: int = 0,
+    ) -> dict[str, Any]:
+        """Search raw source text in indexed files.
+
+        This is a plain line-based source search. It is not semantic C++ reference
+        resolution and it intentionally does not ignore comments or strings.
+        """
+
+        query = query.strip()
+
+        if not query:
+            return {
+                "query": query,
+                "caseSensitive": case_sensitive,
+                "file": file,
+                "filePattern": file_pattern,
+                "searchedFiles": 0,
+                "returnedMatches": 0,
+                "truncated": False,
+                "matches": [],
+            }
+
+        limit = max(1, limit)
+        context_lines = max(0, context_lines)
+        needle = query if case_sensitive else query.casefold()
+        matches: list[dict[str, Any]] = []
+        searched_files = 0
+
+        for file_item in self.iter_search_files(file=file, file_pattern=file_pattern):
+            relative_path = str(file_item.get("relativePath") or "")
+            path = project_root / relative_path
+
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+
+            searched_files += 1
+
+            for index, line in enumerate(lines):
+                haystack = line if case_sensitive else line.casefold()
+
+                if needle not in haystack:
+                    continue
+
+                line_no = index + 1
+                context_start = max(1, line_no - context_lines)
+                context_end = min(len(lines), line_no + context_lines)
+                context_source = format_source_lines(lines, context_start, context_end)
+
+                matches.append(
+                    {
+                        "relativePath": relative_path,
+                        "fileId": file_item.get("fileId"),
+                        "line": line_no,
+                        "source": f"{line_no:04d}: {line}",
+                        "contextStartLine": context_start,
+                        "contextEndLine": context_end,
+                        "context": context_source,
+                    }
+                )
+
+                if len(matches) >= limit:
+                    return {
+                        "query": query,
+                        "caseSensitive": case_sensitive,
+                        "file": file,
+                        "filePattern": file_pattern,
+                        "searchedFiles": searched_files,
+                        "returnedMatches": len(matches),
+                        "truncated": True,
+                        "matches": matches,
+                    }
+
+        return {
+            "query": query,
+            "caseSensitive": case_sensitive,
+            "file": file,
+            "filePattern": file_pattern,
+            "searchedFiles": searched_files,
+            "returnedMatches": len(matches),
+            "truncated": False,
+            "matches": matches,
         }
