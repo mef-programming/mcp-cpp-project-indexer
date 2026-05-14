@@ -387,6 +387,12 @@ external. Follow them only when their behavior matters for the user's question.
 For correctness-sensitive analysis, external APIs and callback/function-pointer
 parameters should be either verified or explicitly marked as assumed external.
 
+## Header and Function comments
+
+Do not assume read_symbol includes leading documentation.
+Use get_symbol_leading_comment for comments immediately above a symbol.
+Use get_file_header_comment for file-level rationale comments, especially in C++20 module files where the header may appear after `module;`.
+
 ## External/API/Macro Rules
 
 Do not query project tools for obvious external APIs unless the user asks.
