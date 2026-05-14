@@ -24,6 +24,13 @@ DEFAULT_INDEX_ROOT = Path(
     )
 )
 
+def configure_stdio_encoding() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ---------------------------------------------------------------------------
 # Small MCP/JSON-RPC stdio server
 # ---------------------------------------------------------------------------
@@ -60,8 +67,9 @@ def make_json_text_result(data: Any, *, is_error: bool = False) -> dict[str, Any
 
 
 def write_message(message: dict[str, Any]) -> None:
-    sys.stdout.write(json_dumps(message) + "\n")
-    sys.stdout.flush()
+    data = json_dumps(message) + "\n"
+    sys.stdout.buffer.write(data.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def read_messages():
@@ -507,6 +515,112 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "get_symbol_leading_comment",
+            "description": (
+                "Extract the exact leading comment range immediately before an indexed symbol. "
+                "This reads the original source file on demand and does not use a comment index. "
+                "read_symbol remains clean and returns only the exact symbol range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Symbol id returned by find_symbol/list_file_symbols.",
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "default": 20,
+                    },
+                    "allowBlankGap": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Allow a small blank-line gap between the comment block and the symbol.",
+                    },
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_data_leading_comment",
+            "description": (
+                "Extract the exact leading comment range immediately before an indexed data/value declaration. "
+                "Use this for fields, globals, enum values, variable templates, and concepts."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dataId": {
+                        "type": "string",
+                        "description": "Data declaration id returned by find_data/list_type_members.",
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "default": 20,
+                    },
+                    "allowBlankGap": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                },
+                "required": ["dataId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_file_header_comment",
+            "description": (
+                "Extract the initial file header comment from a file. "
+                "This only inspects the start of the file and stops at the first code line."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 120,
+                    },
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_module_header_comment",
+            "description": (
+                "Extract file-header comments from files that define a C++20 module or module partition. "
+                "Returns one result per module file and does not guess a single canonical file when several exist."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                        "description": "C++20 module name, e.g. Example.Module:Partition.",
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 120,
+                    },
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -891,6 +1005,84 @@ class CodeIndexTools:
             + code
         )
 
+
+    def get_symbol_leading_comment(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        max_lines = clamp_int(arguments.get("maxLines", 20), minimum=1, maximum=200)
+        allow_blank_gap = optional_bool(arguments, "allowBlankGap", True)
+
+        result = self.index.get_symbol_leading_comment(
+            project_root=self.project_root,
+            symbol_id=symbol_id,
+            max_lines=max_lines,
+            allow_blank_gap=allow_blank_gap,
+        )
+
+        if result is None:
+            return make_text_result(f"Symbol not found: {symbol_id}", is_error=True)
+
+        return make_json_text_result(result)
+
+
+    def get_data_leading_comment(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        data_id = require_string(arguments, "dataId")
+        max_lines = clamp_int(arguments.get("maxLines", 20), minimum=1, maximum=200)
+        allow_blank_gap = optional_bool(arguments, "allowBlankGap", True)
+
+        result = self.index.get_data_leading_comment(
+            project_root=self.project_root,
+            data_id=data_id,
+            max_lines=max_lines,
+            allow_blank_gap=allow_blank_gap,
+        )
+
+        if result is None:
+            return make_text_result(f"Data declaration not found: {data_id}", is_error=True)
+
+        return make_json_text_result(result)
+
+
+    def get_file_header_comment(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        max_lines = clamp_int(arguments.get("maxLines", 120), minimum=1, maximum=500)
+
+        try:
+            result = self.index.get_file_header_comment(
+                project_root=self.project_root,
+                file=file,
+                max_lines=max_lines,
+            )
+        except FileNotFoundError:
+            return make_text_result(f"File not found: {file}", is_error=True)
+
+        return make_json_text_result(result)
+
+
+    def get_module_header_comment(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_name = require_string(arguments, "moduleName")
+
+        if "::" in module_name:
+            return make_json_text_result(
+                {
+                    "error": "namespace_passed_to_module_header_lookup",
+                    "message": (
+                        "This looks like a C++ namespace, not a C++20 module name. "
+                        "Use get_file_header_comment for files or symbol/data tools for C++ entities."
+                    ),
+                    "query": module_name,
+                    "results": [],
+                },
+                is_error=False,
+            )
+
+        max_lines = clamp_int(arguments.get("maxLines", 120), minimum=1, maximum=500)
+        result = self.index.get_module_header_comment(
+            project_root=self.project_root,
+            module_name=module_name,
+            max_lines=max_lines,
+        )
+        return make_json_text_result(result)
+
 # ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
@@ -936,6 +1128,14 @@ def clamp_int(value: Any, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def optional_bool(arguments: dict[str, Any], key: str, default: bool) -> bool:
+    value = arguments.get(key, default)
+
+    if not isinstance(value, bool):
+        raise McpError(-32602, f"Invalid boolean argument: {key}")
+
+    return value
+
 # ---------------------------------------------------------------------------
 # MCP dispatcher
 # ---------------------------------------------------------------------------
@@ -963,6 +1163,10 @@ class McpServer:
             "find_data": self.tools.find_data,
             "list_type_members": self.tools.list_type_members,
             "read_data": self.tools.read_data,
+            "get_symbol_leading_comment": self.tools.get_symbol_leading_comment,
+            "get_data_leading_comment": self.tools.get_data_leading_comment,
+            "get_file_header_comment": self.tools.get_file_header_comment,
+            "get_module_header_comment": self.tools.get_module_header_comment,
         }
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
@@ -1066,6 +1270,8 @@ class McpServer:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    configure_stdio_encoding()
+
     parser = argparse.ArgumentParser(
         description=(
             "MCP stdio server for vs-project-indexer. "

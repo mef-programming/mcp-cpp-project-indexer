@@ -15,6 +15,7 @@ from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
 from cpp_lexer import find_matching_token, tokenize_lines, token_values
 from cpp_structural_scan import extract_function_name
+from cpp_comment_context import extract_file_header_comment, extract_leading_comment
 
 
 DEFAULT_SOURCE_EXTENSIONS = {
@@ -993,3 +994,129 @@ class LoadedProjectIndex:
             start_line=int(item["startLine"]),
             end_line=int(item["endLine"]),
         )
+
+    def resolve_relative_path(self, file: str) -> str:
+        if file in self.file_by_id:
+            return str(self.file_by_id[file]["relativePath"])
+
+        return file
+
+
+    def read_file_lines(self, *, project_root: Path, file: str) -> tuple[str, list[str]]:
+        relative_path = self.resolve_relative_path(file)
+        path = project_root / relative_path
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return relative_path, lines
+
+
+    def get_symbol_leading_comment(
+        self,
+        *,
+        project_root: Path,
+        symbol_id: str,
+        max_lines: int = 20,
+        allow_blank_gap: bool = True,
+    ) -> dict[str, Any] | None:
+        symbol = self.symbol_by_id.get(symbol_id)
+
+        if symbol is None:
+            return None
+
+        relative_path, lines = self.read_file_lines(
+            project_root=project_root,
+            file=symbol["fileId"],
+        )
+
+        result = extract_leading_comment(
+            lines=lines,
+            relative_path=relative_path,
+            target_start_line=int(symbol["startLine"]),
+            target_end_line=int(symbol["endLine"]),
+            max_lines=max_lines,
+            allow_blank_gap=allow_blank_gap,
+        )
+        result["symbolId"] = symbol_id
+        result["symbolType"] = symbol.get("type")
+        result["qualifiedName"] = symbol.get("qualifiedName")
+        result["signature"] = symbol.get("signature")
+        return result
+
+
+    def get_data_leading_comment(
+        self,
+        *,
+        project_root: Path,
+        data_id: str,
+        max_lines: int = 20,
+        allow_blank_gap: bool = True,
+    ) -> dict[str, Any] | None:
+        data_item = self.data_by_id.get(data_id)
+
+        if data_item is None:
+            return None
+
+        relative_path, lines = self.read_file_lines(
+            project_root=project_root,
+            file=data_item["fileId"],
+        )
+
+        result = extract_leading_comment(
+            lines=lines,
+            relative_path=relative_path,
+            target_start_line=int(data_item["startLine"]),
+            target_end_line=int(data_item["endLine"]),
+            max_lines=max_lines,
+            allow_blank_gap=allow_blank_gap,
+        )
+        result["dataId"] = data_id
+        result["declarationKind"] = data_item.get("declarationKind")
+        result["qualifiedName"] = data_item.get("qualifiedName")
+        result["signature"] = data_item.get("signature")
+        result["typeText"] = data_item.get("typeText")
+        return result
+
+
+    def get_file_header_comment(
+        self,
+        *,
+        project_root: Path,
+        file: str,
+        max_lines: int = 120,
+    ) -> dict[str, Any]:
+        relative_path, lines = self.read_file_lines(
+            project_root=project_root,
+            file=file,
+        )
+
+        return extract_file_header_comment(
+            lines=lines,
+            relative_path=relative_path,
+            max_lines=max_lines,
+        )
+
+
+    def get_module_header_comment(
+        self,
+        *,
+        project_root: Path,
+        module_name: str,
+        max_lines: int = 120,
+    ) -> dict[str, Any]:
+        files = self.find_module(module_name)
+        results: list[dict[str, Any]] = []
+
+        for file_item in files:
+            result = self.get_file_header_comment(
+                project_root=project_root,
+                file=str(file_item["fileId"]),
+                max_lines=max_lines,
+            )
+            result["fileId"] = file_item["fileId"]
+            result["unitKind"] = file_item.get("unitKind")
+            result["fullModuleName"] = file_item.get("fullModuleName")
+            results.append(result)
+
+        return {
+            "moduleName": module_name,
+            "results": results,
+        }
