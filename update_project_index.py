@@ -12,6 +12,7 @@ from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
+    DEFAULT_SOURCE_EXTENSIONS,
     PROJECT_INDEX_SCHEMA,
     discover_source_files,
     file_index_output_path,
@@ -163,6 +164,7 @@ def make_update_plan(
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
     case_insensitive_paths: bool,
+    force: bool,
 ) -> tuple[UpdatePlan, dict[str, Path], dict[str, str], dict[str, dict[str, Any]]]:
     manifest = load_manifest(index_root)
     manifest_by_path = existing_manifest_by_relative_path(
@@ -197,6 +199,10 @@ def make_update_plan(
 
         if manifest_item is None:
             added.append(path)
+            continue
+
+        if force:
+            modified.append(path)
             continue
 
         if state_item is None:
@@ -372,6 +378,7 @@ def run_update(
     case_insensitive_paths: bool,
     blank_comments: bool,
     dry_run: bool,
+    force: bool,
 ) -> UpdateResult:
     if not (index_root / "manifest.json").exists():
         raise SystemExit(
@@ -384,6 +391,7 @@ def run_update(
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
         case_insensitive_paths=case_insensitive_paths,
+        force=force,
     )
 
     print("Update plan")
@@ -393,6 +401,7 @@ def run_update(
     print("Deleted:  ", len(plan.deleted_relative_paths))
     print("Unchanged:", len(plan.unchanged))
     print("State initialized:", plan.state_initialized)
+    print("Force reindex:", force)
 
     if plan.added:
         print("\nAdded files:")
@@ -558,7 +567,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Incrementally update an existing mcp-cpp-project-indexer project index. "
-            "Use --dry-run to show the diff without writing."
+            "Use --dry-run to show the diff without writing. "
+            "Use --force to reindex all current files after parser/indexer changes."
         )
     )
     parser.add_argument(
@@ -609,6 +619,14 @@ def main() -> int:
         help="Only show added/modified/deleted files. Do not write anything.",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Reindex all current files instead of only files whose raw content hash changed. "
+            "Use this after parser/indexer code changes."
+        ),
+    )
+    parser.add_argument(
         "--print-summary-json",
         action="store_true",
         help="Print summary as JSON.",
@@ -630,12 +648,14 @@ def main() -> int:
         case_insensitive_paths=args.case_insensitive_paths,
         blank_comments=args.blank_comments,
         dry_run=args.dry_run,
+        force=args.force,
     )
 
     summary = {
         "root": root.as_posix(),
         "indexRoot": index_root.as_posix(),
         "dryRun": args.dry_run,
+        "force": args.force,
         "stateInitialized": result.state_initialized,
         "added": result.added,
         "modified": result.modified,
