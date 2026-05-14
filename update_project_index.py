@@ -12,7 +12,6 @@ from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
-    DEFAULT_SOURCE_EXTENSIONS,
     PROJECT_INDEX_SCHEMA,
     discover_source_files,
     file_index_output_path,
