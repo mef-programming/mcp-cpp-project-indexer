@@ -14,10 +14,11 @@ DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
 
 
 class MenuContext:
-    def __init__(self, *, root: Path, index_root: Path, indexer_root: Path) -> None:
+    def __init__(self, *, root: Path, index_root: Path, indexer_root: Path, jobs: int) -> None:
         self.root = root.resolve()
         self.index_root = index_root.resolve()
         self.indexer_root = indexer_root.resolve()
+        self.jobs = jobs
         self.python = Path(sys.executable)
 
     def script(self, name: str) -> Path:
@@ -74,6 +75,8 @@ def build_project_index(ctx: MenuContext) -> int:
             str(ctx.root),
             "--output-root",
             str(ctx.index_root),
+            "--jobs",
+            str(ctx.jobs),
         ]
     )
 
@@ -283,6 +286,8 @@ def update_project_index(ctx: MenuContext) -> int:
             str(ctx.root),
             "--index-root",
             str(ctx.index_root),
+            "--jobs",
+            str(ctx.jobs),
         ]
     )
 
@@ -401,6 +406,7 @@ def interactive_menu(ctx: MenuContext) -> int:
         print("Project root:", ctx.root)
         print("Index root:  ", ctx.index_root)
         print("Indexer root:", ctx.indexer_root)
+        print("Jobs:        ", ctx.jobs)
         print()
 
         for index, (title, _) in enumerate(items, start=1):
@@ -456,6 +462,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing the mcp-cpp-project-indexer scripts.",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Worker process count for build/update actions. Use 0 for auto.",
+    )
+    parser.add_argument(
         "--action",
         choices=[
             "build-index",
@@ -490,6 +502,7 @@ def main() -> int:
         root=root,
         index_root=index_root,
         indexer_root=indexer_root,
+        jobs=args.jobs,
     )
 
     action_map: dict[str, Callable[[MenuContext], int]] = {

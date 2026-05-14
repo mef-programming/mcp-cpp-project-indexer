@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any,Callable
 from fnmatch import fnmatchcase
 
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
 from cpp_lexer import find_matching_token, tokenize_lines, token_values
@@ -294,9 +298,166 @@ def search_aliases_for_data(data_item: dict[str, Any]) -> list[str]:
     return aliases
 
 
+def normalize_jobs(jobs: int | None) -> int:
+    if jobs is None:
+        return 1
+
+    if jobs < 0:
+        return 1
+
+    if jobs == 0:
+        # Auto mode. Keep this conservative because each worker has to import
+        # the scanner modules and can create substantial temporary Python data.
+        return min(8, max(1, (os.cpu_count() or 2) - 1))
+
+    return max(1, jobs)
+
+
 # ---------------------------------------------------------------------------
 # Project index build
 # ---------------------------------------------------------------------------
+
+def build_file_indexes_for_project(
+    *,
+    source_files: list[Path],
+    root: Path,
+    output_root: Path,
+    emit_debug_file_indexes: bool,
+    case_insensitive_paths: bool,
+    blank_comments: bool,
+    jobs: int = 1,
+    progress_callback: Callable[[int, int, Path], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    files_dir = output_root / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs = normalize_jobs(jobs)
+    total = len(source_files)
+    completed = 0
+    file_indexes: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+
+    if total == 0:
+        return file_indexes, diagnostics
+
+    if jobs <= 1:
+        for path in source_files:
+            completed += 1
+
+            if progress_callback is not None:
+                progress_callback(completed, total, path)
+
+            try:
+                file_index = build_file_index(
+                    path=path,
+                    project_root=root,
+                    case_insensitive_paths=case_insensitive_paths,
+                    blank_comments=blank_comments,
+                    emit_debug=emit_debug_file_indexes,
+                )
+            except Exception as exc:  # noqa: BLE001 - build must continue.
+                diagnostics.append(
+                    {
+                        "severity": "error",
+                        "code": "file_index_failed",
+                        "message": str(exc),
+                        "relativePath": path.relative_to(root).as_posix()
+                        if path.is_relative_to(root)
+                        else path.as_posix(),
+                    }
+                )
+                continue
+
+            save_json(file_index_output_path(files_dir, file_index["fileId"]), file_index)
+            file_indexes.append(file_index)
+
+        file_indexes.sort(key=lambda item: item["relativePath"].casefold())
+        return file_indexes, diagnostics
+
+    worker_args = [
+        {
+            "path": path.as_posix(),
+            "root": root.as_posix(),
+            "emit_debug_file_indexes": emit_debug_file_indexes,
+            "case_insensitive_paths": case_insensitive_paths,
+            "blank_comments": blank_comments,
+        }
+        for path in source_files
+    ]
+
+    with ProcessPoolExecutor(max_workers=jobs) as executor:
+        future_to_path = {
+            executor.submit(build_file_index_worker, payload): Path(payload["path"])
+            for payload in worker_args
+        }
+
+        for future in as_completed(future_to_path):
+            completed += 1
+            path = future_to_path[future]
+
+            if progress_callback is not None:
+                progress_callback(completed, total, path)
+
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001 - defensive, worker should return errors.
+                diagnostics.append(
+                    {
+                        "severity": "error",
+                        "code": "file_index_failed",
+                        "message": str(exc),
+                        "relativePath": path.relative_to(root).as_posix()
+                        if path.is_relative_to(root)
+                        else path.as_posix(),
+                    }
+                )
+                continue
+
+            if not result.get("ok"):
+                failed_path = Path(str(result.get("path") or path.as_posix()))
+                diagnostics.append(
+                    {
+                        "severity": "error",
+                        "code": "file_index_failed",
+                        "message": str(result.get("error") or "unknown error"),
+                        "relativePath": failed_path.relative_to(root).as_posix()
+                        if failed_path.is_relative_to(root)
+                        else failed_path.as_posix(),
+                    }
+                )
+                continue
+
+            file_index = result["fileIndex"]
+            save_json(file_index_output_path(files_dir, file_index["fileId"]), file_index)
+            file_indexes.append(file_index)
+
+    file_indexes.sort(key=lambda item: item["relativePath"].casefold())
+    return file_indexes, diagnostics
+
+def build_file_index_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    path = Path(payload["path"])
+    root = Path(payload["root"])
+
+    try:
+        file_index = build_file_index(
+            path=path,
+            project_root=root,
+            case_insensitive_paths=bool(payload["case_insensitive_paths"]),
+            blank_comments=bool(payload["blank_comments"]),
+            emit_debug=bool(payload["emit_debug_file_indexes"]),
+        )
+
+        return {
+            "ok": True,
+            "path": path.as_posix(),
+            "fileIndex": file_index,
+        }
+    except Exception as exc:  # noqa: BLE001 - parent keeps indexing other files.
+        return {
+            "ok": False,
+            "path": path.as_posix(),
+            "error": str(exc),
+        }
 
 def file_index_output_path(files_dir: Path, file_id: str) -> Path:
     return files_dir / f"{file_id}.json"
@@ -334,6 +495,7 @@ def build_project_index(
     case_insensitive_paths: bool = True,
     blank_comments: bool = True,
     progress_callback: Callable[[int, int, Path], None] | None = None,
+    jobs: int = 1,
 ) -> ProjectIndexBuildResult:
     output_root.mkdir(parents=True, exist_ok=True)
     files_dir = output_root / "files"
@@ -345,37 +507,26 @@ def build_project_index(
         excluded_dir_names=excluded_dir_names,
     )
 
+    file_indexes, file_index_failed_diagnostics = build_file_indexes_for_project(
+        source_files=source_files,
+        root=root,
+        output_root=output_root,
+        emit_debug_file_indexes=emit_debug_file_indexes,
+        case_insensitive_paths=case_insensitive_paths,
+        blank_comments=blank_comments,
+        jobs=jobs,
+        progress_callback=progress_callback,
+    )
+
     manifest_files: list[dict[str, Any]] = []
     symbols: list[dict[str, Any]] = []
     names: dict[str, list[str]] = defaultdict(list)
     modules: dict[str, list[str]] = defaultdict(list)
     data_items: list[dict[str, Any]] = []
     data_names: dict[str, list[str]] = defaultdict(list)
-    diagnostics: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = [*file_index_failed_diagnostics]
 
-    for index, path in enumerate(source_files, start=1):
-        if progress_callback is not None:
-            progress_callback(index, len(source_files), path)
-
-        try:
-            file_index = build_file_index(
-                path=path,
-                project_root=root,
-                case_insensitive_paths=case_insensitive_paths,
-                blank_comments=blank_comments,
-                emit_debug=emit_debug_file_indexes,
-            )
-        except Exception as exc:  # noqa: BLE001 - build must continue to reveal project-wide failures.
-            diagnostics.append(
-                {
-                    "severity": "error",
-                    "code": "file_index_failed",
-                    "message": str(exc),
-                    "relativePath": path.relative_to(root).as_posix() if path.is_relative_to(root) else path.as_posix(),
-                }
-            )
-            continue
-
+    for file_index in file_indexes:
         file_id = file_index["fileId"]
         save_json(file_index_output_path(files_dir, file_id), file_index)
 

@@ -20,6 +20,8 @@ from cpp_project_index import (
     symbol_ref_from_file_symbol,
     data_ref_from_file_data,
     search_aliases_for_data,
+    build_file_indexes_for_project,
+    normalize_jobs,
 )
 
 
@@ -259,6 +261,7 @@ def aggregate_project_index(
     root: Path,
     index_root: Path,
     current_file_indexes: list[dict[str, Any]],
+    extra_diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     manifest_files: list[dict[str, Any]] = []
     symbols: list[dict[str, Any]] = []
@@ -266,7 +269,7 @@ def aggregate_project_index(
     data_items: list[dict[str, Any]] = []
     data_names: dict[str, list[str]] = defaultdict(list)
     modules: dict[str, list[str]] = defaultdict(list)
-    diagnostics: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = [*(extra_diagnostics or [])]
 
     for file_index in current_file_indexes:
         file_id = file_index["fileId"]
@@ -414,6 +417,7 @@ def run_update(
     blank_comments: bool,
     dry_run: bool,
     force: bool,
+    jobs: int,
 ) -> UpdateResult:
     if not (index_root / "manifest.json").exists():
         raise SystemExit(
@@ -489,18 +493,29 @@ def run_update(
     changed_paths = [*plan.added, *plan.modified]
     updated_by_key: dict[str, dict[str, Any]] = {}
 
-    for index, path in enumerate(changed_paths, start=1):
-        relative = path.relative_to(root).as_posix()
-        print(f"[{index}/{len(changed_paths)}] Reindexing {relative}")
-        file_index = build_file_index(
-            path=path,
-            project_root=root,
-            case_insensitive_paths=case_insensitive_paths,
-            blank_comments=blank_comments,
-            emit_debug=emit_debug_file_indexes,
-        )
-        save_json(file_index_output_path(files_dir, file_index["fileId"]), file_index)
-        key = normalize_relative_path(path, root, case_insensitive=case_insensitive_paths)
+    def update_progress(completed: int, total: int, path: Path) -> None:
+        relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.as_posix()
+        print(f"\r- Reindexing {completed}/{total} ({completed * 100.0 / max(1, total):.1f}%) {relative}", end="", flush=True)
+
+    changed_file_indexes, changed_file_diagnostics = build_file_indexes_for_project(
+        source_files=changed_paths,
+        root=root,
+        output_root=index_root,
+        emit_debug_file_indexes=emit_debug_file_indexes,
+        case_insensitive_paths=case_insensitive_paths,
+        blank_comments=blank_comments,
+        jobs=jobs,
+        progress_callback=update_progress,
+    )
+
+    if changed_paths:
+        print()
+
+    updated_by_key: dict[str, dict[str, Any]] = {}
+
+    for file_index in changed_file_indexes:
+        relative_path = file_index["relativePath"]
+        key = relative_path.casefold() if case_insensitive_paths else relative_path
         updated_by_key[key] = file_index
 
     current_file_indexes: list[dict[str, Any]] = []
@@ -536,6 +551,7 @@ def run_update(
         root=root,
         index_root=index_root,
         current_file_indexes=current_file_indexes,
+        extra_diagnostics=changed_file_diagnostics,
     )
     save_update_state(
         index_root=index_root,
@@ -658,6 +674,15 @@ def main() -> int:
         help="Only show added/modified/deleted files. Do not write anything.",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel file-indexing worker processes for added/modified files. "
+            "Use 1 for sequential mode. Use 0 for conservative auto mode."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -688,6 +713,7 @@ def main() -> int:
         blank_comments=args.blank_comments,
         dry_run=args.dry_run,
         force=args.force,
+        jobs=args.jobs,
     )
 
     summary = {
@@ -730,6 +756,8 @@ def main() -> int:
         print("Modules:    ", result.modules)
         print("Diagnostics:", result.diagnostics)
         print("State:      ", update_state_path(index_root).as_posix())
+        print("Jobs:       ", normalize_jobs(jobs))
+
 
     return 0
 

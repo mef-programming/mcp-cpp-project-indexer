@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+from cpp_project_index import build_project_index, normalize_jobs
+
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -173,6 +175,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel file-indexing worker processes. "
+            "Use 1 for sequential mode. Use 0 for conservative auto mode."
+        ),
+    )
+
+    parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -220,6 +232,7 @@ def main() -> None:
         case_insensitive_paths=args.case_insensitive_paths,
         blank_comments=args.blank_comments,
         progress_callback=progress_callback,
+        jobs=args.jobs,
     )
 
     summary = {
@@ -250,6 +263,7 @@ def main() -> None:
     print("Modules:", summary["modules"])
     print("Diagnostics:", summary["diagnostics"])
     print("Manifest:", summary["manifest"])
+    print("Jobs:", normalize_jobs(args.jobs))
     print("Symbols JSONL:", summary["symbolsJsonl"])
     print("Names JSON:", summary["namesJson"])
     print("Data:", result.data_count)
