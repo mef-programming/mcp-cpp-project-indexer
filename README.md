@@ -185,6 +185,17 @@ python -c "import json; from collections import Counter; d=json.load(open(r'<pro
 
 ---
 
+## Incremental update
+
+After a full index build, changed files can be detected and re-indexed incrementally.
+
+Dry-run:
+
+```powershell
+python <indexer-root>\update_project_index.py `
+  --root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --dry-run
 ## Build the module map
 
 After building the project index:
