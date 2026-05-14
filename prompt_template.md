@@ -46,14 +46,14 @@ Symbol lookup tools use the argument name `query`.
 
 Correct:
 
-```json
+```text
 find_symbol({"query": "Widget::OnScroll"})
 find_declaration({"query": "OnNotify"})
 ```
 
 Avoid:
 
-```json
+```text
 find_symbol({"name": "Widget::OnScroll"})
 ```
 
@@ -351,6 +351,26 @@ list_type_members({"container": "Editor"})
 
 Then, if needed:
 find_symbol({"query": "ScrollBar::SetPosition"})
+
+## Preferred Member Lookup Workflow
+
+When analyzing a method body and the containing class is known, prefer
+`list_type_members(container)` once instead of calling `find_data` for each
+member variable.
+
+Use `find_data` when:
+
+- the containing type is unknown
+- the data declaration is namespace/global scope
+- the declaration is in an anonymous namespace
+- you want to find the same data name across multiple containers
+
+Do not classify project/base-class methods as external APIs. Calls such as
+`GetHWND()` should be treated as project symbols unless clearly known to be
+external. Follow them only when their behavior matters for the user's question.
+
+For correctness-sensitive analysis, external APIs and callback/function-pointer
+parameters should be either verified or explicitly marked as assumed external.
 
 ## External/API/Macro Rules
 
