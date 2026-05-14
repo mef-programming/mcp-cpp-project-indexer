@@ -82,6 +82,28 @@ The AI should read source ranges and reason from the original code.
 
 ---
 
+## Why this matters
+
+Without an index, an AI model often has to read entire C++ files just to discover
+where relevant declarations and implementations are located.
+
+Example:
+
+| Scenario | Source text read |
+|----------|------------------|
+| Full file scan | `CompositionHost.ixx` + `CompositionHost.cpp` = ~5,302 lines |
+| Indexed navigation | compact metadata for symbols/modules/files, then selected source ranges only |
+
+In this case, the index turns a ~5,300-line source scan into a compact structured
+overview of the file's symbols and source ranges. The model can then read only the
+specific functions, classes, data declarations, or type aliases needed for the
+question.
+
+This reduces token usage, latency, and irrelevant context while keeping the
+analysis grounded in exact source line ranges.
+
+---
+
 ## Output layout
 
 Default output directory:
