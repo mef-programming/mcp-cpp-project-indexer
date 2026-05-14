@@ -174,17 +174,6 @@ Names: 95674
 Modules: 3774
 Diagnostics: 7
 ```
-
-Diagnostics are non-fatal. They indicate best-effort structural warnings for individual files.
-
-Print diagnostics summary:
-
-```powershell
-python -c "import json; from collections import Counter; d=json.load(open(r'<project-root>\.mcp-cpp-project-indexer\diagnostics.json',encoding='utf-8')); print(len(d)); print(Counter(x.get('code') for x in d)); [print(x['relativePath'], x['code'], x['message'], x.get('range')) for x in d]"
-```
-
----
-
 ## Incremental update
 
 After a full index build, changed files can be detected and re-indexed incrementally.
@@ -196,6 +185,18 @@ python <indexer-root>\update_project_index.py `
   --root <project-root> `
   --index-root <project-root>\.mcp-cpp-project-indexer `
   --dry-run
+
+
+Diagnostics are non-fatal. They indicate best-effort structural warnings for individual files.
+
+Print diagnostics summary:
+
+```powershell
+python -c "import json; from collections import Counter; d=json.load(open(r'<project-root>\.mcp-cpp-project-indexer\diagnostics.json',encoding='utf-8')); print(len(d)); print(Counter(x.get('code') for x in d)); [print(x['relativePath'], x['code'], x['message'], x.get('range')) for x in d]"
+```
+
+---
+
 ## Build the module map
 
 After building the project index:
@@ -389,20 +390,23 @@ Do not treat module metadata as implementation behavior.
 
 Correct calls:
 
-```text
-find_symbol({"query": "Editor::OnScroll"})
+```json
+find_symbol({"query": "Editor::_OnScroll"})
 find_declaration({"query": "OnNotifyReflect"})
 ```
 
 Avoid:
 
-```text
-find_symbol({"name": "Editor::OnScroll"})
+```json
+find_symbol({"name": "Editor::_OnScroll"})
 ```
 
 Full prompt template should be stored in:
 
+```text
 The full system prompt template is available in [prompt_template.md](prompt_template.md).
+```
+---
 
 ## Example workflows
 
@@ -544,17 +548,133 @@ mcp-cpp-project-indexer
 
 ---
 
+
 ## Smoke tests
 
-After MCP integration, test the following queries:
+AAfter MCP integration, test:
 
-- `get_project_summary`
-- `Show all modules under Example.Core.Direct2D.`
-- `Which modules import Example.Shell.Browser:Impl?`
-- `Find the declaration and definition of ExampleClass::OnEvent.`
-- `Read all overloads of GetHandler.`
-- `Which file defines Example.Elements:ElementImpl?`
-...
+get_project_summary
+Show all modules under Example.Core.Direct2D.
+Which modules import Example.Shell.Browser:Impl?
+Find the declaration and definition of ExampleClass::OnEvent.
+Read all overloads of GetHandler.
+Which file defines Example.Elements:ElementImpl?
+Find the definition of ExampleClass::operator=.
+List all symbols in Example/Core/Renderer.cpp.
+Which modules does Example.UI:ToggleSwitch import?
+Show the module tree for Example.Core (max depth 3).
+Find all files matching *Example*Dialog*.
+Read the first 20 lines of Example/Core/Main.ixx.
+Find the declaration of ExampleClass::ExampleClass (constructor).
+Find all symbols matching *Paint* in Example/Core/Renderer.cpp.
+Show which modules are imported by Example.Shell:Impl.
+Get the module map summary.
+Find the definition of ExampleClass::OnKeyDown.
+Read the range of ExampleClass::OnPaint (lines 150-200).
+Find all files in module Example.UI:Controls.
+Show the import tree for Example.UI:ToggleSwitch.
+Find the symbol ExampleNamespace::ExampleClass::Method.
+List all modules that import Example.Core.Service.
+Find the declaration of template function ExampleClass::Create<T>.
+Read the symbol for ExampleClass::OnNotify.
+Find all files under Example/UI/Controls/.
+Show the module info for Example.Core.Direct2D.Renderer.
+Find the definition of ExampleClass::Initialize.
+List all symbols in Example/Core/Service.cpp that are functions.
+Find which modules are part of Example.UI.
+Read the source of ExampleClass::HandleInput (lines 50-120).
+Find the file that defines Example.Core:ModuleImpl.
+Show all imports of Example.UI:Controls.Button.
+Find the declaration of enum ExampleClass::State.
+Read the symbol for ExampleClass::GetSize.
+Find all files with .ixx extension under Example/.
+Show the module tree for Example.Shell (max depth 2).
+Find the definition of ExampleClass::_UpdateLayout.
+List all symbols in Example/Core/Utils.cpp.
+Find which modules import Example.UI:Controls.
+Read the range of ExampleClass::Paint (lines 200-250).
+Find the declaration of ExampleClass::~ExampleClass (destructor).
+Show the module info for Example.Shell.Browser:Impl.
+Find all symbols matching *Handler* in Example/Core/.
+Read the symbol for ExampleClass::OnMouseMove.
+Find the file that defines Example.UI:Controls.Button.
+List all modules imported by Example.Core.Direct2D.
+Find the definition of ExampleClass::SetValue.
+Show the module tree for Example.UI (max depth 4).
+Find all files under Example/Shell/Browser/.
+Read the first 30 lines of Example/Core/Service.ixx.
+Find the declaration of ExampleClass::GetAccessibleImpl.
+List all symbols in Example/UI/Controls/Button.cpp.
+Find which modules are imported by Example.Shell.Browser:Impl.
+Show the module info for Example.Elements:ElementImpl.
+Find the definition of ExampleClass::OnPropertyChanged.
+Read the symbol for ExampleClass::GetState.
+Find all files matching *Service* under Example/Core/.
+Show the module tree for Example.Elements (max depth 3).
+Find the declaration of ExampleClass::Register.
+List all symbols in Example/Shell/Browser/Impl.cpp.
+Find which modules import Example.Core.Direct2D.Renderer.
+Read the range of ExampleClass::OnInput (lines 100-150).
+Find the definition of ExampleClass::_SelfLayoutDoLayout.
+Show the module info for Example.UI:Controls.Dialog.
+Find all symbols matching *Layout* in Example/Core/.
+Read the symbol for ExampleClass::GetSliderSize.
+Find the file that defines Example.Shell:Impl.
+List all modules that are part of Example.Core.
+Find the declaration of ExampleClass::DefaultAction.
+Read the first 40 lines of Example/UI/Controls/Dialog.ixx.
+Find the definition of ExampleClass::_FireClickEvent.
+Show the module tree for Example.Core.Direct2D (max depth 5).
+Find all files under Example/Elements/.
+Read the symbol for ExampleClass::GetCaptured.
+Find which modules import Example.Private.Helper.
+Show the module info for Example.UI:Controls.Dialog.
+Find the declaration of ExampleClass::SetCaptured.
+List all symbols in Example/Elements/ElementImpl.cpp.
+Find the definition of ExampleClass::OnInput.
+Read the range of ExampleClass::_UpdateLabel (lines 170-180).
+Find all files matching *Element* under Example/Elements/.
+Show the module tree for Example.Private (max depth 2).
+Find the declaration of ExampleClass::GetPressed.
+Read the symbol for ExampleClass::SetPressed.
+Find which modules import Example.Elements:ElementImpl.
+Show the module info for Example.Private.Helper.
+Find the definition of ExampleClass::OnPropertyChanged.
+List all symbols in Example/Core/Direct2D/Renderer.cpp.
+Find all files with .cpp extension under Example/UI/.
+Read the symbol for ExampleClass::GetSliderBorderStrokeWidth.
+Find the declaration of ExampleClass::SliderBackgroundColorProp.
+Show the module tree for Example (max depth 1).
+Find all modules that start with Example.UI.
+Read the range of ExampleClass::_SelfLayoutUpdateDesiredSize (lines 200-220).
+Find the definition of ExampleClass::SliderBorderColorProp.
+List all symbols in Example/Private/Helper.cpp.
+Find which modules import Example.UI:Controls.Dialog.
+Show the module info for Example.Elements:ElementWithTooltip.
+Find the declaration of ExampleClass::SliderForegroundColorProp.
+Read the symbol for ExampleClass::SliderSizeProp.
+Find all files under Example/Private/.
+Find the definition of ExampleClass::StateProp.
+List all symbols in Example/Core/Service.cpp.
+Find which modules are imported by Example.Elements:ElementImpl.
+Show the module tree for Example.UI.Controls (max depth 3).
+Find the declaration of ExampleClass::CapturedProp.
+Read the symbol for ExampleClass::PressedProp.
+Find all files matching *Helper* under Example/Private/.
+Find the definition of ExampleClass::ClassInfoI::GetClassInfoPtr.
+List all symbols in Example/UI/Controls/Dialog.cpp.
+Find which modules import Example.Private.TreeHelper.
+Show the module info for Example.UI:Controls.Button.
+Find the declaration of ExampleClass::ElementWithPromptValueI::ElementWithPromptValueProperties.
+Read the symbol for ExampleClass::Initialize (overload with 3 parameters).
+Find all files under Example/Core/Direct2D/.
+Find the definition of ExampleClass::_Initialize.
+List all symbols in Example/Elements/ElementWithTooltip.cpp.
+Find which modules import Example.Private.ValueHelper.
+Show the module tree for Example.Shell.Browser (max depth 4).
+Find the declaration of ExampleClass::Register.
+Read the symbol for ExampleClass::ToggleSwitch (constructor).
+Find all files matching *Renderer* under Example/Core/Direct2D/.
 
 Expected behavior:
 
