@@ -1120,3 +1120,172 @@ class LoadedProjectIndex:
             "moduleName": module_name,
             "results": results,
         }
+
+
+    def get_file_item(self, file: str) -> dict[str, Any] | None:
+        file_id = file
+
+        if file_id in self.file_by_id:
+            return self.file_by_id[file_id]
+
+        file_id = self.file_id_by_relative_path.get(file, "")
+
+        if not file_id:
+            return None
+
+        return self.file_by_id.get(file_id)
+
+
+    def get_file_structure(self, file: str) -> dict[str, Any] | None:
+        file_item = self.get_file_item(file)
+
+        if file_item is None:
+            return None
+
+        file_id = file_item["fileId"]
+        relative_path = file_item["relativePath"]
+
+        file_symbols = [
+            symbol
+            for symbol in self.symbols
+            if symbol.get("fileId") == file_id
+        ]
+        file_data = [
+            item
+            for item in self.data
+            if item.get("fileId") == file_id
+        ]
+
+        file_symbols.sort(
+            key=lambda item: (
+                int(item.get("startLine") or 0),
+                int(item.get("endLine") or 0),
+                str(item.get("qualifiedName") or item.get("shortName") or ""),
+            )
+        )
+        file_data.sort(
+            key=lambda item: (
+                int(item.get("startLine") or 0),
+                int(item.get("endLine") or 0),
+                str(item.get("qualifiedName") or item.get("name") or ""),
+            )
+        )
+
+        diagnostics = [
+            diagnostic
+            for diagnostic in self._load_json_if_exists(self.index_root / "diagnostics.json", [])
+            if diagnostic.get("fileId") == file_id or diagnostic.get("relativePath") == relative_path
+        ]
+
+        symbol_counts: dict[str, int] = {}
+        data_counts: dict[str, int] = {}
+
+        for symbol in file_symbols:
+            symbol_type = str(symbol.get("type") or "unknown")
+            symbol_counts[symbol_type] = symbol_counts.get(symbol_type, 0) + 1
+
+        for item in file_data:
+            declaration_kind = str(item.get("declarationKind") or "unknown")
+            data_counts[declaration_kind] = data_counts.get(declaration_kind, 0) + 1
+
+        outline: list[dict[str, Any]] = []
+
+        for symbol in file_symbols:
+            outline.append(
+                {
+                    "kind": "symbol",
+                    "symbolId": symbol.get("symbolId"),
+                    "type": symbol.get("type"),
+                    "name": symbol.get("qualifiedName") or symbol.get("shortName"),
+                    "shortName": symbol.get("shortName"),
+                    "container": symbol.get("container"),
+                    "startLine": symbol.get("startLine"),
+                    "endLine": symbol.get("endLine"),
+                    "signature": symbol.get("signature"),
+                }
+            )
+
+        for item in file_data:
+            outline.append(
+                {
+                    "kind": "data",
+                    "dataId": item.get("dataId"),
+                    "declarationKind": item.get("declarationKind"),
+                    "scopeKind": item.get("scopeKind"),
+                    "name": item.get("qualifiedName") or item.get("name"),
+                    "shortName": item.get("name"),
+                    "container": item.get("container"),
+                    "typeText": item.get("typeText"),
+                    "startLine": item.get("startLine"),
+                    "endLine": item.get("endLine"),
+                    "signature": item.get("signature"),
+                }
+            )
+
+        outline.sort(
+            key=lambda item: (
+                int(item.get("startLine") or 0),
+                0 if item.get("kind") == "symbol" else 1,
+                str(item.get("name") or ""),
+            )
+        )
+
+        # Compact section ranges by coarse outline kind. These are routing ranges,
+        # not semantic regions.
+        sections: list[dict[str, Any]] = []
+
+        def append_section(name: str, items: list[dict[str, Any]]) -> None:
+            if not items:
+                return
+
+            sections.append(
+                {
+                    "name": name,
+                    "startLine": min(int(item.get("startLine") or 0) for item in items),
+                    "endLine": max(int(item.get("endLine") or 0) for item in items),
+                    "count": len(items),
+                }
+            )
+
+        append_section(
+            "types",
+            [
+                item
+                for item in outline
+                if item.get("kind") == "symbol"
+                and item.get("type") in {"class", "struct", "enum", "class_declaration", "struct_declaration", "type_alias", "type_alias_template", "typedef_declaration"}
+            ],
+        )
+        append_section(
+            "functions",
+            [
+                item
+                for item in outline
+                if item.get("kind") == "symbol"
+                and item.get("type") in {"function", "method", "constructor", "destructor", "operator", "function_declaration", "method_declaration", "constructor_declaration", "destructor_declaration", "operator_declaration"}
+            ],
+        )
+        append_section(
+            "data",
+            [item for item in outline if item.get("kind") == "data"],
+        )
+
+        return {
+            "fileId": file_id,
+            "relativePath": relative_path,
+            "lineCount": file_item.get("lineCount"),
+            "module": {
+                "unitKind": file_item.get("unitKind"),
+                "fullModuleName": file_item.get("fullModuleName"),
+            },
+            "counts": {
+                "symbols": len(file_symbols),
+                "data": len(file_data),
+                "diagnostics": len(diagnostics),
+                "symbolsByType": dict(sorted(symbol_counts.items())),
+                "dataByKind": dict(sorted(data_counts.items())),
+            },
+            "sections": sections,
+            "outline": outline,
+            "diagnostics": diagnostics,
+        }

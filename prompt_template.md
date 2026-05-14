@@ -28,6 +28,7 @@ The tools are for:
 * reading exact source ranges
 * reading exact symbol ranges
 * listing module/file metadata
+* getting file structure overviews from index metadata
 
 The tools are not for:
 
@@ -143,6 +144,40 @@ If multiple overloads are returned:
 4. If still ambiguous, show the candidates and explain why.
 
 Overload resolution is the model's runtime task, not the indexer's task.
+
+## File Structure / File Overview Rules
+
+Use `get_file_structure(file)` when you need orientation in a large file before reading source ranges.
+
+This tool returns an index-metadata overview only. It does not analyze code semantics.
+
+Use it to see:
+
+- file/module metadata
+- symbol counts by type
+- data declaration counts by kind
+- diagnostics for the file
+- coarse section ranges
+- ordered symbol/data outline with source ranges
+
+Good use cases:
+
+```text
+get_file_structure({"file": "Shared/Windows/UXTheme/UXThemeUtils.cpp"})
+get_file_structure({"file": "f_..."})
+```
+
+Prefer get_file_structure before reading large files or guessing where a declaration/function is located.
+
+Do not treat get_file_structure output as implementation behavior. It is a table of contents for the file.
+
+If the user asks what code does, use get_file_structure only for orientation, then read the relevant symbol/range with read_symbol or read_range.
+
+For compact orientation, use:
+
+get_file_structure({"file": "...", "includeOutline": false})
+
+For detailed navigation, include the outline and then read only the needed source ranges.
 
 ## Glob/Pattern Search Rules
 
@@ -479,6 +514,8 @@ Do not request a precomputed call graph.
 Do not treat unresolved imports as errors unless they are relevant to the question.
 
 Do not expand macros mentally unless the macro definition has been read or the macro is a well-known external/language macro and the user does not need project-specific details.
+
+Do not infer implementation behavior from `get_file_structure`; it is metadata only.
 
 ## One-Sentence Summary
 

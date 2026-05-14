@@ -621,6 +621,30 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "get_file_structure",
+            "description": (
+                "Return a structured overview of one indexed source file using index metadata only. "
+                "This includes module metadata, symbol counts, data declaration counts, diagnostics, "
+                "section ranges, and an ordered outline. This does not analyze code semantics."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "includeOutline": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include ordered symbol/data outline items.",
+                    },
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -1083,6 +1107,23 @@ class CodeIndexTools:
         )
         return make_json_text_result(result)
 
+
+    def get_file_structure(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        include_outline = optional_bool(arguments, "includeOutline", True)
+
+        result = self.index.get_file_structure(file)
+
+        if result is None:
+            return make_text_result(f"File not found: {file}", is_error=True)
+
+        if not include_outline:
+            result = dict(result)
+            result.pop("outline", None)
+
+        return make_json_text_result(result)
+
+
 # ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
@@ -1150,19 +1191,20 @@ class McpServer:
             "read_symbol": self.tools.read_symbol,
             "read_range": self.tools.read_range,
             "list_file_symbols": self.tools.list_file_symbols,
-            "find_module": self.tools.find_module,
-            "list_module_files": self.tools.list_module_files,
             "find_files": self.tools.find_files,
             "find_symbols_glob": self.tools.find_symbols_glob,
-            "search_modules": self.tools.search_modules,      
-            "get_module_map_summary": self.tools.get_module_map_summary,
-            "get_module_info": self.tools.get_module_info,
-            "list_module_imports": self.tools.list_module_imports,
-            "list_module_imported_by": self.tools.list_module_imported_by,
-            "get_module_tree": self.tools.get_module_tree,
             "find_data": self.tools.find_data,
             "list_type_members": self.tools.list_type_members,
             "read_data": self.tools.read_data,
+            "search_modules": self.tools.search_modules,      
+            "get_module_map_summary": self.tools.get_module_map_summary,
+            "get_module_info": self.tools.get_module_info,
+            "find_module": self.tools.find_module,
+            "list_module_files": self.tools.list_module_files,
+            "list_module_imports": self.tools.list_module_imports,
+            "list_module_imported_by": self.tools.list_module_imported_by,
+            "get_module_tree": self.tools.get_module_tree,
+            "get_file_structure": self.tools.get_file_structure,
             "get_symbol_leading_comment": self.tools.get_symbol_leading_comment,
             "get_data_leading_comment": self.tools.get_data_leading_comment,
             "get_file_header_comment": self.tools.get_file_header_comment,
