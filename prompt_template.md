@@ -250,6 +250,8 @@ The indexer does not provide a precomputed call graph. Build the exploration pat
 5. Repeat only as needed.
 
 Do not follow every call automatically. Follow only calls needed for the user's question.
+Do not describe metadata/signature matches as references. Use wording like
+"appears in indexed signatures" unless an actual source range was read and the usage was observed.
 
 ## Finding How an Imported Module Is Used
 
@@ -351,6 +353,19 @@ list_type_members({"container": "Editor"})
 
 Then, if needed:
 find_symbol({"query": "ScrollBar::SetPosition"})
+
+## Type Alias / Typedef Lookup Rules
+
+`type_alias`, `type_alias_template`, and `typedef_declaration` are indexed as symbols.
+
+When a function signature contains a project-looking alias type, use `find_symbol`
+or `find_declaration` to locate the alias before classifying it as external.
+
+Example:
+
+```text
+Shared::UI::Themed::ScrollBars::PFNSetScrollInfo originalProc
+```
 
 ## Preferred Member Lookup Workflow
 
