@@ -161,6 +161,11 @@ def _extract_function_name_from_signature(signature: str) -> str | None:
 
 
 def derive_short_name(symbol: dict[str, Any]) -> str | None:
+    existing = symbol.get("shortName") or symbol.get("name")
+
+    if isinstance(existing, str) and existing:
+        return existing
+
     symbol_type = symbol.get("type", "")
     signature = str(symbol.get("signature", ""))
 
@@ -302,8 +307,8 @@ def symbol_ref_from_file_symbol(
     file_index: dict[str, Any],
     symbol: dict[str, Any],
 ) -> dict[str, Any]:
-    short_name = derive_short_name(symbol)
-    qualified_name = qualify_name(symbol.get("container"), short_name)
+    short_name = symbol.get("shortName") or derive_short_name(symbol)
+    qualified_name = symbol.get("qualifiedName") or qualify_name(symbol.get("container"), short_name)
 
     return {
         "symbolId": symbol["symbolId"],
