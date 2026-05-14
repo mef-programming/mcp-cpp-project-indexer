@@ -1,0 +1,974 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import traceback
+import os
+from pathlib import Path
+from typing import Any, Callable
+
+from cpp_project_index import LoadedProjectIndex
+
+
+SERVER_NAME = "vs-project-indexer"
+SERVER_VERSION = "0.1"
+DEFAULT_PROJECT_ROOT = Path(
+    os.environ.get("MCP_CPP_PROJECT_ROOT", Path.cwd())
+)
+
+DEFAULT_INDEX_ROOT = Path(
+    os.environ.get(
+        "MCP_CPP_INDEX_ROOT",
+        str(DEFAULT_PROJECT_ROOT / ".mcp-cpp-project-indexer"),
+    )
+)
+
+# ---------------------------------------------------------------------------
+# Small MCP/JSON-RPC stdio server
+# ---------------------------------------------------------------------------
+
+class McpError(Exception):
+    def __init__(self, code: int, message: str, data: Any | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.data = data
+
+
+def json_dumps(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def make_text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": text,
+            }
+        ],
+        "isError": is_error,
+    }
+
+
+def make_json_text_result(data: Any, *, is_error: bool = False) -> dict[str, Any]:
+    return make_text_result(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        is_error=is_error,
+    )
+
+
+def write_message(message: dict[str, Any]) -> None:
+    sys.stdout.write(json_dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+def read_messages():
+    for line in sys.stdin:
+        line = line.strip()
+
+        if not line:
+            continue
+
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError as exc:
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32700,
+                        "message": f"Parse error: {exc}",
+                    },
+                }
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tool schemas
+# ---------------------------------------------------------------------------
+
+def tool_definitions() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "get_project_summary",
+            "description": "Return high-level counts for the loaded C++ routing index. This does not analyze code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "find_symbol",
+            "description": (
+                "Find C++ project symbols by name metadata. "
+                "Use this for functions, methods, classes, structs, enums, constructors, "
+                "destructors, operators, and namespaces. "
+                "The required argument is 'query'. "
+                "Searches symbol metadata only: shortName, qualifiedName/search aliases, "
+                "and fallback signature substring. "
+                "It does not read source code, resolve overloads, analyze behavior, "
+                "find references, or build call graphs. "
+                "After selecting a result, call read_symbol(symbolId) to read the exact source range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Symbol name or qualified name. Examples: "
+                            "'_OnScroll', 'Editor::_OnScroll', "
+                            "'SmartFTP::TextEditor::View::Controls::Editor::_OnScroll', "
+                            "'operator=', 'GetHWND'."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Compatibility alias for query. Prefer 'query'."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "find_declaration",
+            "description": (
+                "Find likely declaration/container symbols for a C++ symbol query. "
+                "Use this when the user specifically asks for a declaration. "
+                "The required argument is 'query'. "
+                "This is still metadata-only and does not read source code. "
+                "If multiple overloads are returned, read the candidate signatures/ranges "
+                "and disambiguate from context."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Symbol name or qualified name. Examples: "
+                            "'OnNotifyReflect', 'Editor::OnNotifyReflect'."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Compatibility alias for query. Prefer 'query'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "read_symbol",
+            "description": "Read original source lines for a symbolId, with absolute line numbers. This is a read-only range operation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Symbol id returned by find_symbol/list_file_symbols.",
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2000,
+                        "default": 500,
+                        "description": "Safety cap. If the symbol range is larger, the output is truncated.",
+                    },
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "read_range",
+            "description": "Read original source lines from a fileId or project-relative path, with absolute line numbers.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "startLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "endLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "maxLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2000,
+                        "default": 500,
+                    },
+                },
+                "required": ["file", "startLine", "endLine"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_file_symbols",
+            "description": "List routing symbols for one fileId or project-relative path. Does not read source code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 200,
+                    },
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "find_module",
+            "description": "Find files that define a C++20 module or module partition.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                        "description": "Full module name, e.g. uiframework.Elements:ElementImpl.",
+                    }
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_module_files",
+            "description": (
+                "Return files that define a C++20 module or module partition. "
+                "The input must be a module name using C++20 module syntax, e.g. "
+                "'SmartFTP.TextEditor:View.Controls.Editor'. "
+                "Do not pass C++ namespaces such as 'SmartFTP::TextEditor::View::Controls'. "
+                "For namespaces/classes/functions, use find_symbol."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                    }
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "find_files",
+            "description": (
+                "Find indexed files by glob pattern over project-relative paths. "
+                "Use this when you know a filename or path pattern. "
+                "This does not search source contents."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern, e.g. '*Editor*', '*/TextEditor/*.ixx'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100
+                    }
+                },
+                "required": ["pattern"],
+                "additionalProperties": False
+            }
+        },
+        {
+            "name": "find_symbols_glob",
+            "description": (
+                "Find symbols by glob pattern over shortName, qualifiedName, container, "
+                "signature, and relativePath. This searches index metadata only, not source code."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern, e.g. '*OnNotify*', 'SmartFTP::*::Editor::*'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100
+                    }
+                },
+                "required": ["pattern"],
+                "additionalProperties": False
+            }
+        },
+        {
+            "name": "search_modules",
+            "description": (
+                "Find C++20 modules by glob pattern over module names. "
+                "Use C++20 module syntax, e.g. '*.TextEditor:*'. "
+                "Do not pass C++ namespaces with '::'."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern over module names, e.g. '*.TextEditor:*'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100
+                    }
+                },
+                "required": ["pattern"],
+                "additionalProperties": False
+            }
+        },
+        {
+            "name": "get_module_map_summary",
+            "description": "Return summary counts for module_map.json. Metadata only; no source code is read.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_module_info",
+            "description": (
+                "Return module metadata for one exact C++20 module name, including files, "
+                "imports and importedBy. Do not pass C++ namespaces with '::'."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                        "description": "Exact C++20 module name, e.g. SmartFTP.Shell.Browser:Impl.",
+                    }
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_module_imports",
+            "description": "List direct imports of one exact C++20 module. Metadata only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                        "description": "Exact C++20 module name.",
+                    }
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_module_imported_by",
+            "description": "List modules that directly import one exact C++20 module. Metadata only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "moduleName": {
+                        "type": "string",
+                        "description": "Exact C++20 module name.",
+                    }
+                },
+                "required": ["moduleName"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_module_tree",
+            "description": "Return a bounded C++20 module name tree from module_map.json. Metadata only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "maxDepth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 4,
+                    }
+                },
+                "additionalProperties": False,
+            },
+        },        
+    ]
+
+
+def _trim_tree(node: dict[str, Any], *, max_depth: int, depth: int = 0) -> dict[str, Any]:
+    result = {
+        "name": node.get("name", ""),
+        "fullName": node.get("fullName", ""),
+        "modules": node.get("modules", []),
+    }
+
+    if depth >= max_depth:
+        result["childrenTruncated"] = len(node.get("children", []))
+        return result
+
+    result["children"] = [
+        _trim_tree(child, max_depth=max_depth, depth=depth + 1)
+        for child in node.get("children", [])
+    ]
+
+    return result
+    
+
+# ---------------------------------------------------------------------------
+# Tool implementation
+# ---------------------------------------------------------------------------
+
+class CodeIndexTools:
+    def __init__(self, *, project_root: Path, index_root: Path) -> None:
+        self.project_root = project_root
+        self.index_root = index_root
+        self.index = LoadedProjectIndex(index_root)
+        self.module_map_path = index_root / "module_map.json"
+        self.module_map: dict[str, Any] | None = None
+
+        if self.module_map_path.exists():
+            self.module_map = json.loads(
+                self.module_map_path.read_text(encoding="utf-8")
+            )
+
+    def require_module_map(self) -> dict[str, Any]:
+        if self.module_map is None:
+            raise McpError(
+                -32001,
+                (
+                    "module_map.json not found. Build it first with: "
+                    f"python build_module_map.py --index-root {self.index_root}"
+                ),
+            )
+
+        return self.module_map
+                
+    def get_project_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        counts = self.index.manifest.get("counts", {})
+        return make_json_text_result(
+            {
+                "schema": self.index.manifest.get("schema"),
+                "projectRoot": self.project_root.as_posix(),
+                "indexRoot": self.index_root.as_posix(),
+                "counts": counts,
+            }
+        )
+
+    def find_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = require_query(arguments)
+        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=100)
+        results = self.index.find_symbol(query, limit=limit)
+        return make_json_text_result(results)
+
+    def find_declaration(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = require_query(arguments)
+        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=100)
+        candidates = self.index.find_symbol(query, limit=limit * 3)
+
+        declaration_rank = {
+            "class": 0,
+            "struct": 0,
+            "enum": 0,
+            "namespace": 1,
+            "class_declaration": 1,
+            "struct_declaration": 1,
+            "constructor_declaration": 1,
+            "destructor_declaration": 1,
+            "operator_declaration": 1,
+            "method_declaration": 1,
+            "function_declaration": 1,
+            "constructor": 2,
+            "destructor": 2,
+            "operator": 2,
+            "method": 2,
+            "function": 2,
+        }
+
+        candidates.sort(
+            key=lambda item: (
+                declaration_rank.get(str(item.get("type")), 99),
+                str(item.get("qualifiedName") or item.get("shortName") or ""),
+                str(item.get("relativePath") or ""),
+                int(item.get("startLine") or 0),
+            )
+        )
+        return make_json_text_result(candidates[:limit])
+
+    def read_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=2000)
+        symbol = self.index.symbol_by_id.get(symbol_id)
+
+        if symbol is None:
+            return make_text_result(f"Symbol not found: {symbol_id}", is_error=True)
+
+        start_line = int(symbol["startLine"])
+        end_line = int(symbol["endLine"])
+        effective_end = min(end_line, start_line + max_lines - 1)
+        code = self.index.read_range(
+            project_root=self.project_root,
+            file=symbol["fileId"],
+            start_line=start_line,
+            end_line=effective_end,
+        )
+
+        header = {
+            "symbolId": symbol_id,
+            "fileId": symbol["fileId"],
+            "relativePath": symbol["relativePath"],
+            "type": symbol["type"],
+            "qualifiedName": symbol.get("qualifiedName"),
+            "startLine": start_line,
+            "endLine": end_line,
+            "returnedStartLine": start_line,
+            "returnedEndLine": effective_end,
+            "truncated": effective_end < end_line,
+        }
+
+        return make_text_result(
+            json.dumps(header, indent=2, ensure_ascii=False)
+            + "\n\nSOURCE:\n"
+            + code
+        )
+
+    def read_range(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        start_line = require_int(arguments, "startLine")
+        end_line = require_int(arguments, "endLine")
+        max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=2000)
+
+        if end_line < start_line:
+            raise McpError(-32602, "endLine must be >= startLine")
+
+        effective_end = min(end_line, start_line + max_lines - 1)
+        code = self.index.read_range(
+            project_root=self.project_root,
+            file=file,
+            start_line=start_line,
+            end_line=effective_end,
+        )
+
+        header = {
+            "file": file,
+            "requestedStartLine": start_line,
+            "requestedEndLine": end_line,
+            "returnedStartLine": start_line,
+            "returnedEndLine": effective_end,
+            "truncated": effective_end < end_line,
+        }
+
+        return make_text_result(
+            json.dumps(header, indent=2, ensure_ascii=False)
+            + "\n\nSOURCE:\n"
+            + code
+        )
+
+    def list_file_symbols(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        limit = clamp_int(arguments.get("limit", 200), minimum=1, maximum=1000)
+        results = self.index.list_file_symbols(file)[:limit]
+        return make_json_text_result(results)
+
+    def find_module(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_name = require_string(arguments, "moduleName")
+
+        if "::" in module_name:
+            return make_json_text_result(
+                {
+                    "error": "namespace_passed_to_module_lookup",
+                    "message": (
+                        "This looks like a C++ namespace, not a C++20 module name. "
+                        "Use find_symbol for namespaces/classes/functions, or pass "
+                        "a real module name such as SmartFTP.TextEditor:View.Controls.Editor."
+                    ),
+                    "query": module_name,
+                    "results": [],
+                },
+                is_error=False,
+            )
+
+        return make_json_text_result(self.index.find_module(module_name))
+
+    def list_module_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.find_module(arguments)
+
+    def find_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        pattern = require_string(arguments, "pattern")
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
+        return make_json_text_result(self.index.find_files(pattern, limit=limit))
+
+    def find_symbols_glob(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        pattern = require_string(arguments, "pattern")
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
+        return make_json_text_result(self.index.find_symbols_glob(pattern, limit=limit))
+
+    def search_modules(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        pattern = require_string(arguments, "pattern")
+
+        if "::" in pattern:
+            return make_json_text_result(
+                {
+                    "error": "namespace_passed_to_module_glob",
+                    "message": (
+                        "This looks like a C++ namespace pattern, not a C++20 module pattern. "
+                        "Use find_symbols_glob for namespaces/classes/functions."
+                    ),
+                    "pattern": pattern,
+                    "results": [],
+                }
+            )
+
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
+        return make_json_text_result(self.index.search_modules(pattern, limit=limit))
+
+    def get_module_map_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_map = self.require_module_map()
+
+        return make_json_text_result(
+            {
+                "schema": module_map.get("schema"),
+                "projectRoot": module_map.get("projectRoot"),
+                "counts": module_map.get("counts", {}),
+                "path": self.module_map_path.as_posix(),
+            }
+        )
+
+    def get_module_info(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_name = require_string(arguments, "moduleName")
+
+        if "::" in module_name:
+            return make_json_text_result(
+                {
+                    "error": "namespace_passed_to_module_lookup",
+                    "message": (
+                        "This looks like a C++ namespace, not a C++20 module name. "
+                        "Use find_symbol/find_symbols_glob for namespaces/classes/functions."
+                    ),
+                    "query": module_name,
+                    "result": None,
+                }
+            )
+
+        module_map = self.require_module_map()
+        modules = module_map.get("modules", {})
+        result = modules.get(module_name)
+
+        if result is None:
+            return make_json_text_result(
+                {
+                    "query": module_name,
+                    "result": None,
+                }
+            )
+
+        return make_json_text_result(result)
+
+    def list_module_imports(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_name = require_string(arguments, "moduleName")
+        module_map = self.require_module_map()
+        entry = module_map.get("modules", {}).get(module_name)
+
+        if entry is None:
+            return make_json_text_result(
+                {
+                    "query": module_name,
+                    "imports": [],
+                    "found": False,
+                }
+            )
+
+        return make_json_text_result(
+            {
+                "moduleName": module_name,
+                "imports": entry.get("imports", []),
+                "found": True,
+            }
+        )
+
+    def list_module_imported_by(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        module_name = require_string(arguments, "moduleName")
+        module_map = self.require_module_map()
+        entry = module_map.get("modules", {}).get(module_name)
+
+        if entry is None:
+            return make_json_text_result(
+                {
+                    "query": module_name,
+                    "importedBy": [],
+                    "found": False,
+                }
+            )
+
+        return make_json_text_result(
+            {
+                "moduleName": module_name,
+                "importedBy": entry.get("importedBy", []),
+                "found": True,
+            }
+        )
+
+
+    def get_module_tree(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        max_depth = clamp_int(arguments.get("maxDepth", 4), minimum=1, maximum=20)
+        module_map = self.require_module_map()
+
+        return make_json_text_result(
+            {
+                "maxDepth": max_depth,
+                "tree": _trim_tree(
+                    module_map.get("tree", {}),
+                    max_depth=max_depth,
+                ),
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+
+def require_string(arguments: dict[str, Any], key: str) -> str:
+    value = arguments.get(key)
+
+    if not isinstance(value, str) or not value:
+        raise McpError(-32602, f"Missing or invalid string argument: {key}")
+
+    return value
+
+
+def require_int(arguments: dict[str, Any], key: str) -> int:
+    value = arguments.get(key)
+
+    if not isinstance(value, int):
+        raise McpError(-32602, f"Missing or invalid integer argument: {key}")
+
+    return value
+
+
+def require_query(arguments: dict[str, Any]) -> str:
+    value = arguments.get("query")
+
+    if value is None:
+        value = arguments.get("name")
+
+    if not isinstance(value, str) or not value:
+        raise McpError(
+            -32602,
+            "Missing or invalid symbol query. Use argument 'query'. "
+            "'name' is accepted only as a compatibility alias.",
+        )
+
+    return value
+
+
+def clamp_int(value: Any, *, minimum: int, maximum: int) -> int:
+    if not isinstance(value, int):
+        value = minimum
+
+    return max(minimum, min(maximum, value))
+
+
+# ---------------------------------------------------------------------------
+# MCP dispatcher
+# ---------------------------------------------------------------------------
+
+class McpServer:
+    def __init__(self, tools: CodeIndexTools) -> None:
+        self.tools = tools
+        self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            "get_project_summary": self.tools.get_project_summary,
+            "find_symbol": self.tools.find_symbol,
+            "find_declaration": self.tools.find_declaration,
+            "read_symbol": self.tools.read_symbol,
+            "read_range": self.tools.read_range,
+            "list_file_symbols": self.tools.list_file_symbols,
+            "find_module": self.tools.find_module,
+            "list_module_files": self.tools.list_module_files,
+            "find_files": self.tools.find_files,
+            "find_symbols_glob": self.tools.find_symbols_glob,
+            "search_modules": self.tools.search_modules,      
+            "get_module_map_summary": self.tools.get_module_map_summary,
+            "get_module_info": self.tools.get_module_info,
+            "list_module_imports": self.tools.list_module_imports,
+            "list_module_imported_by": self.tools.list_module_imported_by,
+            "get_module_tree": self.tools.get_module_tree,
+        }
+
+    def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        method = request.get("method")
+        request_id = request.get("id")
+        params = request.get("params") or {}
+
+        # Notifications have no id. For initialized/shutdown notifications we
+        # should not send a response.
+        if request_id is None and method in {"notifications/initialized", "notifications/cancelled"}:
+            return None
+
+        try:
+            result = self.dispatch(method, params)
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": result,
+            }
+        except McpError as exc:
+            error: dict[str, Any] = {
+                "code": exc.code,
+                "message": exc.message,
+            }
+
+            if exc.data is not None:
+                error["data"] = exc.data
+
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": error,
+            }
+        except Exception as exc:  # noqa: BLE001 - keep server alive and surface error to host.
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32603,
+                    "message": str(exc),
+                    "data": traceback.format_exc(),
+                },
+            }
+
+    def dispatch(self, method: str, params: dict[str, Any]) -> Any:
+        if method == "initialize":
+            requested_protocol = params.get("protocolVersion") or "2024-11-05"
+            return {
+                "protocolVersion": requested_protocol,
+                "capabilities": {
+                    "tools": {},
+                },
+                "serverInfo": {
+                    "name": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                },
+            }
+
+        if method == "ping":
+            return {}
+
+        if method == "tools/list":
+            return {
+                "tools": tool_definitions(),
+            }
+
+        if method == "tools/call":
+            tool_name = params.get("name")
+            arguments = params.get("arguments") or {}
+
+            if not isinstance(tool_name, str):
+                raise McpError(-32602, "tools/call requires string params.name")
+
+            if not isinstance(arguments, dict):
+                raise McpError(-32602, "tools/call requires object params.arguments")
+
+            handler = self.tool_handlers.get(tool_name)
+
+            if handler is None:
+                raise McpError(-32601, f"Unknown tool: {tool_name}")
+
+            return handler(arguments)
+
+        # Keep optional MCP surfaces empty but valid.
+        if method in {"resources/list", "prompts/list"}:
+            key = "resources" if method == "resources/list" else "prompts"
+            return {key: []}
+
+        raise McpError(-32601, f"Method not found: {method}")
+
+    def run(self) -> None:
+        for request in read_messages():
+            response = self.handle_request(request)
+
+            if response is not None:
+                write_message(response)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "MCP stdio server for vs-project-indexer. "
+            "Provides routing/read tools only; it does not analyze code."
+        )
+    )
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=DEFAULT_PROJECT_ROOT,
+        help="Project root used for read_range/read_symbol.",
+    )
+    parser.add_argument(
+        "--index-root",
+        type=Path,
+        default=DEFAULT_INDEX_ROOT,
+        help="Directory containing manifest.json, names.json, modules.json, symbols.jsonl and files/.",
+    )
+    args = parser.parse_args()
+
+    if not args.project_root.exists():
+        raise SystemExit(f"Project root not found: {args.project_root}")
+
+    if not (args.index_root / "manifest.json").exists():
+        raise SystemExit(
+            "Index not found. Build it first, for example:\n"
+            f"python build_project_index.py --root {args.project_root} --output-root {args.index_root}"
+        )
+
+    tools = CodeIndexTools(
+        project_root=args.project_root,
+        index_root=args.index_root,
+    )
+    server = McpServer(tools)
+    server.run()
+
+
+if __name__ == "__main__":
+    main()
