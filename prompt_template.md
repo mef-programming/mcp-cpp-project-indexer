@@ -300,6 +300,58 @@ Observed call trace:
 
 Use phrases like `on-demand call trace` or `source-read call graph`. Avoid claiming `complete call graph` unless the trace is actually exhaustive.
 
+## Data / Member Lookup Rules
+
+The data index contains conservative C++ data/value declarations:
+
+- class/struct fields
+- static data members
+- namespace/global variables
+- namespace constants
+- enum values
+- variable templates
+- concepts
+
+It does not resolve types. `typeText` is a best-effort source string only.
+
+When analyzing a method body and several member variables are referenced, prefer:
+
+```text
+list_type_members({"container": "Widget"})
+```
+over multiple individual calls such as:
+
+```text
+  find_data({"query": "_state"})
+  find_data({"query": "_handle"})
+  find_data({"query": "_items"})
+```
+Use find_data when:
+
+the containing type is unknown
+the declaration is namespace/global data
+the declaration may be in an anonymous namespace
+you want to find the same member name across multiple classes
+
+If find_data returns multiple results, prefer exact name matches first. Substring fallback may return similarly named declarations.
+
+Use read_data(dataId) only when the original declaration line is needed. Often typeText, signature, relativePath, and startLine from find_data or list_type_members are enough.
+
+Do not treat typeText as resolved type information. Use it only as a hint to decide whether a project-symbol lookup is useful.
+
+```text
+  _ScrollBars[nBar].SetPosition(...)
+```
+
+list_type_members({"container": "Editor"})
+
+```text
+-> _ScrollBars typeText: DirectUI::Controls::ScrollBar[2]
+```
+
+Then, if needed:
+find_symbol({"query": "ScrollBar::SetPosition"})
+
 ## External/API/Macro Rules
 
 Do not query project tools for obvious external APIs unless the user asks.
