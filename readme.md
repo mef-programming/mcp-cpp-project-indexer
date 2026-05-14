@@ -174,7 +174,17 @@ Names: 95674
 Modules: 3774
 Diagnostics: 7
 ```
+## Incremental update
 
+After a full index build, changed files can be detected and re-indexed incrementally.
+
+Dry-run:
+
+```powershell
+python <indexer-root>\update_project_index.py `
+  --root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --dry-run
 Diagnostics are non-fatal. They indicate best-effort structural warnings for individual files.
 
 Print diagnostics summary:
