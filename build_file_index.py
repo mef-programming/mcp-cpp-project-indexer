@@ -125,6 +125,7 @@ def main() -> None:
         print("Imports:", summary["imports"])
         print("Exports:", summary["exports"])
         print("Symbols:", summary["symbols"])
+        print("Data:", summary["data"])
 
         if args.emit_debug:
             print("Scope intervals:", summary["scopeIntervals"])

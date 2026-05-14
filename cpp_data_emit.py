@@ -241,6 +241,55 @@ def storage_from_tokens(tokens: list[Token]) -> list[str]:
 def remove_storage_tokens(tokens: list[Token]) -> list[Token]:
     return [token for token in tokens if token.value not in STORAGE_SPECIFIERS]
 
+def split_common_type_and_first_declarator_prefix(
+    tokens_before_first_name: list[Token],
+) -> tuple[list[Token], list[Token]]:
+    """Split common declaration type from first declarator pointer/ref prefix.
+
+    C/C++ pointer and reference markers belong to the declarator, not to the
+    common declaration specifier sequence:
+
+        int *a, b;
+
+    `a` is `int*`, but `b` is `int`. For the first declarator we therefore
+    move a trailing pointer/ref suffix from the common prefix into the first
+    declarator prefix.
+
+    This is intentionally conservative. Plain trailing `const` in `int const a`
+    stays part of the common type. `const`/`volatile` are only moved when they
+    are attached to a trailing pointer/ref declarator suffix, e.g.
+    `int * const a`.
+    """
+
+    if not tokens_before_first_name:
+        return [], []
+
+    index = len(tokens_before_first_name)
+
+    cv_start = index
+
+    while cv_start > 0 and tokens_before_first_name[cv_start - 1].value in {"const", "volatile"}:
+        cv_start -= 1
+
+    if cv_start == index:
+        pointer_probe = index - 1
+    else:
+        pointer_probe = cv_start - 1
+
+    if pointer_probe < 0 or tokens_before_first_name[pointer_probe].value not in {"*", "&", "&&"}:
+        return tokens_before_first_name, []
+
+    split_index = pointer_probe
+
+    while split_index > 0:
+        value = tokens_before_first_name[split_index - 1].value
+
+        if value not in {"*", "&", "&&", "const", "volatile"}:
+            break
+
+        split_index -= 1
+
+    return tokens_before_first_name[:split_index], tokens_before_first_name[split_index:]
 
 def is_top_level_value(tokens: list[Token], index: int, value: str) -> bool:
     paren_depth = 0
@@ -706,12 +755,12 @@ def declarator_array_suffix(part: list[Token], name_index: int) -> str:
 def type_text_for_declarator(
     *,
     base_type_tokens: list[Token],
+    declarator_prefix_tokens: list[Token],
     part: list[Token],
     name_index: int,
 ) -> str:
-    local_prefix = part[:name_index]
     array_suffix = declarator_array_suffix(part, name_index)
-    type_tokens = remove_storage_tokens([*base_type_tokens, *local_prefix])
+    type_tokens = remove_storage_tokens([*base_type_tokens, *declarator_prefix_tokens])
     type_text = tokens_to_text(type_tokens).strip()
 
     if array_suffix:
@@ -757,7 +806,9 @@ def classify_data_statement(
         return []
 
     first_name_index, _ = first_name
-    base_type_tokens = parts[0][:first_name_index]
+    base_type_tokens, first_declarator_prefix_tokens = split_common_type_and_first_declarator_prefix(
+        parts[0][:first_name_index]
+    )
     storage = storage_from_tokens(rest)
 
     candidates: list[DataCandidate] = []
@@ -790,12 +841,13 @@ def classify_data_statement(
             continue
 
         if part_index == 0:
-            local_base_type_tokens = base_type_tokens
+            declarator_prefix_tokens = first_declarator_prefix_tokens
         else:
-            local_base_type_tokens = base_type_tokens
+            declarator_prefix_tokens = part[:name_index]
 
         type_text = type_text_for_declarator(
-            base_type_tokens=local_base_type_tokens,
+            base_type_tokens=base_type_tokens,
+            declarator_prefix_tokens=declarator_prefix_tokens,
             part=part,
             name_index=name_index,
         )

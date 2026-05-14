@@ -18,6 +18,8 @@ from cpp_project_index import (
     file_index_output_path,
     search_aliases_for_symbol,
     symbol_ref_from_file_symbol,
+    data_ref_from_file_data,
+    search_aliases_for_data,
 )
 
 
@@ -43,6 +45,8 @@ class UpdateResult:
     files: int
     symbols: int
     names: int
+    data: int
+    data_names: int
     modules: int
     diagnostics: int
     state_initialized: bool
@@ -259,6 +263,8 @@ def aggregate_project_index(
     manifest_files: list[dict[str, Any]] = []
     symbols: list[dict[str, Any]] = []
     names: dict[str, list[str]] = defaultdict(list)
+    data_items: list[dict[str, Any]] = []
+    data_names: dict[str, list[str]] = defaultdict(list)
     modules: dict[str, list[str]] = defaultdict(list)
     diagnostics: list[dict[str, Any]] = []
 
@@ -274,6 +280,7 @@ def aggregate_project_index(
                 "unitKind": file_index["module"]["unitKind"],
                 "fullModuleName": file_index["module"].get("fullModuleName"),
                 "symbols": len(file_index.get("symbols", [])),
+                "data": len(file_index.get("data", [])),
                 "diagnostics": len(file_index.get("diagnostics", [])),
             }
         )
@@ -303,6 +310,17 @@ def aggregate_project_index(
                 if ref["symbolId"] not in names[alias]:
                     names[alias].append(ref["symbolId"])
 
+        for data_item in file_index.get("data", []):
+            ref = data_ref_from_file_data(
+                file_index=file_index,
+                data_item=data_item,
+            )
+            data_items.append(ref)
+
+            for alias in search_aliases_for_data(data_item):
+                if ref["dataId"] not in data_names[alias]:
+                    data_names[alias].append(ref["dataId"])
+
     symbols.sort(
         key=lambda item: (
             item["qualifiedName"] or item["shortName"] or "",
@@ -313,6 +331,15 @@ def aggregate_project_index(
     )
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
 
+    data_items.sort(
+        key=lambda item: (
+            item["qualifiedName"] or item["name"] or "",
+            item["relativePath"],
+            item["startLine"],
+            item["endLine"],
+        )
+    )
+
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
         "root": root.resolve().as_posix(),
@@ -322,6 +349,8 @@ def aggregate_project_index(
             "files": len(manifest_files),
             "symbols": len(symbols),
             "names": len(names),
+            "data": len(data_items),
+            "dataNames": len(data_names),
             "modules": len(modules),
             "diagnostics": len(diagnostics),
         },
@@ -335,6 +364,12 @@ def aggregate_project_index(
     with (index_root / "symbols.jsonl").open("w", encoding="utf-8") as handle:
         for symbol in symbols:
             handle.write(json.dumps(symbol, ensure_ascii=False) + "\n")
+
+    save_json(index_root / "data_names.json", dict(sorted(data_names.items(), key=lambda item: item[0].casefold())))
+
+    with (index_root / "data.jsonl").open("w", encoding="utf-8") as handle:
+        for data_item in data_items:
+            handle.write(json.dumps(data_item, ensure_ascii=False) + "\n")
 
     return manifest
 
@@ -433,6 +468,8 @@ def run_update(
             files=0,
             symbols=0,
             names=0,
+            data=0,
+            data_names=0,
             modules=0,
             diagnostics=0,
             state_initialized=plan.state_initialized,
@@ -516,6 +553,8 @@ def run_update(
         files=counts["files"],
         symbols=counts["symbols"],
         names=counts["names"],
+        data=counts.get("data", 0),
+        data_names=counts.get("dataNames", 0),
         modules=counts["modules"],
         diagnostics=counts["diagnostics"],
         state_initialized=plan.state_initialized,
@@ -664,6 +703,8 @@ def main() -> int:
         "files": result.files,
         "symbols": result.symbols,
         "names": result.names,
+        "data": result.data,
+        "dataNames": result.data_names,
         "modules": result.modules,
         "diagnostics": result.diagnostics,
     }
@@ -684,6 +725,8 @@ def main() -> int:
         print("Files:      ", result.files)
         print("Symbols:    ", result.symbols)
         print("Names:      ", result.names)
+        print("Data:       ", result.data)
+        print("Data names: ", result.data_names)
         print("Modules:    ", result.modules)
         print("Diagnostics:", result.diagnostics)
         print("State:      ", update_state_path(index_root).as_posix())

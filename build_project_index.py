@@ -252,6 +252,10 @@ def main() -> None:
     print("Manifest:", summary["manifest"])
     print("Symbols JSONL:", summary["symbolsJsonl"])
     print("Names JSON:", summary["namesJson"])
+    print("Data:", result.data_count)
+    print("Data names:", result.data_names_count)
+    print("Data JSONL:", args.output_root / "data.jsonl")
+    print("Data names JSON:", args.output_root / "data_names.json")
     print("Modules JSON:", summary["modulesJson"])
     print("Diagnostics JSON:", summary["diagnosticsJson"])
 

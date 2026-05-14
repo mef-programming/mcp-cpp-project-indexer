@@ -27,7 +27,7 @@ from cpp_lexer import blank_comments_preserve_lines
 from cpp_module_scan import ModuleScanResult, scan_module_facts
 from cpp_structural_scan import StructuralScanResult, scan_structure
 from cpp_symbol_emit import emit_symbols_from_events, structural_events_to_json
-
+from cpp_data_emit import emit_data_declarations
 
 # ---------------------------------------------------------------------------
 # Export entries derived from structural events
@@ -192,6 +192,13 @@ def build_file_index(
         line_count=line_count,
     )
 
+    data_items, data_diagnostics = emit_data_declarations(
+        file_id=file_id,
+        lines=raw_lines,
+        structural_events=structural_scan.events,
+        module_info=module_scan.module,
+    )
+
     exports = merge_export_entries(
         module_scan.exports,
         export_entries_from_events(structural_scan.events),
@@ -201,6 +208,7 @@ def build_file_index(
         *module_scan.diagnostics,
         *structural_scan.diagnostics,
         *symbol_diagnostics,
+        *data_diagnostics,
     ]
 
     file_index = {
@@ -239,6 +247,7 @@ def build_file_index(
         "includes": module_scan.includes,
         "exports": exports,
         "symbols": symbols,
+        "data": data_items,
         "diagnostics": diagnostics_to_json(diagnostics),
     }
 
@@ -286,6 +295,7 @@ def summarize_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
         "imports": len(file_index.get("imports", [])),
         "exports": len(file_index.get("exports", [])),
         "symbols": len(file_index.get("symbols", [])),
+        "data": len(file_index.get("data", [])),
         "scopeIntervals": len(file_index.get("scopeIntervals", [])),
         "structuralEvents": len(file_index.get("structuralEvents", [])),
         "functionBodyRanges": len(file_index.get("functionBodyRanges", [])),

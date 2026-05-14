@@ -55,6 +55,8 @@ class ProjectIndexBuildResult:
     files_count: int
     symbols_count: int
     names_count: int
+    data_count: int
+    data_names_count: int
     modules_count: int
     diagnostics_count: int
 
@@ -236,6 +238,57 @@ def search_aliases_for_symbol(symbol: dict[str, Any]) -> list[str]:
     return aliases
 
 
+def data_ref_from_file_data(
+    *,
+    file_index: dict[str, Any],
+    data_item: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "dataId": data_item["dataId"],
+        "fileId": file_index["fileId"],
+        "relativePath": file_index["relativePath"],
+        "declarationKind": data_item["declarationKind"],
+        "scopeKind": data_item["scopeKind"],
+        "name": data_item["name"],
+        "qualifiedName": data_item.get("qualifiedName"),
+        "container": data_item.get("container"),
+        "startLine": data_item["startLine"],
+        "endLine": data_item["endLine"],
+        "signature": data_item["signature"],
+        "typeText": data_item.get("typeText", ""),
+        "storage": data_item.get("storage", []),
+        "initializerKind": data_item.get("initializerKind", "unknown"),
+    }
+
+
+def search_aliases_for_data(data_item: dict[str, Any]) -> list[str]:
+    aliases: list[str] = []
+
+    name = str(data_item.get("name") or "")
+    qualified_name = str(data_item.get("qualifiedName") or "")
+
+    if name:
+        aliases.append(name)
+
+    if qualified_name and qualified_name not in aliases:
+        aliases.append(qualified_name)
+
+    # Anonymous namespace convenience alias, same idea as symbol aliases.
+    if qualified_name and "::<anonymous" in qualified_name:
+        simplified = qualified_name
+        while "::<anonymous" in simplified:
+            prefix, rest = simplified.split("::<anonymous", 1)
+            after = rest.split(">", 1)
+            if len(after) != 2:
+                break
+            simplified = prefix + after[1]
+
+        if simplified and simplified not in aliases:
+            aliases.append(simplified)
+
+    return aliases
+
+
 # ---------------------------------------------------------------------------
 # Project index build
 # ---------------------------------------------------------------------------
@@ -291,6 +344,8 @@ def build_project_index(
     symbols: list[dict[str, Any]] = []
     names: dict[str, list[str]] = defaultdict(list)
     modules: dict[str, list[str]] = defaultdict(list)
+    data_items: list[dict[str, Any]] = []
+    data_names: dict[str, list[str]] = defaultdict(list)
     diagnostics: list[dict[str, Any]] = []
 
     for index, path in enumerate(source_files, start=1):
@@ -328,6 +383,7 @@ def build_project_index(
                 "unitKind": file_index["module"]["unitKind"],
                 "fullModuleName": file_index["module"].get("fullModuleName"),
                 "symbols": len(file_index.get("symbols", [])),
+                "data": len(file_index.get("data", [])),
                 "diagnostics": len(file_index.get("diagnostics", [])),
             }
         )
@@ -357,6 +413,17 @@ def build_project_index(
                 if ref["symbolId"] not in names[alias]:
                     names[alias].append(ref["symbolId"])
 
+        for data_item in file_index.get("data", []):
+            ref = data_ref_from_file_data(
+                file_index=file_index,
+                data_item=data_item,
+            )
+            data_items.append(ref)
+
+            for alias in search_aliases_for_data(data_item):
+                if ref["dataId"] not in data_names[alias]:
+                    data_names[alias].append(ref["dataId"])
+
     symbols.sort(
         key=lambda item: (
             item["qualifiedName"] or item["shortName"] or "",
@@ -367,6 +434,15 @@ def build_project_index(
     )
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
 
+    data_items.sort(
+        key=lambda item: (
+            item["qualifiedName"] or item["name"] or "",
+            item["relativePath"],
+            item["startLine"],
+            item["endLine"],
+        )
+    )
+
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
         "root": root.resolve().as_posix(),
@@ -376,6 +452,8 @@ def build_project_index(
             "files": len(manifest_files),
             "symbols": len(symbols),
             "names": len(names),
+            "data": len(data_items),
+            "dataNames": len(data_names),
             "modules": len(modules),
             "diagnostics": len(diagnostics),
         },
@@ -383,6 +461,7 @@ def build_project_index(
 
     save_json(output_root / "manifest.json", manifest)
     save_json(output_root / "names.json", dict(sorted(names.items(), key=lambda item: item[0].casefold())))
+    save_json(output_root / "data_names.json", dict(sorted(data_names.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "modules.json", dict(sorted(modules.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "diagnostics.json", diagnostics)
 
@@ -390,12 +469,18 @@ def build_project_index(
         for symbol in symbols:
             handle.write(json.dumps(symbol, ensure_ascii=False) + "\n")
 
+    with (output_root / "data.jsonl").open("w", encoding="utf-8") as handle:
+        for data_item in data_items:
+            handle.write(json.dumps(data_item, ensure_ascii=False) + "\n")
+
     return ProjectIndexBuildResult(
         root=root,
         output_root=output_root,
         files_count=len(manifest_files),
         symbols_count=len(symbols),
         names_count=len(names),
+        data_count=len(data_items),
+        data_names_count=len(data_names),
         modules_count=len(modules),
         diagnostics_count=len(diagnostics),
     )
@@ -425,6 +510,9 @@ class LoadedProjectIndex:
         self.symbol_by_id = {symbol["symbolId"]: symbol for symbol in self.symbols}
         self.file_by_id = {item["fileId"]: item for item in self.manifest["files"]}
         self.file_id_by_relative_path = {item["relativePath"]: item["fileId"] for item in self.manifest["files"]}
+        self.data = self._load_jsonl_if_exists(index_root / "data.jsonl")
+        self.data_names: dict[str, list[str]] = self._load_json_if_exists(index_root / "data_names.json", {})
+        self.data_by_id = {item["dataId"]: item for item in self.data}
 
     @staticmethod
     def _load_symbols(path: Path) -> list[dict[str, Any]]:
@@ -440,6 +528,32 @@ class LoadedProjectIndex:
                 result.append(json.loads(line))
 
         return result
+
+    @staticmethod
+    def _load_jsonl_if_exists(path: Path) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+
+        if not path.exists():
+            return result
+
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                result.append(json.loads(line))
+
+        return result
+
+
+    @staticmethod
+    def _load_json_if_exists(path: Path, default: Any) -> Any:
+        if not path.exists():
+            return default
+
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def load_file_index(self, file_id: str) -> dict[str, Any]:
         path = self.files_dir / f"{file_id}.json"
@@ -616,3 +730,110 @@ class LoadedProjectIndex:
                     return results
 
         return results
+
+    def find_data(
+        self,
+        query: str,
+        *,
+        container: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        direct_ids = self.data_names.get(query, [])
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def matches_container(item: dict[str, Any]) -> bool:
+            if not container:
+                return True
+
+            item_container = str(item.get("container") or "")
+            item_qualified_name = str(item.get("qualifiedName") or "")
+            container_folded = container.casefold()
+
+            return (
+                item_container.casefold() == container_folded
+                or item_container.casefold().endswith("::" + container_folded)
+                or item_qualified_name.casefold().startswith(container_folded + "::")
+            )
+
+        for data_id in direct_ids:
+            item = self.data_by_id.get(data_id)
+
+            if item is None or data_id in seen:
+                continue
+
+            if not matches_container(item):
+                continue
+
+            seen.add(data_id)
+            results.append(item)
+
+            if len(results) >= limit:
+                return results
+
+        query_folded = query.casefold()
+
+        for item in self.data:
+            data_id = item["dataId"]
+
+            if data_id in seen:
+                continue
+
+            if not matches_container(item):
+                continue
+
+            haystacks = [
+                str(item.get("name") or ""),
+                str(item.get("qualifiedName") or ""),
+                str(item.get("container") or ""),
+                str(item.get("signature") or ""),
+                str(item.get("typeText") or ""),
+            ]
+
+            if any(query_folded in value.casefold() for value in haystacks):
+                seen.add(data_id)
+                results.append(item)
+
+                if len(results) >= limit:
+                    break
+
+        return results
+
+
+    def list_type_members(self, container: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        container_folded = container.casefold()
+        results: list[dict[str, Any]] = []
+
+        for item in self.data:
+            item_container = str(item.get("container") or "")
+
+            if (
+                item_container.casefold() == container_folded
+                or item_container.casefold().endswith("::" + container_folded)
+            ):
+                results.append(item)
+
+                if len(results) >= limit:
+                    break
+
+        results.sort(
+            key=lambda item: (
+                int(item.get("startLine") or 0),
+                str(item.get("name") or ""),
+            )
+        )
+        return results
+
+
+    def read_data(self, *, project_root: Path, data_id: str) -> str:
+        item = self.data_by_id.get(data_id)
+
+        if item is None:
+            return ""
+
+        return self.read_range(
+            project_root=project_root,
+            file=item["fileId"],
+            start_line=int(item["startLine"]),
+            end_line=int(item["endLine"]),
+        )

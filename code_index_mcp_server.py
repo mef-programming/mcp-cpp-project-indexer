@@ -429,7 +429,84 @@ def tool_definitions() -> list[dict[str, Any]]:
                 },
                 "additionalProperties": False,
             },
-        },        
+        },
+        {
+            "name": "find_data",
+            "description": (
+                "Find indexed C++ data/value declarations by metadata. "
+                "Use this for class/struct fields, static data members, globals, "
+                "namespace constants, enum values, variable templates, and concepts. "
+                "This is metadata-only and does not resolve types. "
+                "After selecting a result, call read_data(dataId) to read the exact declaration range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Data/member name or qualified name, e.g. '_ScrollBars', 'Widget::_state'.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Compatibility alias for query. Prefer 'query'.",
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional containing class/struct/namespace to narrow the search.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_type_members",
+            "description": (
+                "List indexed data/value declarations directly contained by a class, struct, or namespace. "
+                "Use this to inspect member fields/constants after reading a method body. "
+                "Returns metadata only: name, typeText, signature and source range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "container": {
+                        "type": "string",
+                        "description": "Containing type or namespace, e.g. 'Example::Widget' or just 'Widget'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 500,
+                    },
+                },
+                "required": ["container"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "read_data",
+            "description": (
+                "Read original source lines for an indexed data/value declaration by dataId. "
+                "This is a read-only range operation."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dataId": {
+                        "type": "string",
+                        "description": "Data declaration id returned by find_data/list_type_members.",
+                    }
+                },
+                "required": ["dataId"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -760,6 +837,56 @@ class CodeIndexTools:
             }
         )
 
+    def find_data(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = require_query(arguments)
+        container = arguments.get("container")
+
+        if container is not None and not isinstance(container, str):
+            raise McpError(-32602, "container must be a string when provided")
+
+        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=500)
+        results = self.index.find_data(query, container=container, limit=limit)
+        return make_json_text_result(results)
+
+
+    def list_type_members(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        container = require_string(arguments, "container")
+        limit = clamp_int(arguments.get("limit", 500), minimum=1, maximum=1000)
+        results = self.index.list_type_members(container, limit=limit)
+        return make_json_text_result(results)
+
+
+    def read_data(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        data_id = require_string(arguments, "dataId")
+        item = self.index.data_by_id.get(data_id)
+
+        if item is None:
+            return make_text_result(f"Data declaration not found: {data_id}", is_error=True)
+
+        code = self.index.read_data(
+            project_root=self.project_root,
+            data_id=data_id,
+        )
+
+        header = {
+            "dataId": data_id,
+            "fileId": item["fileId"],
+            "relativePath": item["relativePath"],
+            "declarationKind": item.get("declarationKind"),
+            "scopeKind": item.get("scopeKind"),
+            "name": item.get("name"),
+            "qualifiedName": item.get("qualifiedName"),
+            "container": item.get("container"),
+            "typeText": item.get("typeText"),
+            "startLine": item.get("startLine"),
+            "endLine": item.get("endLine"),
+        }
+
+        return make_text_result(
+            json.dumps(header, indent=2, ensure_ascii=False)
+            + "\n\nSOURCE:\n"
+            + code
+        )
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -830,6 +957,9 @@ class McpServer:
             "list_module_imports": self.tools.list_module_imports,
             "list_module_imported_by": self.tools.list_module_imported_by,
             "get_module_tree": self.tools.get_module_tree,
+            "find_data": self.tools.find_data,
+            "list_type_members": self.tools.list_type_members,
+            "read_data": self.tools.read_data,
         }
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
