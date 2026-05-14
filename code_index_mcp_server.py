@@ -5,6 +5,7 @@ import json
 import sys
 import traceback
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -671,6 +672,22 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "default": False,
                     },
+                    "wholeWord": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Match only when the query is not adjacent to C/C++ identifier characters "
+                            "[A-Za-z0-9_]. This is lexical text matching, not semantic identifier resolution."
+                        ),
+                    },
+                    "useRegex": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Treat query as a Python regular expression. This is still raw source "
+                            "text search, not semantic C++ reference resolution."
+                        ),
+                    },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
@@ -1179,18 +1196,26 @@ class CodeIndexTools:
             raise McpError(-32602, "filePattern must be a string when provided")
 
         case_sensitive = optional_bool(arguments, "caseSensitive", False)
+        whole_word = optional_bool(arguments, "wholeWord", False)
+        use_regex = optional_bool(arguments, "useRegex", False)
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
         context_lines = clamp_int(arguments.get("contextLines", 0), minimum=0, maximum=20)
 
-        result = self.index.search_source(
+        try:
+            result = self.index.search_source(
             project_root=self.project_root,
             query=query,
             file=file,
             file_pattern=file_pattern,
             case_sensitive=case_sensitive,
+            whole_word=whole_word,
+            use_regex=use_regex,
             limit=limit,
             context_lines=context_lines,
         )
+        except re.error as exc:
+            raise McpError(-32602, f"Invalid regular expression: {exc}") from exc
+
         return make_json_text_result(result)
 
 

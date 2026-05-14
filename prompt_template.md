@@ -185,6 +185,11 @@ Use `search_source(query, file?, filePattern?, limit?, contextLines?)` when meta
 
 This is a raw line-based source search. It is not semantic C++ reference resolution.
 
+`wholeWord` uses C/C++ identifier-boundary matching for literal queries.
+`useRegex` treats query as a Python regular expression.
+
+Neither mode performs semantic reference resolution.
+
 It searches:
 
 - code
@@ -204,7 +209,9 @@ Prefer narrowing broad queries with file or filePattern.
 
 Use contextLines when the surrounding source helps classify the match:
 
+```text
 search_source({"query": "g_AtlasCache", "file": "...", "contextLines": 1})
+```
 
 Describe results as source text matches or occurrences, not as references.
 

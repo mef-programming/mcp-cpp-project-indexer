@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
+import os
+import time
+
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any,Callable
 from fnmatch import fnmatchcase
-
-import os
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from cpp_file_index import build_file_index
@@ -314,6 +315,28 @@ def normalize_jobs(jobs: int | None) -> int:
 
     return max(1, jobs)
 
+
+_IDENTIFIER_CHAR_PATTERN = r"[A-Za-z0-9_]"
+
+
+def compile_source_search_pattern(
+    *,
+    query: str,
+    case_sensitive: bool,
+    whole_word: bool,
+    use_regex: bool,
+) -> re.Pattern[str]:
+    flags = 0 if case_sensitive else re.IGNORECASE
+
+    if use_regex:
+        return re.compile(query, flags)
+
+    escaped = re.escape(query)
+
+    if whole_word:
+        escaped = rf"(?<!{_IDENTIFIER_CHAR_PATTERN}){escaped}(?!{_IDENTIFIER_CHAR_PATTERN})"
+
+    return re.compile(escaped, flags)
 
 # ---------------------------------------------------------------------------
 # Project index build
@@ -1334,6 +1357,8 @@ class LoadedProjectIndex:
         file: str | None = None,
         file_pattern: str | None = None,
         case_sensitive: bool = False,
+        whole_word: bool = False,
+        use_regex: bool = False,
         limit: int = 100,
         context_lines: int = 0,
     ) -> dict[str, Any]:
@@ -1359,7 +1384,12 @@ class LoadedProjectIndex:
 
         limit = max(1, limit)
         context_lines = max(0, context_lines)
-        needle = query if case_sensitive else query.casefold()
+        pattern = compile_source_search_pattern(
+            query=query,
+            case_sensitive=case_sensitive,
+            whole_word=whole_word,
+            use_regex=use_regex,
+        )
         matches: list[dict[str, Any]] = []
         searched_files = 0
 
@@ -1375,9 +1405,7 @@ class LoadedProjectIndex:
             searched_files += 1
 
             for index, line in enumerate(lines):
-                haystack = line if case_sensitive else line.casefold()
-
-                if needle not in haystack:
+                if pattern.search(line) is None:
                     continue
 
                 line_no = index + 1
@@ -1401,6 +1429,8 @@ class LoadedProjectIndex:
                     return {
                         "query": query,
                         "caseSensitive": case_sensitive,
+                        "wholeWord": whole_word,
+                        "useRegex": use_regex,
                         "file": file,
                         "filePattern": file_pattern,
                         "searchedFiles": searched_files,
@@ -1412,6 +1442,8 @@ class LoadedProjectIndex:
         return {
             "query": query,
             "caseSensitive": case_sensitive,
+            "wholeWord": whole_word,
+            "useRegex": use_regex,
             "file": file,
             "filePattern": file_pattern,
             "searchedFiles": searched_files,
