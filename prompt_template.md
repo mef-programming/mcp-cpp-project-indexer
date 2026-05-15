@@ -309,6 +309,14 @@ When using `list_module_imported_by`, each result should contain the importing m
 read_range(relativePath, sourceLine, sourceLine)
 ```
 
+When module metadata shows `isExported: true`, distinguish direct imports from transitive availability.
+
+Correct:
+`Module A directly imports and re-exports B, so B is transitively available to consumers of A.`
+
+Avoid:
+`All consumers of A directly import B.`
+
 Do not guess whether the import is in `.ixx` or `.cpp`. Use the `relativePath` from the module-map metadata.
 
 Module-map data is metadata. Do not infer implementation behavior from imports alone.
