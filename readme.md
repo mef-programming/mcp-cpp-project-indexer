@@ -444,14 +444,14 @@ Do not treat module metadata as implementation behavior.
 
 Correct calls:
 
-```json
+```text
 find_symbol({"query": "Editor::_OnScroll"})
 find_declaration({"query": "OnNotifyReflect"})
 ```
 
 Avoid:
 
-```json
+```text
 find_symbol({"name": "Editor::_OnScroll"})
 ```
 
