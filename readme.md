@@ -45,6 +45,29 @@ The indexer is only the table of contents. The AI performs recursive exploration
 
 ---
 
+## Why this project exists
+
+Modern C++ codebases that lean heavily on C++20 modules are still difficult to navigate with many existing tools.
+In practice, Microsoft IntelliSense and Clang-based compiler/tooling flows can struggle to model large module graphs
+reliably enough for AI-assisted code navigation. When module imports, partitions, generated SDK headers,
+build-specific configuration, or implementation units are not represented cleanly,
+generic IDE/LSP-style navigation becomes noisy or unusable for this workflow.
+
+This project takes a narrower route. It does not try to compile the program or replace IntelliSense.
+Instead, it builds a deterministic routing index for files, symbols, source ranges, and C++20 module relationships.
+That makes module-heavy projects navigable even when full semantic tooling is incomplete, unavailable,
+ or too expensive to put in the model context.
+
+The goal is practical AI navigation:
+
+- keep the context clean
+- avoid loading thousands of irrelevant source lines
+- expose module imports and consumers directly
+- route from a symbol or module to exact original source lines
+- let the AI reason only after the relevant source range has been read
+
+---
+
 ## What it does
 
 The scanner extracts routing facts from C++ source files:
