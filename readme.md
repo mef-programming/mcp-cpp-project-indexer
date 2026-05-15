@@ -340,6 +340,15 @@ list_file_symbols(file)
 - exact `qualifiedName` / aliases
 - fallback substring over `shortName`, `qualifiedName`, and `signature`
 
+Optional routing controls:
+
+- `compact`: return only compact routing fields
+- `symbolTypes`: filter by indexed symbol kind, e.g. `method`, `function`, `type_alias`
+- `exactOnly`: return only exact short-name or qualified-name matches, including case-insensitive exact matches
+- `hideNamespaces`: hide namespace reopening symbols from navigation results
+
+Each returned item includes `matchKind` to describe why it matched, such as `exact_short_name`, `qualified_name_substring`, or `signature_substring`.
+
 It does not read source code and does not resolve overloads semantically.
 
 Canonical argument:

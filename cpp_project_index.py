@@ -54,6 +54,96 @@ DEFAULT_EXCLUDED_DIR_NAMES = {
 
 PROJECT_INDEX_SCHEMA = "cpp.project_index.v1"
 
+SYMBOL_COMPACT_FIELDS = {
+    "symbolId",
+    "type",
+    "shortName",
+    "qualifiedName",
+    "container",
+    "relativePath",
+    "startLine",
+    "endLine",
+    "signature",
+    "matchKind",
+}
+
+
+def symbol_matches_type_filter(symbol: dict[str, Any], symbol_types: set[str] | None) -> bool:
+    if not symbol_types:
+        return True
+
+    return str(symbol.get("type") or "") in symbol_types
+
+
+def symbol_matches_namespace_filter(symbol: dict[str, Any], hide_namespaces: bool) -> bool:
+    if not hide_namespaces:
+        return True
+
+    return str(symbol.get("type") or "") != "namespace"
+
+
+def compact_symbol_ref(symbol: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: symbol.get(key)
+        for key in SYMBOL_COMPACT_FIELDS
+        if key in symbol
+    }
+
+
+def symbol_match_kind(symbol: dict[str, Any], query: str) -> str:
+    query_folded = query.casefold()
+    short_name = str(symbol.get("shortName") or "")
+    qualified_name = str(symbol.get("qualifiedName") or "")
+    signature = str(symbol.get("signature") or "")
+
+    if qualified_name and qualified_name == query:
+        return "exact_qualified_name"
+
+    if short_name and short_name == query:
+        return "exact_short_name"
+
+    if qualified_name and qualified_name.casefold() == query_folded:
+        return "case_insensitive_qualified_name"
+
+    if short_name and short_name.casefold() == query_folded:
+        return "case_insensitive_short_name"
+
+    if qualified_name and query_folded in qualified_name.casefold():
+        return "qualified_name_substring"
+
+    if short_name and query_folded in short_name.casefold():
+        return "short_name_substring"
+
+    if signature and query_folded in signature.casefold():
+        return "signature_substring"
+
+    return "metadata_match"
+
+
+def symbol_match_rank(match_kind: str) -> int:
+    ranks = {
+        "exact_qualified_name": 0,
+        "exact_short_name": 1,
+        "case_insensitive_qualified_name": 2,
+        "case_insensitive_short_name": 3,
+        "qualified_name_substring": 4,
+        "short_name_substring": 5,
+        "signature_substring": 6,
+        "metadata_match": 7,
+    }
+
+    return ranks.get(match_kind, 100)
+
+
+def is_exact_symbol_match(symbol: dict[str, Any], query: str) -> bool:
+    match_kind = symbol_match_kind(symbol, query)
+    return match_kind in {
+        "exact_qualified_name",
+        "exact_short_name",
+        "case_insensitive_qualified_name",
+        "case_insensitive_short_name",
+    }
+
 
 @dataclass(slots=True)
 class ProjectIndexBuildResult:
@@ -675,7 +765,7 @@ def normalize_glob_pattern(pattern: str) -> str:
 
     return pattern
 
-    
+
 # ---------------------------------------------------------------------------
 # Runtime loader/query helpers used by the server
 # ---------------------------------------------------------------------------
@@ -740,45 +830,90 @@ class LoadedProjectIndex:
         path = self.files_dir / f"{file_id}.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def find_symbol(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    def find_symbol(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        symbol_types: set[str] | None = None,
+        exact_only: bool = False,
+        hide_namespaces: bool = False,
+        compact: bool = False,
+    ) -> list[dict[str, Any]]:
         direct_ids = self.names.get(query, [])
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        for symbol_id in direct_ids:
-            symbol = self.symbol_by_id.get(symbol_id)
-
-            if symbol is None or symbol_id in seen:
-                continue
-
-            seen.add(symbol_id)
-            results.append(symbol)
-
-            if len(results) >= limit:
-                return results
-
-        query_folded = query.casefold()
-
-        for symbol in self.symbols:
+        def maybe_add(symbol: dict[str, Any]) -> bool:
             symbol_id = symbol["symbolId"]
 
             if symbol_id in seen:
+                return False
+
+            if not symbol_matches_type_filter(symbol, symbol_types):
+                return False
+
+            if not symbol_matches_namespace_filter(symbol, hide_namespaces):
+                return False
+
+            match_kind = symbol_match_kind(symbol, query)
+
+            if exact_only and not is_exact_symbol_match(symbol, query):
+                return False
+
+            item = dict(symbol)
+            item["matchKind"] = match_kind
+
+            seen.add(symbol_id)
+            results.append(compact_symbol_ref(item) if compact else item)
+            return len(results) >= limit
+
+        for symbol_id in direct_ids:
+            symbol = self.symbol_by_id.get(symbol_id)
+
+            if symbol is None:
                 continue
 
-            haystacks = [
-                str(symbol.get("shortName") or ""),
-                str(symbol.get("qualifiedName") or ""),
-                str(symbol.get("signature") or ""),
-            ]
+            if maybe_add(symbol):
+                break
 
-            if any(query_folded in value.casefold() for value in haystacks):
-                seen.add(symbol_id)
-                results.append(symbol)
+        if len(results) < limit:
+            query_folded = query.casefold()
 
-                if len(results) >= limit:
+            for symbol in self.symbols:
+                symbol_id = symbol["symbolId"]
+
+                if symbol_id in seen:
+                    continue
+
+                if not symbol_matches_type_filter(symbol, symbol_types):
+                    continue
+
+                if not symbol_matches_namespace_filter(symbol, hide_namespaces):
+                    continue
+
+                haystacks = [
+                    str(symbol.get("shortName") or ""),
+                    str(symbol.get("qualifiedName") or ""),
+                    str(symbol.get("signature") or ""),
+                ]
+
+                if not any(query_folded in value.casefold() for value in haystacks):
+                    continue
+
+                if maybe_add(symbol):
                     break
 
-        return results
+        results.sort(
+            key=lambda item: (
+                symbol_match_rank(str(item.get("matchKind") or "metadata_match")),
+                str(item.get("qualifiedName") or item.get("shortName") or ""),
+                str(item.get("relativePath") or ""),
+                int(item.get("startLine") or 0),
+            )
+        )
+
+        return results[:limit]
 
     def list_file_symbols(self, file: str) -> list[dict[str, Any]]:
         file_id = file

@@ -136,6 +136,16 @@ operator=
 GetHWND
 ```
 
+Prefer compact routing options when they reduce noise:
+
+```text
+find_symbol({"query": "Widget::OnScroll", "compact": true, "hideNamespaces": true})
+find_symbol({"query": "PurgeCache", "symbolTypes": ["function", "method"], "compact": true})
+find_symbol({"query": "PFNSetScrollInfo", "exactOnly": true, "compact": true})
+```
+
+Treat `matchKind` as match-quality metadata only. It helps choose which source range to read next; it is not semantic analysis.
+
 If multiple overloads are returned:
 
 1. Do not ask the indexer to resolve the overload.

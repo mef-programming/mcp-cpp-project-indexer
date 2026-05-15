@@ -144,8 +144,28 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 100,
+                        "maximum": 500,
                         "default": 20,
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return only compact routing fields instead of the full symbol metadata.",
+                    },
+                    "symbolTypes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of symbol type filters, e.g. ['method', 'function', 'type_alias'].",
+                    },
+                    "exactOnly": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return only exact short-name or qualified-name matches. Case-insensitive exact matches are included.",
+                    },
+                    "hideNamespaces": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Hide namespace reopening symbols from results.",
                     },
                 },
                 "additionalProperties": False,
@@ -725,7 +745,7 @@ def _trim_tree(node: dict[str, Any], *, max_depth: int, depth: int = 0) -> dict[
     ]
 
     return result
-    
+
 
 # ---------------------------------------------------------------------------
 # Tool implementation
@@ -755,7 +775,7 @@ class CodeIndexTools:
             )
 
         return self.module_map
-                
+
     def get_project_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         counts = self.index.manifest.get("counts", {})
         return make_json_text_result(
@@ -769,8 +789,20 @@ class CodeIndexTools:
 
     def find_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = require_query(arguments)
-        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=100)
-        results = self.index.find_symbol(query, limit=limit)
+        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=500)
+        compact = optional_bool(arguments, "compact", False)
+        exact_only = optional_bool(arguments, "exactOnly", False)
+        hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
+        symbol_types = optional_string_set(arguments, "symbolTypes")
+
+        results = self.index.find_symbol(
+            query,
+            limit=limit,
+            symbol_types=symbol_types,
+            exact_only=exact_only,
+            hide_namespaces=hide_namespaces,
+            compact=compact,
+        )
         return make_json_text_result(results)
 
     def find_declaration(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1272,6 +1304,26 @@ def optional_bool(arguments: dict[str, Any], key: str, default: bool) -> bool:
 
     return value
 
+
+def optional_string_set(arguments: dict[str, Any], key: str) -> set[str] | None:
+    value = arguments.get(key)
+
+    if value is None:
+        return None
+
+    if not isinstance(value, list):
+        raise McpError(-32602, f"{key} must be an array of strings")
+
+    result: set[str] = set()
+
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise McpError(-32602, f"{key} must be an array of non-empty strings")
+
+        result.add(item)
+
+    return result
+
 # ---------------------------------------------------------------------------
 # MCP dispatcher
 # ---------------------------------------------------------------------------
@@ -1291,7 +1343,7 @@ class McpServer:
             "find_data": self.tools.find_data,
             "list_type_members": self.tools.list_type_members,
             "read_data": self.tools.read_data,
-            "search_modules": self.tools.search_modules,      
+            "search_modules": self.tools.search_modules,
             "get_module_map_summary": self.tools.get_module_map_summary,
             "get_module_info": self.tools.get_module_info,
             "find_module": self.tools.find_module,
