@@ -443,6 +443,20 @@ Hints:
 
 Do not use `find_symbols_glob` as a substitute for source usage search. It searches symbol metadata, not source callsites.
 
+Use `list_file_symbols` with compact filters when you already know the file and need a small set of symbol candidates:
+
+```text
+list_file_symbols({"file": "...", "symbolTypes": ["method", "function"], "compact": true, "hideNamespaces": true})
+```
+
+Use `container` when you need symbols of one known class or namespace inside a file:
+
+```text
+list_file_symbols({"file": "...", "container": "Editor", "symbolTypes": ["method", "constructor"], "compact": true})
+```
+
+The `container` filter is a locator filter only. It does not resolve inheritance or type semantics.
+
 ## Call Graph Construction
 
 When asked for a call graph, build an on-demand call trace from source that has been read.

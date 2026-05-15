@@ -266,11 +266,30 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "fileId or project-relative path.",
                     },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return only compact routing fields instead of full symbol metadata.",
+                    },
+                    "symbolTypes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of symbol type filters, e.g. ['method', 'function', 'type_alias'].",
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional containing class/struct/namespace filter, e.g. 'Editor' or 'Namespace::Editor'.",
+                    },
+                    "hideNamespaces": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Hide namespace reopening symbols from results.",
+                    },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 1000,
-                        "default": 200,
+                        "maximum": 2000,
+                        "default": 500,
                     },
                 },
                 "required": ["file"],
@@ -913,8 +932,23 @@ class CodeIndexTools:
 
     def list_file_symbols(self, arguments: dict[str, Any]) -> dict[str, Any]:
         file = require_string(arguments, "file")
-        limit = clamp_int(arguments.get("limit", 200), minimum=1, maximum=1000)
-        results = self.index.list_file_symbols(file)[:limit]
+        limit = clamp_int(arguments.get("limit", 500), minimum=1, maximum=2000)
+        compact = optional_bool(arguments, "compact", False)
+        hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
+        symbol_types = optional_string_set(arguments, "symbolTypes")
+        container = arguments.get("container")
+
+        if container is not None and not isinstance(container, str):
+            raise McpError(-32602, "container must be a string when provided")
+
+        results = self.index.list_file_symbols(
+            file,
+            limit=limit,
+            symbol_types=symbol_types,
+            container=container,
+            hide_namespaces=hide_namespaces,
+            compact=compact,
+        )
         return make_json_text_result(results)
 
     def find_module(self, arguments: dict[str, Any]) -> dict[str, Any]:

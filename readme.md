@@ -374,6 +374,16 @@ Each returned item includes `matchKind` to describe why it matched, such as `exa
 
 It does not read source code and does not resolve overloads semantically.
 
+`list_file_symbols` can also return smaller file-level symbol candidate lists when the file is already known:
+
+- `compact`: return only compact routing fields
+- `symbolTypes`: filter by indexed symbol kind
+- `container`: filter to symbols contained by a class/struct/namespace name or suffix
+- `hideNamespaces`: hide namespace reopening symbols
+- `limit`: bound the result size
+
+This is a locator filter only. It does not resolve inheritance, overloads, or type semantics.
+
 Canonical argument:
 
 ```json

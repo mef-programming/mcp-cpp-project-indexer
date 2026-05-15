@@ -82,6 +82,20 @@ def symbol_matches_namespace_filter(symbol: dict[str, Any], hide_namespaces: boo
     return str(symbol.get("type") or "") != "namespace"
 
 
+def symbol_matches_container_filter(symbol: dict[str, Any], container: str | None) -> bool:
+    if not container:
+        return True
+
+    item_container = str(symbol.get("container") or "")
+    qualified_name = str(symbol.get("qualifiedName") or "")
+    container_folded = container.casefold()
+
+    return (
+        item_container.casefold() == container_folded
+        or item_container.casefold().endswith("::" + container_folded)
+        or qualified_name.casefold().startswith(container_folded + "::")
+    )
+
 def compact_symbol_ref(symbol: dict[str, Any]) -> dict[str, Any]:
     return {
         key: symbol.get(key)
@@ -915,7 +929,16 @@ class LoadedProjectIndex:
 
         return results[:limit]
 
-    def list_file_symbols(self, file: str) -> list[dict[str, Any]]:
+    def list_file_symbols(
+        self,
+        file: str,
+        *,
+        limit: int = 500,
+        symbol_types: set[str] | None = None,
+        container: str | None = None,
+        hide_namespaces: bool = False,
+        compact: bool = False,
+    ) -> list[dict[str, Any]]:
         file_id = file
 
         if file_id not in self.file_by_id:
@@ -924,11 +947,35 @@ class LoadedProjectIndex:
         if not file_id:
             return []
 
-        return [
-            symbol
-            for symbol in self.symbols
-            if symbol["fileId"] == file_id
-        ]
+        results: list[dict[str, Any]] = []
+
+        for symbol in self.symbols:
+            if symbol.get("fileId") != file_id:
+                continue
+
+            if not symbol_matches_type_filter(symbol, symbol_types):
+                continue
+
+            if not symbol_matches_namespace_filter(symbol, hide_namespaces):
+                continue
+
+            if not symbol_matches_container_filter(symbol, container):
+                continue
+
+            results.append(compact_symbol_ref(symbol) if compact else symbol)
+
+            if len(results) >= limit:
+                break
+
+        results.sort(
+            key=lambda item: (
+                int(item.get("startLine") or 0),
+                int(item.get("endLine") or 0),
+                str(item.get("qualifiedName") or item.get("shortName") or ""),
+            )
+        )
+
+        return results
 
     def find_module(self, module_name: str) -> list[dict[str, Any]]:
         file_ids = self.modules.get(module_name, [])
