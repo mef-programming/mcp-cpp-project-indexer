@@ -317,6 +317,9 @@ Correct:
 Avoid:
 `All consumers of A directly import B.`
 
+When reporting `export import :Partition`, describe it as a re-exported partition import.
+Avoid saying the partition itself is exported unless the source/entity semantics were inspected.
+
 Do not guess whether the import is in `.ixx` or `.cpp`. Use the `relativePath` from the module-map metadata.
 
 Module-map data is metadata. Do not infer implementation behavior from imports alone.
