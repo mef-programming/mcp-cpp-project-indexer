@@ -338,6 +338,139 @@ After rebuilding the index or module map, restart the MCP server / LM Studio.
 
 ---
 
+## Codex configuration
+
+For Codex, configure this repository as an MCP stdio server and put the agent rules
+where Codex will load them as project instructions.
+
+Example MCP server entry:
+
+```toml
+[mcp_servers.mcp-cpp-project-indexer]
+command = "python"
+args = [
+  "<indexer-root>\\code_index_mcp_server.py",
+  "--project-root",
+  "<project-root>",
+  "--index-root",
+  "<project-root>\\.mcp-cpp-project-indexer",
+]
+```
+
+The prompt rules from [prompt_template.md](prompt_template.md) should be copied into
+an `AGENTS.md` file in the project root that Codex opens, for example:
+
+```text
+<project-root>\AGENTS.md
+```
+
+Codex reads `AGENTS.md` as repository/project instructions for the current working
+tree. If you usually start Codex from a parent workspace instead of the C++ project
+root, put the file in that workspace root or open Codex directly in the C++ project
+root so the instructions are in scope.
+
+Keep the MCP server configuration and the prompt rules separate:
+
+- MCP config starts the tool server and points it at the generated index.
+- `AGENTS.md` tells the agent how to use the tools safely and compactly.
+
+After changing the MCP server configuration or rebuilding the index, restart the
+MCP server / Codex session so the updated tool schema is visible.
+
+---
+
+## Claude setup
+
+Claude Code and Claude Desktop use MCP slightly differently, so keep the setup
+split by client.
+
+### Claude Code
+
+For Claude Code, put the MCP server configuration in a project-scoped `.mcp.json`
+file at the project root if the setup should travel with the repository:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "<indexer-root>\\code_index_mcp_server.py",
+        "--project-root",
+        "<project-root>",
+        "--index-root",
+        "<project-root>\\.mcp-cpp-project-indexer"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Equivalent CLI setup:
+
+```powershell
+claude mcp add mcp-cpp-project-indexer --scope project -- `
+  python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer
+```
+
+Copy the rules from [prompt_template.md](prompt_template.md) into Claude Code's
+project memory file:
+
+```text
+<project-root>\CLAUDE.md
+```
+
+Claude Code also supports `.claude/CLAUDE.md`; use that path if you prefer to keep
+Claude-specific files under `.claude/`. The important part is that the file is in
+the project root that Claude Code opens, otherwise the tool-use rules may not be
+loaded.
+
+### Claude Desktop
+
+Claude Desktop uses its application MCP configuration file. On Windows this is
+usually:
+
+```text
+%APPDATA%\Claude\claude_desktop_config.json
+```
+
+Add the server under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "<indexer-root>\\code_index_mcp_server.py",
+        "--project-root",
+        "<project-root>",
+        "--index-root",
+        "<project-root>\\.mcp-cpp-project-indexer"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Claude Desktop does not automatically read repository instruction files like
+`CLAUDE.md` for arbitrary chats. Paste the relevant rules from
+[prompt_template.md](prompt_template.md) into the project/chat instructions you use
+with Claude Desktop, or use Claude Code when you need repository-scoped persistent
+instructions.
+
+After changing `.mcp.json`, `claude_desktop_config.json`, or rebuilding the index,
+restart the Claude client so the updated tool schema is visible.
+
+
+---
+
 ## Tool overview
 
 ### Project summary
@@ -471,136 +604,6 @@ find_symbol({"name": "Editor::_OnScroll"})
 The full system prompt template is available in [prompt_template.md](prompt_template.md).
 
 ---
-
-## Codex configuration
-
-For Codex, configure this repository as an MCP stdio server and put the agent rules
-where Codex will load them as project instructions.
-
-Example MCP server entry:
-
-```toml
-[mcp_servers.mcp-cpp-project-indexer]
-command = "python"
-args = [
-  "<indexer-root>\\code_index_mcp_server.py",
-  "--project-root",
-  "<project-root>",
-  "--index-root",
-  "<project-root>\\.mcp-cpp-project-indexer",
-]
-```
-
-The prompt rules from [prompt_template.md](prompt_template.md) should be copied into
-an `AGENTS.md` file in the project root that Codex opens, for example:
-
-```text
-<project-root>\AGENTS.md
-```
-
-Codex reads `AGENTS.md` as repository/project instructions for the current working
-tree. If you usually start Codex from a parent workspace instead of the C++ project
-root, put the file in that workspace root or open Codex directly in the C++ project
-root so the instructions are in scope.
-
-Keep the MCP server configuration and the prompt rules separate:
-
-- MCP config starts the tool server and points it at the generated index.
-- `AGENTS.md` tells the agent how to use the tools safely and compactly.
-
-After changing the MCP server configuration or rebuilding the index, restart the
-MCP server / Codex session so the updated tool schema is visible.
-
----
-
-## Claude setup
-
-Claude Code and Claude Desktop use MCP slightly differently, so keep the setup
-split by client.
-
-### Claude Code
-
-For Claude Code, put the MCP server configuration in a project-scoped `.mcp.json`
-file at the project root if the setup should travel with the repository:
-
-```json
-{
-  "mcpServers": {
-    "mcp-cpp-project-indexer": {
-      "type": "stdio",
-      "command": "python",
-      "args": [
-        "<indexer-root>\\code_index_mcp_server.py",
-        "--project-root",
-        "<project-root>",
-        "--index-root",
-        "<project-root>\\.mcp-cpp-project-indexer"
-      ],
-      "env": {}
-    }
-  }
-}
-```
-
-Equivalent CLI setup:
-
-```powershell
-claude mcp add mcp-cpp-project-indexer --scope project -- `
-  python <indexer-root>\code_index_mcp_server.py `
-  --project-root <project-root> `
-  --index-root <project-root>\.mcp-cpp-project-indexer
-```
-
-Copy the rules from [prompt_template.md](prompt_template.md) into Claude Code's
-project memory file:
-
-```text
-<project-root>\CLAUDE.md
-```
-
-Claude Code also supports `.claude/CLAUDE.md`; use that path if you prefer to keep
-Claude-specific files under `.claude/`. The important part is that the file is in
-the project root that Claude Code opens, otherwise the tool-use rules may not be
-loaded.
-
-### Claude Desktop
-
-Claude Desktop uses its application MCP configuration file. On Windows this is
-usually:
-
-```text
-%APPDATA%\Claude\claude_desktop_config.json
-```
-
-Add the server under `mcpServers`:
-
-```json
-{
-  "mcpServers": {
-    "mcp-cpp-project-indexer": {
-      "type": "stdio",
-      "command": "python",
-      "args": [
-        "<indexer-root>\\code_index_mcp_server.py",
-        "--project-root",
-        "<project-root>",
-        "--index-root",
-        "<project-root>\\.mcp-cpp-project-indexer"
-      ],
-      "env": {}
-    }
-  }
-}
-```
-
-Claude Desktop does not automatically read repository instruction files like
-`CLAUDE.md` for arbitrary chats. Paste the relevant rules from
-[prompt_template.md](prompt_template.md) into the project/chat instructions you use
-with Claude Desktop, or use Claude Code when you need repository-scoped persistent
-instructions.
-
-After changing `.mcp.json`, `claude_desktop_config.json`, or rebuilding the index,
-restart the Claude client so the updated tool schema is visible.
 
 ---
 
