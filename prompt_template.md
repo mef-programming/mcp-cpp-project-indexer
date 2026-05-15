@@ -187,6 +187,17 @@ For compact orientation, use:
 
 get_file_structure({"file": "...", "includeOutline": false})
 
+For large files, prefer:
+
+```text
+get_file_structure({"file": "...", "includeOutline": false})
+get_file_structure({"file": "...", "symbolTypes": ["method", "function"], "includeData": false, "hideNamespaces": true, "compactOutline": true, "outlineLimit": 100})
+```
+
+Use `symbolTypes`, `dataKinds`, `hideNamespaces`, and `outlineLimit` to keep responses small.
+Use `compactOutline:true` when outline items are only needed for routing.
+If `outlineTruncated` is true, narrow filters or raise `outlineLimit` before assuming the outline is complete.
+
 For detailed navigation, include the outline and then read only the needed source ranges.
 
 ## Raw Source Search Rules

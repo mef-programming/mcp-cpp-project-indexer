@@ -680,6 +680,43 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "default": True,
                         "description": "Include ordered symbol/data outline items.",
                     },
+                    "outlineLimit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5000,
+                        "default": 500,
+                        "description": "Maximum number of outline items to return.",
+                    },
+                    "compactOutline": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Return compact outline items with routing fields only.",
+                    },
+                    "symbolTypes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional symbol type filters for counts/outline, e.g. ['method', 'function', 'class'].",
+                    },
+                    "dataKinds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional data declaration kind filters, e.g. ['field', 'global_variable', 'enumerator'].",
+                    },
+                    "includeData": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include indexed data declarations in counts/sections/outline.",
+                    },
+                    "includeDiagnostics": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include file diagnostics in the result.",
+                    },
+                    "hideNamespaces": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Hide namespace reopening symbols from counts/outline.",
+                    },
                 },
                 "required": ["file"],
                 "additionalProperties": False,
@@ -1237,18 +1274,30 @@ class CodeIndexTools:
     def get_file_structure(self, arguments: dict[str, Any]) -> dict[str, Any]:
         file = require_string(arguments, "file")
         include_outline = optional_bool(arguments, "includeOutline", True)
+        outline_limit = clamp_int(arguments.get("outlineLimit", 500), minimum=1, maximum=5000)
+        compact_outline = optional_bool(arguments, "compactOutline", True)
+        symbol_types = optional_string_set(arguments, "symbolTypes")
+        data_kinds = optional_string_set(arguments, "dataKinds")
+        include_data = optional_bool(arguments, "includeData", True)
+        include_diagnostics = optional_bool(arguments, "includeDiagnostics", True)
+        hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
 
-        result = self.index.get_file_structure(file)
+        result = self.index.get_file_structure(
+            file,
+            include_outline=include_outline,
+            outline_limit=outline_limit,
+            compact_outline=compact_outline,
+            symbol_types=symbol_types,
+            data_kinds=data_kinds,
+            include_data=include_data,
+            include_diagnostics=include_diagnostics,
+            hide_namespaces=hide_namespaces,
+        )
 
         if result is None:
             return make_text_result(f"File not found: {file}", is_error=True)
 
-        if not include_outline:
-            result = dict(result)
-            result.pop("outline", None)
-
         return make_json_text_result(result)
-
 
     def search_source(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = require_string(arguments, "query")

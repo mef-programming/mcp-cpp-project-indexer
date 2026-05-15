@@ -104,6 +104,54 @@ def compact_symbol_ref(symbol: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+FILE_STRUCTURE_SYMBOL_COMPACT_FIELDS = {
+    "kind",
+    "symbolId",
+    "type",
+    "name",
+    "shortName",
+    "container",
+    "relativePath",
+    "startLine",
+    "endLine",
+    "signature",
+}
+
+FILE_STRUCTURE_DATA_COMPACT_FIELDS = {
+    "kind",
+    "dataId",
+    "declarationKind",
+    "scopeKind",
+    "name",
+    "shortName",
+    "container",
+    "typeText",
+    "relativePath",
+    "startLine",
+    "endLine",
+    "signature",
+}
+
+
+def compact_file_structure_item(item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("kind") == "data":
+        fields = FILE_STRUCTURE_DATA_COMPACT_FIELDS
+    else:
+        fields = FILE_STRUCTURE_SYMBOL_COMPACT_FIELDS
+
+    return {
+        key: item.get(key)
+        for key in fields
+        if key in item
+    }
+
+
+def data_matches_kind_filter(item: dict[str, Any], data_kinds: set[str] | None) -> bool:
+    if not data_kinds:
+        return True
+
+    return str(item.get("declarationKind") or "") in data_kinds
+
 def symbol_match_kind(symbol: dict[str, Any], query: str) -> str:
     query_folded = query.casefold()
     short_name = str(symbol.get("shortName") or "")
@@ -1342,7 +1390,19 @@ class LoadedProjectIndex:
         return self.file_by_id.get(file_id)
 
 
-    def get_file_structure(self, file: str) -> dict[str, Any] | None:
+    def get_file_structure(
+        self,
+        file: str,
+        *,
+        include_outline: bool = True,
+        outline_limit: int = 500,
+        compact_outline: bool = True,
+        symbol_types: set[str] | None = None,
+        data_kinds: set[str] | None = None,
+        include_data: bool = True,
+        include_diagnostics: bool = True,
+        hide_namespaces: bool = False,
+    ) -> dict[str, Any] | None:
         file_item = self.get_file_item(file)
 
         if file_item is None:
@@ -1350,17 +1410,34 @@ class LoadedProjectIndex:
 
         file_id = file_item["fileId"]
         relative_path = file_item["relativePath"]
+        outline_limit = max(1, outline_limit)
 
-        file_symbols = [
+        all_file_symbols = [
             symbol
             for symbol in self.symbols
             if symbol.get("fileId") == file_id
         ]
-        file_data = [
+        all_file_data = [
             item
             for item in self.data
             if item.get("fileId") == file_id
         ]
+
+        file_symbols = [
+            symbol
+            for symbol in all_file_symbols
+            if symbol_matches_type_filter(symbol, symbol_types)
+            and symbol_matches_namespace_filter(symbol, hide_namespaces)
+        ]
+
+        if include_data:
+            file_data = [
+                item
+                for item in all_file_data
+                if data_matches_kind_filter(item, data_kinds)
+            ]
+        else:
+            file_data = []
 
         file_symbols.sort(
             key=lambda item: (
@@ -1377,67 +1454,116 @@ class LoadedProjectIndex:
             )
         )
 
-        diagnostics = [
-            diagnostic
-            for diagnostic in self._load_json_if_exists(self.index_root / "diagnostics.json", [])
-            if diagnostic.get("fileId") == file_id or diagnostic.get("relativePath") == relative_path
-        ]
+        diagnostics: list[dict[str, Any]] = []
 
-        symbol_counts: dict[str, int] = {}
-        data_counts: dict[str, int] = {}
+        if include_diagnostics:
+            diagnostics = [
+                diagnostic
+                for diagnostic in getattr(
+                    self,
+                    "diagnostics",
+                    self._load_json_if_exists(self.index_root / "diagnostics.json", []),
+                )
+                if diagnostic.get("fileId") == file_id or diagnostic.get("relativePath") == relative_path
+            ]
+
+        symbol_counts_all: dict[str, int] = {}
+        data_counts_all: dict[str, int] = {}
+        symbol_counts_filtered: dict[str, int] = {}
+        data_counts_filtered: dict[str, int] = {}
+
+        for symbol in all_file_symbols:
+            symbol_type = str(symbol.get("type") or "unknown")
+            symbol_counts_all[symbol_type] = symbol_counts_all.get(symbol_type, 0) + 1
+
+        for item in all_file_data:
+            declaration_kind = str(item.get("declarationKind") or "unknown")
+            data_counts_all[declaration_kind] = data_counts_all.get(declaration_kind, 0) + 1
 
         for symbol in file_symbols:
             symbol_type = str(symbol.get("type") or "unknown")
-            symbol_counts[symbol_type] = symbol_counts.get(symbol_type, 0) + 1
+            symbol_counts_filtered[symbol_type] = symbol_counts_filtered.get(symbol_type, 0) + 1
 
         for item in file_data:
             declaration_kind = str(item.get("declarationKind") or "unknown")
-            data_counts[declaration_kind] = data_counts.get(declaration_kind, 0) + 1
+            data_counts_filtered[declaration_kind] = data_counts_filtered.get(declaration_kind, 0) + 1
 
         outline: list[dict[str, Any]] = []
 
+        if include_outline:
+            for symbol in file_symbols:
+                outline.append(
+                    {
+                        "kind": "symbol",
+                        "symbolId": symbol.get("symbolId"),
+                        "type": symbol.get("type"),
+                        "name": symbol.get("qualifiedName") or symbol.get("shortName"),
+                        "shortName": symbol.get("shortName"),
+                        "container": symbol.get("container"),
+                        "relativePath": relative_path,
+                        "startLine": symbol.get("startLine"),
+                        "endLine": symbol.get("endLine"),
+                        "signature": symbol.get("signature"),
+                    }
+                )
+
+            for item in file_data:
+                outline.append(
+                    {
+                        "kind": "data",
+                        "dataId": item.get("dataId"),
+                        "declarationKind": item.get("declarationKind"),
+                        "scopeKind": item.get("scopeKind"),
+                        "name": item.get("qualifiedName") or item.get("name"),
+                        "shortName": item.get("name"),
+                        "container": item.get("container"),
+                        "typeText": item.get("typeText"),
+                        "relativePath": relative_path,
+                        "startLine": item.get("startLine"),
+                        "endLine": item.get("endLine"),
+                        "signature": item.get("signature"),
+                    }
+                )
+
+            outline.sort(
+                key=lambda item: (
+                    int(item.get("startLine") or 0),
+                    0 if item.get("kind") == "symbol" else 1,
+                    str(item.get("name") or ""),
+                )
+            )
+
+        outline_truncated = False
+
+        if include_outline and len(outline) > outline_limit:
+            outline = outline[:outline_limit]
+            outline_truncated = True
+
+        if compact_outline:
+            outline = [compact_file_structure_item(item) for item in outline]
+
+        section_source_items: list[dict[str, Any]] = []
+
         for symbol in file_symbols:
-            outline.append(
+            section_source_items.append(
                 {
                     "kind": "symbol",
-                    "symbolId": symbol.get("symbolId"),
                     "type": symbol.get("type"),
-                    "name": symbol.get("qualifiedName") or symbol.get("shortName"),
-                    "shortName": symbol.get("shortName"),
-                    "container": symbol.get("container"),
                     "startLine": symbol.get("startLine"),
                     "endLine": symbol.get("endLine"),
-                    "signature": symbol.get("signature"),
                 }
             )
 
         for item in file_data:
-            outline.append(
+            section_source_items.append(
                 {
                     "kind": "data",
-                    "dataId": item.get("dataId"),
                     "declarationKind": item.get("declarationKind"),
-                    "scopeKind": item.get("scopeKind"),
-                    "name": item.get("qualifiedName") or item.get("name"),
-                    "shortName": item.get("name"),
-                    "container": item.get("container"),
-                    "typeText": item.get("typeText"),
                     "startLine": item.get("startLine"),
                     "endLine": item.get("endLine"),
-                    "signature": item.get("signature"),
                 }
             )
 
-        outline.sort(
-            key=lambda item: (
-                int(item.get("startLine") or 0),
-                0 if item.get("kind") == "symbol" else 1,
-                str(item.get("name") or ""),
-            )
-        )
-
-        # Compact section ranges by coarse outline kind. These are routing ranges,
-        # not semantic regions.
         sections: list[dict[str, Any]] = []
 
         def append_section(name: str, items: list[dict[str, Any]]) -> None:
@@ -1457,7 +1583,7 @@ class LoadedProjectIndex:
             "types",
             [
                 item
-                for item in outline
+                for item in section_source_items
                 if item.get("kind") == "symbol"
                 and item.get("type") in {"class", "struct", "enum", "class_declaration", "struct_declaration", "type_alias", "type_alias_template", "typedef_declaration"}
             ],
@@ -1466,17 +1592,17 @@ class LoadedProjectIndex:
             "functions",
             [
                 item
-                for item in outline
+                for item in section_source_items
                 if item.get("kind") == "symbol"
                 and item.get("type") in {"function", "method", "constructor", "destructor", "operator", "function_declaration", "method_declaration", "constructor_declaration", "destructor_declaration", "operator_declaration"}
             ],
         )
         append_section(
             "data",
-            [item for item in outline if item.get("kind") == "data"],
+            [item for item in section_source_items if item.get("kind") == "data"],
         )
 
-        return {
+        result = {
             "fileId": file_id,
             "relativePath": relative_path,
             "lineCount": file_item.get("lineCount"),
@@ -1484,19 +1610,36 @@ class LoadedProjectIndex:
                 "unitKind": file_item.get("unitKind"),
                 "fullModuleName": file_item.get("fullModuleName"),
             },
+            "filters": {
+                "includeOutline": include_outline,
+                "outlineLimit": outline_limit,
+                "compactOutline": compact_outline,
+                "symbolTypes": sorted(symbol_types) if symbol_types else None,
+                "dataKinds": sorted(data_kinds) if data_kinds else None,
+                "includeData": include_data,
+                "includeDiagnostics": include_diagnostics,
+                "hideNamespaces": hide_namespaces,
+            },
             "counts": {
                 "symbols": len(file_symbols),
                 "data": len(file_data),
                 "diagnostics": len(diagnostics),
-                "symbolsByType": dict(sorted(symbol_counts.items())),
-                "dataByKind": dict(sorted(data_counts.items())),
+                "allSymbols": len(all_file_symbols),
+                "allData": len(all_file_data),
+                "symbolsByType": dict(sorted(symbol_counts_filtered.items())),
+                "dataByKind": dict(sorted(data_counts_filtered.items())),
+                "allSymbolsByType": dict(sorted(symbol_counts_all.items())),
+                "allDataByKind": dict(sorted(data_counts_all.items())),
             },
             "sections": sections,
-            "outline": outline,
+            "outlineTruncated": outline_truncated,
             "diagnostics": diagnostics,
         }
 
+        if include_outline:
+            result["outline"] = outline
 
+        return result
     def iter_search_files(
         self,
         *,

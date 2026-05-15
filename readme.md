@@ -396,9 +396,12 @@ Canonical argument:
 
 ```text
 find_files(pattern)
+get_file_structure(file)
 ```
 
 Glob over project-relative paths only. This is not source grep.
+
+`get_file_structure` returns a metadata-only table of contents for one file. For large files, prefer `includeOutline:false` first. Use `symbolTypes`, `dataKinds`, `hideNamespaces`, `outlineLimit`, and `compactOutline:true` to keep responses small. After identifying a relevant outline item, read the source with `read_symbol` or `read_range` before making implementation claims.
 
 Examples:
 
