@@ -756,7 +756,7 @@ def main() -> int:
         print("Modules:    ", result.modules)
         print("Diagnostics:", result.diagnostics)
         print("State:      ", update_state_path(index_root).as_posix())
-        print("Jobs:       ", normalize_jobs(jobs))
+        print("Jobs:       ", normalize_jobs(args.jobs))
 
 
     return 0
