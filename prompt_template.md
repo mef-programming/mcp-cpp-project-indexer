@@ -225,6 +225,21 @@ Avoid:
 
 After finding a relevant match, use read_range, find_symbol, or read_symbol to inspect the surrounding code before making behavior claims.
 
+### Finding Callsite Candidates with `search_source`
+
+`search_source` can be used to find lexical callsite candidates.
+
+Example:
+
+```text
+search_source({
+  "query": "PurgeCache\\s*\\(",
+  "useRegex": true,
+  "contextLines": 2,
+  "limit": 50
+})
+```
+
 ## Glob/Pattern Search Rules
 
 Use glob tools only for metadata discovery.
@@ -299,6 +314,58 @@ Do not guess whether the import is in `.ixx` or `.cpp`. Use the `relativePath` f
 Module-map data is metadata. Do not infer implementation behavior from imports alone.
 
 There is intentionally no `find_calls_in_file` tool. To understand how an imported module is used, read the relevant module/file entry points and inspect visible code. Use `find_symbols_glob` only for symbol metadata discovery, not for source callsite search.
+
+### Module Metadata vs. Source Reading Rule
+
+`get_module_info` is the authoritative tool for module structure queries. It returns:
+
+- all imports with their `isExported` flag (`true` = `export import`, `false` = `import`)
+- import kind (`module_import` vs. `module_partition_import`)
+- source file and exact line number for each import
+- all files defining the module
+- all modules that import this module
+
+Do not use `read_range` or `read_symbol` to verify module metadata that `get_module_info` already provides. Reading source to confirm `export import` vs. `import` is redundant. The `isExported` field in module metadata is the routing source of truth for module-structure questions.
+
+Only use `read_range` on a module interface/implementation file when:
+
+- the file has index diagnostics that suggest metadata may be incomplete
+- you need something the module metadata does not cover, such as macros, `#include` order, comments, or surrounding source context
+- you need the exact declaration order of imports in source for ordering-sensitive analysis
+- you are investigating a bug or inconsistency between metadata and source
+
+Correct workflow for module structure queries:
+
+```text
+User asks:
+  "Which modules does A import?"
+  "Does A export-import B?"
+  "Which modules import B?"
+  "Which files define module A?"
+```
+
+Use:
+  get_module_info({"moduleName": "A"})
+
+Answer from metadata:
+  - imports
+  - isExported
+  - import kind
+  - source file/line
+  - imported-by
+  - module files
+
+Do not read source merely to re-check import/export status.
+
+If the user asks to inspect the actual source line, or if the metadata looks suspicious, then read the exact line reported by get_module_info:
+
+read_range({
+  "file": "<relativePath from metadata>",
+  "startLine": <sourceLine>,
+  "endLine": <sourceLine>
+})
+
+But this is for source inspection/debugging, not required for normal module-structure answers.
 
 ## Reading Rules
 
@@ -562,6 +629,8 @@ Do not treat unresolved imports as errors unless they are relevant to the questi
 Do not expand macros mentally unless the macro definition has been read or the macro is a well-known external/language macro and the user does not need project-specific details.
 
 Do not infer implementation behavior from `get_file_structure`; it is metadata only.
+
+Do not read module source files just to verify import/export metadata already returned by `get_module_info`.
 
 ## One-Sentence Summary
 
