@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from cpp_change_tracking import (
+    ChangeTracker,
+    change_tracking_tool_definitions,
+    detect_change_tracking,
+)
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
 from watch_project_index import (
     SnapshotEntry,
@@ -1062,6 +1067,15 @@ class CodeIndexTools:
         self.module_map: dict[str, Any] | None = None
         self.index_lock = threading.RLock()
         self.watcher: ServerIndexWatcher | None = None
+        self.change_tracking_availability = detect_change_tracking(project_root)
+        self.change_tracker: ChangeTracker | None = None
+
+        if self.change_tracking_availability.available:
+            self.change_tracker = ChangeTracker(
+                project_root=project_root,
+                index=self.index,
+                availability=self.change_tracking_availability,
+            )
 
         self._load_module_map()
 
@@ -1132,6 +1146,9 @@ class CodeIndexTools:
             self.index = LoadedProjectIndex(self.index_root)
             self._load_module_map()
 
+            if self.change_tracker is not None:
+                self.change_tracker.index = self.index
+
             after_counts = dict(self.index.manifest.get("counts", {}))
             after_root = self.index.manifest.get("root")
             after_manifest_mtime = (
@@ -1159,6 +1176,83 @@ class CodeIndexTools:
         reason = require_string(arguments, "reason")
         return make_json_text_result(
             self.reload_index_cache_from_disk(reason=reason)
+        )
+
+    def require_change_tracker(self) -> ChangeTracker:
+        if self.change_tracker is None:
+            raise McpError(-32601, "Change tracking tools are not available for this project.")
+
+        return self.change_tracker
+
+    def list_changed_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        scope = optional_enum(arguments, "scope", {"working", "staged", "all"}, "all")
+        include_untracked = optional_bool(arguments, "includeUntracked", True)
+        file_pattern = optional_string(arguments, "filePattern")
+        compact = optional_bool(arguments, "compact", True)
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
+        return make_json_text_result(
+            self.require_change_tracker().list_changed_files(
+                scope=scope,
+                include_untracked=include_untracked,
+                file_pattern=file_pattern,
+                compact=compact,
+                limit=limit,
+            )
+        )
+
+    def list_recent_revisions(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        limit = clamp_int(arguments.get("limit", 10), minimum=1, maximum=100)
+        compact = optional_bool(arguments, "compact", True)
+        return make_json_text_result(
+            self.require_change_tracker().list_recent_revisions(
+                limit=limit,
+                compact=compact,
+            )
+        )
+
+    def get_revision_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        revision = require_string(arguments, "revision")
+        compact = optional_bool(arguments, "compact", True)
+        include_message = optional_bool(arguments, "includeMessage", True)
+        include_files = optional_bool(arguments, "includeFiles", True)
+        file_pattern = optional_string(arguments, "filePattern")
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
+        return make_json_text_result(
+            self.require_change_tracker().get_revision_summary(
+                revision=revision,
+                compact=compact,
+                include_message=include_message,
+                include_files=include_files,
+                file_pattern=file_pattern,
+                limit=limit,
+            )
+        )
+
+    def get_file_change_hunks(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        revision = optional_string(arguments, "revision")
+        scope_present = "scope" in arguments
+        scope = optional_enum(arguments, "scope", {"working", "staged", "all"}, "all")
+
+        if revision is not None and scope_present:
+            raise McpError(-32602, "revision and scope must not both be set")
+
+        context_lines = clamp_int(arguments.get("contextLines", 1), minimum=0, maximum=20)
+        include_source = optional_bool(arguments, "includeSource", True)
+        include_indexed_ranges = optional_bool(arguments, "includeIndexedRanges", True)
+        max_hunks = clamp_int(arguments.get("maxHunks", 20), minimum=1, maximum=200)
+        max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=5000)
+        return make_json_text_result(
+            self.require_change_tracker().get_file_change_hunks(
+                file=file,
+                scope=scope,
+                revision=revision,
+                context_lines=context_lines,
+                include_source=include_source,
+                include_indexed_ranges=include_indexed_ranges,
+                max_hunks=max_hunks,
+                max_lines=max_lines,
+            )
         )
 
     def find_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1706,6 +1800,33 @@ def optional_bool(arguments: dict[str, Any], key: str, default: bool) -> bool:
     return value
 
 
+def optional_string(arguments: dict[str, Any], key: str) -> str | None:
+    value = arguments.get(key)
+
+    if value is None:
+        return None
+
+    if not isinstance(value, str) or not value:
+        raise McpError(-32602, f"Invalid string argument: {key}")
+
+    return value
+
+
+def optional_enum(
+    arguments: dict[str, Any],
+    key: str,
+    allowed: set[str],
+    default: str,
+) -> str:
+    value = arguments.get(key, default)
+
+    if not isinstance(value, str) or value not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise McpError(-32602, f"Invalid value for {key}; expected one of: {allowed_text}")
+
+    return value
+
+
 def optional_string_set(arguments: dict[str, Any], key: str) -> set[str] | None:
     value = arguments.get(key)
 
@@ -1760,6 +1881,16 @@ class McpServer:
             "get_module_header_comment": self.tools.get_module_header_comment,
             "search_source": self.tools.search_source,
         }
+
+        if self.tools.change_tracker is not None:
+            self.tool_handlers.update(
+                {
+                    "list_changed_files": self.tools.list_changed_files,
+                    "list_recent_revisions": self.tools.list_recent_revisions,
+                    "get_revision_summary": self.tools.get_revision_summary,
+                    "get_file_change_hunks": self.tools.get_file_change_hunks,
+                }
+            )
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
@@ -1821,8 +1952,13 @@ class McpServer:
             return {}
 
         if method == "tools/list":
+            tools = tool_definitions()
+
+            if self.tools.change_tracker is not None:
+                tools.extend(change_tracking_tool_definitions())
+
             return {
-                "tools": tool_definitions(),
+                "tools": tools,
             }
 
         if method == "tools/call":

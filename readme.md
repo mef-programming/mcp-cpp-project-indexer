@@ -812,6 +812,26 @@ server-watch
 get_project_summary
 ```
 
+### Change tracking tools
+
+These tools are exposed only when `git.exe` is available and `project-root` is
+inside a worktree. They are read-only and do not expose a generic command runner.
+
+```text
+list_changed_files
+list_recent_revisions
+get_revision_summary
+get_file_change_hunks
+```
+
+Use them for current changes, recent revisions, hunk inspection, review of
+modified files, and commit-message suggestions.
+
+`get_file_change_hunks` can include `indexedRanges`, which are intersections
+between changed hunk line ranges and indexed symbol/data ranges. These are
+routing hints only. Read the relevant source with `read_symbol` or `read_range`
+before making implementation claims.
+
 ### Symbol and source tools
 
 ```text
