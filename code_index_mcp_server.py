@@ -247,7 +247,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "read_symbol",
-            "description": "[Source] Read original source lines for a symbolId, with absolute line numbers. This is a read-only range operation.",
+            "description": (
+                "[Source] Read original source lines for a symbolId, with absolute line numbers. "
+                "Use startOffset/endOffset to read only a slice of a large symbol body. "
+                "This is a read-only range operation."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -261,6 +265,26 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "maximum": 2000,
                         "default": 500,
                         "description": "Safety cap. If the symbol range is larger, the output is truncated.",
+                    },
+                    "startOffset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional 0-based line offset relative to the symbol start line.",
+                    },
+                    "endOffset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional 0-based inclusive line offset relative to the symbol start line.",
+                    },
+                    "startLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional absolute start line clamped to the symbol range.",
+                    },
+                    "endLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional absolute end line clamped to the symbol range.",
                     },
                 },
                 "required": ["symbolId"],
@@ -814,7 +838,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "[Search] Search raw source text in indexed files. This is a plain line-based text search, "
                 "not semantic C++ reference resolution. It searches comments and strings too. "
-                "Use filePattern or file to narrow broad queries."
+                "Use symbolId, filePattern, or file to narrow broad queries."
             ),
             "inputSchema": {
                 "type": "object",
@@ -830,6 +854,10 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "filePattern": {
                         "type": "string",
                         "description": "Optional glob pattern over project-relative paths, e.g. 'Shared/Windows/UXTheme/*'.",
+                    },
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Optional symbol id to search only inside that symbol's source range.",
                     },
                     "caseSensitive": {
                         "type": "boolean",
@@ -1363,6 +1391,10 @@ class CodeIndexTools:
     def read_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
         symbol_id = require_string(arguments, "symbolId")
         max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=2000)
+        start_offset = optional_int(arguments, "startOffset")
+        end_offset = optional_int(arguments, "endOffset")
+        requested_start_line = optional_int(arguments, "startLine")
+        requested_end_line = optional_int(arguments, "endLine")
         symbol = self.index.symbol_by_id.get(symbol_id)
 
         if symbol is None:
@@ -1370,11 +1402,32 @@ class CodeIndexTools:
 
         start_line = int(symbol["startLine"])
         end_line = int(symbol["endLine"])
-        effective_end = min(end_line, start_line + max_lines - 1)
+        slice_start = start_line
+        slice_end = end_line
+
+        if start_offset is not None:
+            slice_start = start_line + start_offset
+
+        if end_offset is not None:
+            slice_end = start_line + end_offset
+
+        if requested_start_line is not None:
+            slice_start = requested_start_line
+
+        if requested_end_line is not None:
+            slice_end = requested_end_line
+
+        slice_start = max(start_line, min(end_line, slice_start))
+        slice_end = max(start_line, min(end_line, slice_end))
+
+        if slice_end < slice_start:
+            raise McpError(-32602, "Requested symbol slice end must be >= start")
+
+        effective_end = min(slice_end, slice_start + max_lines - 1)
         code = self.index.read_range(
             project_root=self.project_root,
             file=symbol["fileId"],
-            start_line=start_line,
+            start_line=slice_start,
             end_line=effective_end,
         )
 
@@ -1386,9 +1439,11 @@ class CodeIndexTools:
             "qualifiedName": symbol.get("qualifiedName"),
             "startLine": start_line,
             "endLine": end_line,
-            "returnedStartLine": start_line,
+            "requestedStartLine": slice_start,
+            "requestedEndLine": slice_end,
+            "returnedStartLine": slice_start,
             "returnedEndLine": effective_end,
-            "truncated": effective_end < end_line,
+            "truncated": effective_end < slice_end,
         }
 
         return make_text_result(
@@ -1875,12 +1930,32 @@ class CodeIndexTools:
         query = require_string(arguments, "query")
         file = arguments.get("file")
         file_pattern = arguments.get("filePattern")
+        symbol_id = arguments.get("symbolId")
 
         if file is not None and not isinstance(file, str):
             raise McpError(-32602, "file must be a string when provided")
 
         if file_pattern is not None and not isinstance(file_pattern, str):
             raise McpError(-32602, "filePattern must be a string when provided")
+
+        if symbol_id is not None and not isinstance(symbol_id, str):
+            raise McpError(-32602, "symbolId must be a string when provided")
+
+        start_line = None
+        end_line = None
+
+        if symbol_id is not None:
+            if file is not None or file_pattern is not None:
+                raise McpError(-32602, "symbolId cannot be combined with file or filePattern")
+
+            symbol = self.index.symbol_by_id.get(symbol_id)
+
+            if symbol is None:
+                return make_text_result(f"Symbol not found: {symbol_id}", is_error=True)
+
+            file = str(symbol["fileId"])
+            start_line = int(symbol["startLine"])
+            end_line = int(symbol["endLine"])
 
         case_sensitive = optional_bool(arguments, "caseSensitive", False)
         whole_word = optional_bool(arguments, "wholeWord", False)
@@ -1894,6 +1969,8 @@ class CodeIndexTools:
             query=query,
             file=file,
             file_pattern=file_pattern,
+            start_line=start_line,
+            end_line=end_line,
             case_sensitive=case_sensitive,
             whole_word=whole_word,
             use_regex=use_regex,
@@ -1902,6 +1979,11 @@ class CodeIndexTools:
         )
         except re.error as exc:
             raise McpError(-32602, f"Invalid regular expression: {exc}") from exc
+
+        if symbol_id is not None:
+            result["symbolId"] = symbol_id
+            result["symbolStartLine"] = start_line
+            result["symbolEndLine"] = end_line
 
         return make_json_text_result(result)
 
@@ -1924,6 +2006,18 @@ def require_int(arguments: dict[str, Any], key: str) -> int:
 
     if not isinstance(value, int):
         raise McpError(-32602, f"Missing or invalid integer argument: {key}")
+
+    return value
+
+
+def optional_int(arguments: dict[str, Any], key: str) -> int | None:
+    value = arguments.get(key)
+
+    if value is None:
+        return None
+
+    if not isinstance(value, int):
+        raise McpError(-32602, f"Invalid integer argument: {key}")
 
     return value
 

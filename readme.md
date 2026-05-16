@@ -849,6 +849,9 @@ output, Visual Studio, or IDA notes to containing or nearest indexed symbol/data
 ranges. It is metadata-only; read the selected source range before making
 behavior claims.
 
+`read_symbol` accepts optional `startOffset`/`endOffset` or absolute
+`startLine`/`endLine` to read only a slice of a large symbol body.
+
 `find_symbol` searches symbol metadata only:
 
 - exact `shortName`
@@ -875,6 +878,9 @@ It does not read source code and does not resolve overloads semantically.
 - `limit`: bound the result size
 
 This is a locator filter only. It does not resolve inheritance, overloads, or type semantics.
+
+`search_source` accepts `symbolId` to search only inside one indexed symbol range.
+This is still lexical source search, not semantic call/reference resolution.
 
 Canonical argument:
 

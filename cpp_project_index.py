@@ -1770,6 +1770,8 @@ class LoadedProjectIndex:
         query: str,
         file: str | None = None,
         file_pattern: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
         case_sensitive: bool = False,
         whole_word: bool = False,
         use_regex: bool = False,
@@ -1817,8 +1819,14 @@ class LoadedProjectIndex:
                 continue
 
             searched_files += 1
+            search_start = max(1, start_line or 1)
+            search_end = min(len(lines), end_line or len(lines))
 
-            for index, line in enumerate(lines):
+            if search_end < search_start:
+                continue
+
+            for index in range(search_start - 1, search_end):
+                line = lines[index]
                 if pattern.search(line) is None:
                     continue
 

@@ -106,6 +106,8 @@ Escalate only when needed:
 metadata / compact routing
 -> indexed ranges or compact outline
 -> read_symbol/read_range for current source
+-> read_symbol with startOffset/endOffset for large symbol slices
+-> search_source with symbolId for lexical checks inside one symbol
 -> source hunks with includeSource:true only when the diff text itself is needed
 ```
 
@@ -566,7 +568,9 @@ Use `get_nearest_symbol_for_line` when a diagnostic, hunk, build output, Visual 
 
 ## 12. Raw Source Search Rules
 
-Use `search_source(query, file?, filePattern?, limit?, contextLines?, wholeWord?, useRegex?, caseSensitive?)` when metadata search is not enough and you need to find literal source text.
+Use `search_source(query, file?, filePattern?, symbolId?, limit?, contextLines?, wholeWord?, useRegex?, caseSensitive?)` when metadata search is not enough and you need to find literal source text.
+
+Use `symbolId` to search only inside one indexed symbol range. This is still lexical source search, not semantic call/reference resolution.
 
 This is raw line-based source search. It is not semantic C++ reference resolution.
 
@@ -828,6 +832,8 @@ Avoid calling `reload_index_cache` just because a query returned no results. Fir
 ## 17. Reading Rules
 
 Use `read_symbol(symbolId)` when a symbol was found by the index.
+
+Use `read_symbol` with `startOffset`/`endOffset` or absolute `startLine`/`endLine` when a large symbol body was already located and only a slice is needed.
 
 Use `read_range(file, startLine, endLine)` when:
 
