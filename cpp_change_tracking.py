@@ -167,6 +167,14 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
                         "default": "all",
                     },
                     "revision": {"type": "string"},
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Optional indexed symbolId. Return only hunks whose new-line range intersects that symbol.",
+                    },
+                    "dataId": {
+                        "type": "string",
+                        "description": "Optional indexed dataId. Return only hunks whose new-line range intersects that data declaration.",
+                    },
                     "contextLines": {
                         "type": "integer",
                         "minimum": 0,
@@ -175,6 +183,20 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
                     },
                     "includeSource": {"type": "boolean", "default": True},
                     "includeIndexedRanges": {"type": "boolean", "default": True},
+                    "includeIndexedRangeSummary": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Include a compact summary grouped by intersecting indexed symbol/data range. "
+                            "Useful with includeIndexedRanges:false for low-token changed-symbol routing."
+                        ),
+                    },
+                    "indexedRangeSummaryLimit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 200,
+                    },
                     "maxHunks": {
                         "type": "integer",
                         "minimum": 1,
@@ -561,9 +583,13 @@ class ChangeTracker:
         file: str,
         scope: str,
         revision: str | None,
+        symbol_id: str | None,
+        data_id: str | None,
         context_lines: int,
         include_source: bool,
         include_indexed_ranges: bool,
+        include_indexed_range_summary: bool,
+        indexed_range_summary_limit: int,
         max_hunks: int,
         max_lines: int,
     ) -> dict[str, Any]:
@@ -580,11 +606,19 @@ class ChangeTracker:
         if not parsed_hunks and revision is None and self._is_untracked(relative_path):
             parsed_hunks = [self.untracked_file_hunk(relative_path)]
 
+        target_range = self.change_target_range(
+            symbol_id=symbol_id,
+            data_id=data_id,
+        )
         hunks: list[dict[str, Any]] = []
+        summary_inputs: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         total_lines = 0
         truncated = False
 
         for parsed in parsed_hunks:
+            if target_range is not None and not hunk_intersects_target(parsed, target_range):
+                continue
+
             if len(hunks) >= max_hunks:
                 truncated = True
                 break
@@ -596,27 +630,82 @@ class ChangeTracker:
                 break
 
             total_lines += hunk_line_count
-            hunks.append(
-                self.hunk_to_json(
-                    parsed,
-                    relative_path=relative_path,
+            indexed_ranges = (
+                self.indexed_ranges_for_hunk(
                     file_id=info["fileId"],
-                    include_source=include_source,
-                    include_indexed_ranges=include_indexed_ranges,
+                    new_start=parsed.new_start,
+                    new_lines=parsed.new_lines,
                 )
+                if include_indexed_ranges or include_indexed_range_summary
+                else []
             )
+            hunk_json = self.hunk_to_json(
+                parsed,
+                include_source=include_source,
+                include_indexed_ranges=include_indexed_ranges,
+                indexed_ranges=indexed_ranges,
+            )
+            hunks.append(hunk_json)
+            summary_inputs.append((hunk_json, indexed_ranges))
 
-        return {
+        result = {
             "schema": FILE_HUNKS_SCHEMA,
             "relativePath": relative_path,
             "fileId": info["fileId"],
             "scope": None if revision is not None else scope,
             "revision": revision,
+            "symbolId": symbol_id,
+            "dataId": data_id,
             "contextLines": context_lines,
             "returnedHunks": len(hunks),
             "truncated": truncated,
             "hunks": hunks,
         }
+
+        if include_indexed_range_summary:
+            summary, summary_truncated = summarize_indexed_ranges_for_hunks(
+                summary_inputs,
+                limit=indexed_range_summary_limit,
+            )
+            result["summaryByIndexedRange"] = summary
+            result["returnedIndexedRangeSummaries"] = len(summary)
+            result["indexedRangeSummaryTruncated"] = summary_truncated
+
+        return result
+
+    def change_target_range(
+        self,
+        *,
+        symbol_id: str | None,
+        data_id: str | None,
+    ) -> dict[str, Any] | None:
+        if symbol_id is not None:
+            symbol = self.index.symbol_by_id.get(symbol_id)
+
+            if symbol is None:
+                return None
+
+            return {
+                "kind": "symbol",
+                "fileId": symbol.get("fileId"),
+                "startLine": symbol.get("startLine"),
+                "endLine": symbol.get("endLine"),
+            }
+
+        if data_id is not None:
+            item = self.index.data_by_id.get(data_id)
+
+            if item is None:
+                return None
+
+            return {
+                "kind": "data",
+                "fileId": item.get("fileId"),
+                "startLine": item.get("startLine"),
+                "endLine": item.get("endLine"),
+            }
+
+        return None
 
     def diff_for_file(
         self,
@@ -669,10 +758,9 @@ class ChangeTracker:
         self,
         hunk: ParsedHunk,
         *,
-        relative_path: str,
-        file_id: str | None,
         include_source: bool,
         include_indexed_ranges: bool,
+        indexed_ranges: list[dict[str, Any]],
     ) -> dict[str, Any]:
         added_line_numbers: list[int] = []
         removed_line_count = 0
@@ -716,11 +804,7 @@ class ChangeTracker:
             result["source"] = "\n".join(source_lines)
 
         if include_indexed_ranges:
-            result["indexedRanges"] = self.indexed_ranges_for_hunk(
-                file_id=file_id,
-                new_start=hunk.new_start,
-                new_lines=hunk.new_lines,
-            )
+            result["indexedRanges"] = indexed_ranges
 
         return result
 
@@ -785,6 +869,85 @@ class ChangeTracker:
         return ranges
 
 
+def summarize_indexed_ranges_for_hunks(
+    hunk_ranges: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for hunk_index, (hunk, ranges) in enumerate(hunk_ranges):
+        new_start = int(hunk.get("newStart") or 0)
+        new_lines = int(hunk.get("newLines") or 0)
+        changed_start = max(1, new_start)
+        changed_end = changed_start if new_lines <= 0 else new_start + new_lines - 1
+
+        for item in ranges:
+            key = indexed_range_summary_key(item)
+            summary = grouped.get(key)
+
+            if summary is None:
+                summary = {
+                    "kind": item.get("kind"),
+                    "startLine": item.get("startLine"),
+                    "endLine": item.get("endLine"),
+                    "qualifiedName": item.get("qualifiedName"),
+                    "hunkCount": 0,
+                    "hunkIndexes": [],
+                    "changedLineRanges": [],
+                    "addedLineCount": 0,
+                    "removedLineCount": 0,
+                }
+
+                if item.get("kind") == "symbol":
+                    summary["symbolId"] = item.get("symbolId")
+                    summary["type"] = item.get("type")
+                else:
+                    summary["dataId"] = item.get("dataId")
+                    summary["declarationKind"] = item.get("declarationKind")
+
+                grouped[key] = summary
+
+            summary["hunkCount"] = int(summary["hunkCount"]) + 1
+            summary["hunkIndexes"].append(hunk_index)
+            summary["changedLineRanges"].append(
+                {
+                    "startLine": changed_start,
+                    "endLine": changed_end,
+                }
+            )
+            summary["addedLineCount"] = (
+                int(summary["addedLineCount"]) + len(hunk.get("addedLineNumbers") or [])
+            )
+            summary["removedLineCount"] = (
+                int(summary["removedLineCount"]) + int(hunk.get("removedLineCount") or 0)
+            )
+
+    summaries = sorted(
+        grouped.values(),
+        key=lambda item: (
+            int(item.get("startLine") or 0),
+            str(item.get("kind") or ""),
+            str(item.get("qualifiedName") or ""),
+        ),
+    )
+    truncated = len(summaries) > limit
+    return summaries[:limit], truncated
+
+
+def indexed_range_summary_key(item: dict[str, Any]) -> str:
+    if item.get("kind") == "symbol":
+        return f"symbol:{item.get('symbolId')}"
+
+    if item.get("kind") == "data":
+        return f"data:{item.get('dataId')}"
+
+    return (
+        f"{item.get('kind')}:{item.get('qualifiedName')}:"
+        f"{item.get('startLine')}:{item.get('endLine')}"
+    )
+
+
 HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
@@ -826,3 +989,19 @@ def parse_unified_diff_hunks(diff_text: str) -> list[ParsedHunk]:
 
 def ranges_intersect(left_start: int, left_end: int, right_start: int, right_end: int) -> bool:
     return left_start <= right_end and right_start <= left_end
+
+
+def hunk_intersects_target(hunk: ParsedHunk, target_range: dict[str, Any]) -> bool:
+    if hunk.new_lines <= 0:
+        range_start = max(1, hunk.new_start)
+        range_end = range_start
+    else:
+        range_start = max(1, hunk.new_start)
+        range_end = hunk.new_start + hunk.new_lines - 1
+
+    return ranges_intersect(
+        range_start,
+        range_end,
+        int(target_range.get("startLine") or 0),
+        int(target_range.get("endLine") or 0),
+    )

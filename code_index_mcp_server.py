@@ -1350,9 +1350,41 @@ class CodeIndexTools:
         if revision is not None and scope_present:
             raise McpError(-32602, "revision and scope must not both be set")
 
+        symbol_id = optional_string(arguments, "symbolId")
+        data_id = optional_string(arguments, "dataId")
+
+        if symbol_id is not None and data_id is not None:
+            raise McpError(-32602, "symbolId and dataId must not both be set")
+
+        file_item = self.index.get_file_item(file)
+
+        if symbol_id is not None:
+            symbol = self.index.symbol_by_id.get(symbol_id)
+
+            if symbol is None:
+                return make_text_result(f"Symbol not found: {symbol_id}", is_error=True)
+
+            if file_item is not None and symbol.get("fileId") != file_item.get("fileId"):
+                raise McpError(-32602, "symbolId does not belong to file")
+
+        if data_id is not None:
+            item = self.index.data_by_id.get(data_id)
+
+            if item is None:
+                return make_text_result(f"Data declaration not found: {data_id}", is_error=True)
+
+            if file_item is not None and item.get("fileId") != file_item.get("fileId"):
+                raise McpError(-32602, "dataId does not belong to file")
+
         context_lines = clamp_int(arguments.get("contextLines", 1), minimum=0, maximum=20)
         include_source = optional_bool(arguments, "includeSource", True)
         include_indexed_ranges = optional_bool(arguments, "includeIndexedRanges", True)
+        include_indexed_range_summary = optional_bool(arguments, "includeIndexedRangeSummary", False)
+        indexed_range_summary_limit = clamp_int(
+            arguments.get("indexedRangeSummaryLimit", 200),
+            minimum=1,
+            maximum=1000,
+        )
         max_hunks = clamp_int(arguments.get("maxHunks", 20), minimum=1, maximum=200)
         max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=5000)
         return make_json_text_result(
@@ -1360,9 +1392,13 @@ class CodeIndexTools:
                 file=file,
                 scope=scope,
                 revision=revision,
+                symbol_id=symbol_id,
+                data_id=data_id,
                 context_lines=context_lines,
                 include_source=include_source,
                 include_indexed_ranges=include_indexed_ranges,
+                include_indexed_range_summary=include_indexed_range_summary,
+                indexed_range_summary_limit=indexed_range_summary_limit,
                 max_hunks=max_hunks,
                 max_lines=max_lines,
             )

@@ -832,6 +832,16 @@ between changed hunk line ranges and indexed symbol/data ranges. These are
 routing hints only. Read the relevant source with `read_symbol` or `read_range`
 before making implementation claims.
 
+For low-token review routing, call `get_file_change_hunks` with
+`includeIndexedRangeSummary:true`, `includeIndexedRanges:false`, and
+`includeSource:false`. The returned `summaryByIndexedRange` groups changed
+hunks by affected indexed symbol/data range without repeating every per-hunk
+intersection.
+
+After selecting an affected range, pass `symbolId` or `dataId` back to
+`get_file_change_hunks` to return only hunks intersecting that symbol/data
+range. This is still line-range filtering, not semantic analysis.
+
 ### Symbol and source tools
 
 ```text

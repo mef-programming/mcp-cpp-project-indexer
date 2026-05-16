@@ -134,9 +134,10 @@ For changed-code review, use this low-token path by default:
 
 ```text
 list_changed_files / get_revision_summary
--> get_file_change_hunks(includeIndexedRanges:true, includeSource:false)
+-> get_file_change_hunks(includeIndexedRangeSummary:true, includeIndexedRanges:false, includeSource:false)
+-> use summaryByIndexedRange to identify affected symbols/data
 -> read_symbol only for suspicious changed symbols
--> get_file_change_hunks(includeSource:true) only when diff text is needed
+-> get_file_change_hunks(symbolId/dataId, includeIndexedRanges:true or includeSource:true) only when per-symbol hunks or diff text are needed
 ```
 
 If working changes are empty but the user says they changed, fixed, or just committed something, inspect recent revisions before assuming no change exists:
@@ -180,12 +181,12 @@ Review workflow:
 
 ```text
 1. list_changed_files({"scope": "all", "compact": true})
-2. get_file_change_hunks(includeIndexedRanges: true, includeSource: false)
-3. For each hunk:
-   identify intersecting symbol/data range
+2. get_file_change_hunks(includeIndexedRangeSummary: true, includeIndexedRanges: false, includeSource: false)
+3. Use summaryByIndexedRange:
+   identify affected symbol/data ranges
    read_symbol/read_range current source only if the hunk is plausibly relevant
-   reason only from changed hunk plus read source
-4. Use get_file_change_hunks(includeSource: true) only when the actual diff text is needed
+   reason only from change evidence plus read source
+4. Use get_file_change_hunks(symbolId/dataId, includeIndexedRanges: true or includeSource: true) only when per-symbol hunk detail or actual diff text is needed
 5. Report findings with file path and line range
 ```
 
