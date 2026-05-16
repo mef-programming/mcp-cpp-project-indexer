@@ -292,6 +292,27 @@ def update_project_index(ctx: MenuContext) -> int:
     )
 
 
+def update_project_index_known_files_only(ctx: MenuContext) -> int:
+    script = ctx.script("update_project_index.py")
+
+    if not require_file(script):
+        return 2
+
+    return run_command(
+        [
+            str(ctx.python),
+            str(script),
+            "--root",
+            str(ctx.root),
+            "--index-root",
+            str(ctx.index_root),
+            "--jobs",
+            str(ctx.jobs),
+            "--known-files-only",
+        ]
+    )
+
+
 def update_project_index_dry_run(ctx: MenuContext) -> int:
     script = ctx.script("update_project_index.py")
 
@@ -311,6 +332,26 @@ def update_project_index_dry_run(ctx: MenuContext) -> int:
     )
 
 
+def update_project_index_known_files_only_dry_run(ctx: MenuContext) -> int:
+    script = ctx.script("update_project_index.py")
+
+    if not require_file(script):
+        return 2
+
+    return run_command(
+        [
+            str(ctx.python),
+            str(script),
+            "--root",
+            str(ctx.root),
+            "--index-root",
+            str(ctx.index_root),
+            "--dry-run",
+            "--known-files-only",
+        ]
+    )
+
+
 def update_all(ctx: MenuContext) -> int:
     result = update_project_index(ctx)
 
@@ -318,6 +359,16 @@ def update_all(ctx: MenuContext) -> int:
         return result
 
     return build_module_map(ctx)
+
+
+def update_all_known_files_only(ctx: MenuContext) -> int:
+    result = update_project_index_known_files_only(ctx)
+
+    if result != 0:
+        return result
+
+    return build_module_map(ctx)
+
 
 def run_mcp_server(ctx: MenuContext) -> int:
     script = ctx.script("code_index_mcp_server.py")
@@ -383,8 +434,11 @@ def menu_items() -> list[tuple[str, Callable[[MenuContext], int]]]:
         ("Build module map", build_module_map),
         ("Build project index + module map", build_all),
         ("Dry-run update project index", update_project_index_dry_run),
+        ("Dry-run fast update known indexed files", update_project_index_known_files_only_dry_run),
         ("Update project index", update_project_index),
+        ("Fast update known indexed files", update_project_index_known_files_only),
         ("Update project index + module map", update_all),        
+        ("Fast update known indexed files + module map", update_all_known_files_only),
         ("Show project summary", show_project_summary),
         ("Show diagnostics", show_diagnostics),
         ("Dump module tree to module-tree.txt", dump_module_tree),
@@ -474,8 +528,11 @@ def parse_args() -> argparse.Namespace:
             "build-module-map",
             "build-all",
             "update-dry-run",
+            "update-known-dry-run",
             "update-index",
+            "update-known",
             "update-all",
+            "update-known-all",
             "summary",
             "diagnostics",
             "dump-module-tree",
@@ -510,8 +567,11 @@ def main() -> int:
         "build-module-map": build_module_map,
         "build-all": build_all,
         "update-dry-run": update_project_index_dry_run,
+        "update-known-dry-run": update_project_index_known_files_only_dry_run,
         "update-index": update_project_index,
+        "update-known": update_project_index_known_files_only,
         "update-all": update_all,
+        "update-known-all": update_all_known_files_only,
         "summary": show_project_summary,
         "diagnostics": show_diagnostics,
         "dump-module-tree": dump_module_tree,

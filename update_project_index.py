@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +54,80 @@ class UpdateResult:
     modules: int
     diagnostics: int
     state_initialized: bool
+
+
+class UpdateProgress:
+    def __init__(self, *, root: Path, enabled: bool) -> None:
+        self.root = root
+        self.enabled = enabled
+        self.started = time.monotonic()
+        self.last_update = 0.0
+
+    def _relative(self, path: Path) -> str:
+        try:
+            relative = path.relative_to(self.root).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+
+        max_path_len = 90
+
+        if len(relative) > max_path_len:
+            return "..." + relative[-max_path_len:]
+
+        return relative
+
+    def status(self, text: str) -> None:
+        if not self.enabled:
+            return
+
+        elapsed = time.monotonic() - self.started
+        sys.stderr.write(f"\r- {text} {elapsed:6.1f}s{'':<80}")
+        sys.stderr.flush()
+
+    def file(self, text: str, completed: int, total: int, path: Path) -> None:
+        if not self.enabled:
+            return
+
+        now = time.monotonic()
+
+        if now - self.last_update < 0.05 and completed != total:
+            return
+
+        self.last_update = now
+        percent = completed * 100.0 / max(1, total)
+        elapsed = now - self.started
+        relative = self._relative(path)
+        sys.stderr.write(
+            f"\r- {text} {completed}/{total} "
+            f"({percent:5.1f}%) {elapsed:6.1f}s  {relative:<90}"
+        )
+        sys.stderr.flush()
+
+    def discovered(self, visited: int, path: Path) -> None:
+        if not self.enabled:
+            return
+
+        now = time.monotonic()
+
+        if now - self.last_update < 0.1:
+            return
+
+        self.last_update = now
+        elapsed = now - self.started
+        relative = self._relative(path)
+        sys.stderr.write(
+            f"\r- Discovering files {visited} scanned "
+            f"{elapsed:6.1f}s  {relative:<90}"
+        )
+        sys.stderr.flush()
+
+    def done(self, text: str) -> None:
+        if not self.enabled:
+            return
+
+        elapsed = time.monotonic() - self.started
+        sys.stderr.write(f"\r- {text} {elapsed:6.1f}s{'':<90}\n")
+        sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +247,8 @@ def make_update_plan(
     excluded_dir_names: set[str] | None,
     case_insensitive_paths: bool,
     force: bool,
+    known_files_only: bool,
+    progress: UpdateProgress | None = None,
 ) -> tuple[UpdatePlan, dict[str, Path], dict[str, str], dict[str, dict[str, Any]]]:
     manifest = load_manifest(index_root)
     manifest_by_path = existing_manifest_by_relative_path(
@@ -181,19 +259,46 @@ def make_update_plan(
     state_files = existing_state_files(state)
     state_initialized = state is None
 
-    source_files = discover_source_files(
-        root,
-        extensions=extensions,
-        excluded_dir_names=excluded_dir_names,
-    )
+    if known_files_only:
+        source_files = []
+
+        for file_item in manifest_by_path.values():
+            relative_path = str(file_item.get("relativePath") or "")
+
+            if not relative_path:
+                continue
+
+            path = root / relative_path
+
+            if path.exists():
+                source_files.append(path)
+
+        source_files.sort(key=lambda item: item.as_posix().casefold())
+    else:
+        source_files = discover_source_files(
+            root,
+            extensions=extensions,
+            excluded_dir_names=excluded_dir_names,
+            progress_callback=progress.discovered if progress is not None else None,
+        )
+
+    if progress is not None:
+        progress.done(f"Discovery complete: {len(source_files)} current files")
 
     current_by_key: dict[str, Path] = {}
     current_hashes: dict[str, str] = {}
+    total = len(source_files)
 
-    for path in source_files:
+    for index, path in enumerate(source_files, start=1):
+        if progress is not None:
+            progress.file("Hashing files", index, total, path)
+
         key = normalize_relative_path(path, root, case_insensitive=case_insensitive_paths)
         current_by_key[key] = path
         current_hashes[key] = raw_content_hash(path)
+
+    if progress is not None:
+        progress.done(f"Hashing complete: {len(current_hashes)} files")
 
     added: list[Path] = []
     modified: list[Path] = []
@@ -417,12 +522,21 @@ def run_update(
     blank_comments: bool,
     dry_run: bool,
     force: bool,
+    known_files_only: bool,
+    progress_enabled: bool,
     jobs: int,
 ) -> UpdateResult:
     if not (index_root / "manifest.json").exists():
         raise SystemExit(
             "No existing project index found. Run build_project_index.py first."
         )
+
+    progress = UpdateProgress(root=root, enabled=progress_enabled)
+    progress.status(
+        "Planning update from known indexed files"
+        if known_files_only
+        else "Planning update with full discovery"
+    )
 
     plan, current_by_key, current_hashes, manifest_by_path = make_update_plan(
         root=root,
@@ -431,6 +545,8 @@ def run_update(
         excluded_dir_names=excluded_dir_names,
         case_insensitive_paths=case_insensitive_paths,
         force=force,
+        known_files_only=known_files_only,
+        progress=progress,
     )
 
     print("Update plan")
@@ -441,6 +557,7 @@ def run_update(
     print("Unchanged:", len(plan.unchanged))
     print("State initialized:", plan.state_initialized)
     print("Force reindex:", force)
+    print("Known files only:", known_files_only)
 
     if plan.added:
         print("\nAdded files:")
@@ -494,8 +611,7 @@ def run_update(
     updated_by_key: dict[str, dict[str, Any]] = {}
 
     def update_progress(completed: int, total: int, path: Path) -> None:
-        relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.as_posix()
-        print(f"\r- Reindexing {completed}/{total} ({completed * 100.0 / max(1, total):.1f}%) {relative}", end="", flush=True)
+        progress.file("Reindexing", completed, total, path)
 
     changed_file_indexes, changed_file_diagnostics = build_file_indexes_for_project(
         source_files=changed_paths,
@@ -509,7 +625,7 @@ def run_update(
     )
 
     if changed_paths:
-        print()
+        progress.done(f"Reindexing complete: {len(changed_paths)} files")
 
     updated_by_key: dict[str, dict[str, Any]] = {}
 
@@ -520,8 +636,13 @@ def run_update(
 
     current_file_indexes: list[dict[str, Any]] = []
     new_state_files: dict[str, dict[str, Any]] = {}
+    total_current = len(current_by_key)
 
-    for key, path in sorted(current_by_key.items(), key=lambda item: item[0].casefold()):
+    for index, (key, path) in enumerate(
+        sorted(current_by_key.items(), key=lambda item: item[0].casefold()),
+        start=1,
+    ):
+        progress.file("Loading file indexes", index, total_current, path)
         file_index = updated_by_key.get(key)
 
         if file_index is None:
@@ -547,6 +668,9 @@ def run_update(
             "rawContentHash": current_hashes[key],
         }
 
+    progress.done(f"Loaded file indexes: {len(current_file_indexes)} files")
+    progress.status("Aggregating project index")
+
     manifest = aggregate_project_index(
         root=root,
         index_root=index_root,
@@ -558,6 +682,7 @@ def run_update(
         root=root,
         files=new_state_files,
     )
+    progress.done("Aggregation complete")
 
     counts = manifest["counts"]
 
@@ -691,6 +816,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--known-files-only",
+        action="store_true",
+        help=(
+            "Skip full filesystem discovery and only check files already present in the "
+            "existing manifest. This is faster for edit/update loops but does not discover "
+            "new source files."
+        ),
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show update planning/reindexing progress on stderr.",
+    )
+    parser.add_argument(
         "--print-summary-json",
         action="store_true",
         help="Print summary as JSON.",
@@ -713,6 +853,8 @@ def main() -> int:
         blank_comments=args.blank_comments,
         dry_run=args.dry_run,
         force=args.force,
+        known_files_only=args.known_files_only,
+        progress_enabled=args.progress and not args.print_summary_json,
         jobs=args.jobs,
     )
 
@@ -721,6 +863,7 @@ def main() -> int:
         "indexRoot": index_root.as_posix(),
         "dryRun": args.dry_run,
         "force": args.force,
+        "knownFilesOnly": args.known_files_only,
         "stateInitialized": result.state_initialized,
         "added": result.added,
         "modified": result.modified,

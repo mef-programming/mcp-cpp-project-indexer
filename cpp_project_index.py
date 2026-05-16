@@ -35,6 +35,7 @@ DEFAULT_SOURCE_EXTENSIONS = {
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
     ".git",
+    ".mcp-cpp-project-indexer",
     ".vs",
     ".vscode",
     "build",
@@ -228,33 +229,64 @@ def should_skip_dir(path: Path, excluded_dir_names: set[str]) -> bool:
     return any(part in excluded_dir_names for part in path.parts)
 
 
+def _is_excluded_dir_name(name: str, excluded_dir_names: set[str]) -> bool:
+    return name.casefold() in excluded_dir_names
+
+
 def discover_source_files(
     root: Path,
     *,
     extensions: set[str] | None = None,
     excluded_dir_names: set[str] | None = None,
+    progress_callback: Callable[[int, Path], None] | None = None,
 ) -> list[Path]:
-    extensions = extensions or DEFAULT_SOURCE_EXTENSIONS
-    excluded_dir_names = excluded_dir_names or DEFAULT_EXCLUDED_DIR_NAMES
+    extensions = {
+        item.casefold()
+        for item in (extensions or DEFAULT_SOURCE_EXTENSIONS)
+    }
+    excluded_dir_names = {
+        item.casefold()
+        for item in (excluded_dir_names or DEFAULT_EXCLUDED_DIR_NAMES)
+    }
 
     files: list[Path] = []
+    visited = 0
 
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
+    def walk(directory: Path) -> None:
+        nonlocal visited
 
         try:
-            relative = path.relative_to(root)
-        except ValueError:
-            relative = path
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
 
-        if should_skip_dir(relative.parent, excluded_dir_names):
-            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if not _is_excluded_dir_name(entry.name, excluded_dir_names):
+                        walk(Path(entry.path))
 
-        if path.suffix not in extensions:
-            continue
+                    continue
 
-        files.append(path)
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+
+            visited += 1
+            suffix = os.path.splitext(entry.name)[1].casefold()
+
+            if suffix not in extensions:
+                continue
+
+            path = Path(entry.path)
+
+            if progress_callback is not None:
+                progress_callback(visited, path)
+
+            files.append(path)
+
+    walk(root)
 
     files.sort(key=lambda item: item.as_posix().casefold())
     return files
@@ -672,6 +704,8 @@ def build_project_index(
     case_insensitive_paths: bool = True,
     blank_comments: bool = True,
     progress_callback: Callable[[int, int, Path], None] | None = None,
+    discovery_progress_callback: Callable[[int, Path], None] | None = None,
+    discovery_complete_callback: Callable[[int], None] | None = None,
     jobs: int = 1,
 ) -> ProjectIndexBuildResult:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -682,7 +716,11 @@ def build_project_index(
         root,
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
+        progress_callback=discovery_progress_callback,
     )
+
+    if discovery_complete_callback is not None:
+        discovery_complete_callback(len(source_files))
 
     file_indexes, file_index_failed_diagnostics = build_file_indexes_for_project(
         source_files=source_files,

@@ -56,6 +56,49 @@ class ProgressSpinner:
             sys.stderr.write("\n")
             sys.stderr.flush()
 
+
+class DiscoveryProgress:
+    def __init__(self, *, root: Path) -> None:
+        self.root = root
+        self.started = time.monotonic()
+        self.last_update = 0.0
+
+    def __call__(self, visited: int, path: Path) -> None:
+        now = time.monotonic()
+
+        # Avoid too much console I/O.
+        if now - self.last_update < 0.1:
+            return
+
+        self.last_update = now
+
+        try:
+            relative = path.relative_to(self.root).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+
+        max_path_len = 90
+
+        if len(relative) > max_path_len:
+            relative = "..." + relative[-max_path_len:]
+
+        elapsed = now - self.started
+
+        sys.stderr.write(
+            f"\r- Discovering files {visited} scanned "
+            f"{elapsed:6.1f}s  {relative:<90}"
+        )
+        sys.stderr.flush()
+
+    def finish(self, total: int) -> None:
+        elapsed = time.monotonic() - self.started
+        sys.stderr.write(
+            f"\r- Discovering files complete: {total} source files "
+            f"{elapsed:6.1f}s{'':<80}\n"
+        )
+        sys.stderr.flush()
+
+
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
 
 
@@ -219,9 +262,13 @@ def main() -> None:
     excluded_dirs = parse_excluded_dirs(args.exclude_dir)
 
     progress_callback = None
+    discovery_progress_callback = None
+    discovery_progress = None
 
     if args.progress and not args.print_summary_json:
         progress_callback = ProgressSpinner(root=args.root)
+        discovery_progress = DiscoveryProgress(root=args.root)
+        discovery_progress_callback = discovery_progress
 
     result = build_project_index(
         root=root,
@@ -232,6 +279,8 @@ def main() -> None:
         case_insensitive_paths=args.case_insensitive_paths,
         blank_comments=args.blank_comments,
         progress_callback=progress_callback,
+        discovery_progress_callback=discovery_progress_callback,
+        discovery_complete_callback=discovery_progress.finish if discovery_progress is not None else None,
         jobs=args.jobs,
     )
 
