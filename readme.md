@@ -840,8 +840,14 @@ find_declaration(query)
 find_symbols_glob(pattern)
 read_symbol(symbolId)
 read_range(file, startLine, endLine)
+get_nearest_symbol_for_line(file, line)
 list_file_symbols(file)
 ```
+
+`get_nearest_symbol_for_line` maps a file/line from diagnostics, hunks, build
+output, Visual Studio, or IDA notes to containing or nearest indexed symbol/data
+ranges. It is metadata-only; read the selected source range before making
+behavior claims.
 
 `find_symbol` searches symbol metadata only:
 

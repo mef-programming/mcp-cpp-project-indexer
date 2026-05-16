@@ -80,6 +80,7 @@ Before using tools, classify the request:
 | File orientation | `get_file_structure` with compact options | No, unless behavior is asked |
 | Known symbol lookup | `find_symbol` with compact/exact/filter options | Only if behavior/details are asked |
 | Known file symbol list | `list_file_symbols` with compact/filter options | Only after selecting a candidate |
+| Diagnostic/hunk/build line mapping | `get_nearest_symbol_for_line` | Only after selecting a range |
 | Member/data lookup | `list_type_members` or `find_data` | Only if declaration source is needed |
 | Raw text/callsite candidate search | `search_source` | Yes, before claiming behavior |
 | Implementation analysis | `read_symbol` / `read_range` | Yes |
@@ -558,6 +559,8 @@ list_file_symbols({
 The `container` filter is a locator filter only. It does not resolve inheritance, virtual dispatch, overloads, or type semantics.
 
 Prefer `list_file_symbols` over broad `find_symbol` when the relevant file is already known.
+
+Use `get_nearest_symbol_for_line` when a diagnostic, hunk, build output, Visual Studio location, or IDA note gives you a file and line number. Treat the result as metadata-only routing. Read the selected symbol or range before making behavior claims.
 
 ---
 

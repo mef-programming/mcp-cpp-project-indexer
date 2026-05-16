@@ -115,9 +115,10 @@ def read_messages():
 
 def tool_definitions() -> list[dict[str, Any]]:
     return [
+        # Project/cache tools
         {
             "name": "get_project_summary",
-            "description": "Return high-level counts for the loaded C++ routing index. This does not analyze code.",
+            "description": "[Project] Return high-level counts for the loaded C++ routing index. This does not analyze code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -127,7 +128,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "reload_index_cache",
             "description": (
-                "Reload the in-memory project index cache from index files on disk. "
+                "[Project] Reload the in-memory project index cache from index files on disk. "
                 "This does not rebuild or update the index. "
                 "Use only when the user explicitly asks to reload, or after the user says "
                 "they rebuilt/updated the index and wants this MCP server to see the new data."
@@ -147,10 +148,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # Symbol/source navigation tools
         {
             "name": "find_symbol",
             "description": (
-                "Find C++ project symbols by name metadata. "
+                "[Symbol] Find C++ project symbols by name metadata. "
                 "Use this for functions, methods, classes, structs, enums, constructors, "
                 "destructors, operators, and namespaces. "
                 "The required argument is 'query'. "
@@ -211,7 +214,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "find_declaration",
             "description": (
-                "Find likely declaration/container symbols for a C++ symbol query. "
+                "[Symbol] Find likely declaration/container symbols for a C++ symbol query. "
                 "Use this when the user specifically asks for a declaration. "
                 "The required argument is 'query'. "
                 "This is still metadata-only and does not read source code. "
@@ -244,7 +247,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "read_symbol",
-            "description": "Read original source lines for a symbolId, with absolute line numbers. This is a read-only range operation.",
+            "description": "[Source] Read original source lines for a symbolId, with absolute line numbers. This is a read-only range operation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -266,7 +269,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "read_range",
-            "description": "Read original source lines from a fileId or project-relative path, with absolute line numbers.",
+            "description": "[Source] Read original source lines from a fileId or project-relative path, with absolute line numbers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -294,8 +297,43 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "get_nearest_symbol_for_line",
+            "description": (
+                "[Symbol] Return indexed symbol/data ranges that contain or are nearest to one file line. "
+                "This is metadata-only and intended for diagnostics, hunks, build output, and IDE/binary handoff."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "includeData": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include indexed data/value declarations in addition to symbols.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                    },
+                },
+                "required": ["file", "line"],
+                "additionalProperties": False,
+            },
+        },
+
+        # File navigation tools
+        {
             "name": "list_file_symbols",
-            "description": "List routing symbols for one fileId or project-relative path. Does not read source code.",
+            "description": "[File] List routing symbols for one fileId or project-relative path. Does not read source code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -333,9 +371,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # Module metadata tools
         {
             "name": "find_module",
-            "description": "Find files that define a C++20 module or module partition.",
+            "description": "[Module] Find files that define a C++20 module or module partition.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -351,7 +391,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "list_module_files",
             "description": (
-                "Return files that define a C++20 module or module partition. "
+                "[Module] Return files that define a C++20 module or module partition. "
                 "The input must be a module name using C++20 module syntax, e.g. "
                 "'SmartFTP.TextEditor:View.Controls.Editor'. "
                 "Do not pass C++ namespaces such as 'SmartFTP::TextEditor::View::Controls'. "
@@ -368,10 +408,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # File/symbol glob discovery tools
         {
             "name": "find_files",
             "description": (
-                "Find indexed files by glob pattern over project-relative paths. "
+                "[File] Find indexed files by glob pattern over project-relative paths. "
                 "Use this when you know a filename or path pattern. "
                 "This does not search source contents."
             ),
@@ -396,7 +438,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "find_symbols_glob",
             "description": (
-                "Find symbols by glob pattern over shortName, qualifiedName, container, "
+                "[Symbol] Find symbols by glob pattern over shortName, qualifiedName, container, "
                 "signature, and relativePath. This searches index metadata only, not source code."
             ),
             "inputSchema": {
@@ -417,10 +459,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False
             }
         },
+
+        # Module map/query tools
         {
             "name": "search_modules",
             "description": (
-                "Find C++20 modules by glob pattern over module names. "
+                "[Module] Find C++20 modules by glob pattern over module names. "
                 "Use C++20 module syntax, e.g. '*.TextEditor:*'. "
                 "Do not pass C++ namespaces with '::'."
             ),
@@ -444,7 +488,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "get_module_map_summary",
-            "description": "Return summary counts for module_map.json. Metadata only; no source code is read.",
+            "description": "[Module] Return summary counts for module_map.json. Metadata only; no source code is read.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -454,7 +498,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_module_info",
             "description": (
-                "Return module metadata for one exact C++20 module name, including files, "
+                "[Module] Return module metadata for one exact C++20 module name, including files, "
                 "imports and importedBy. Do not pass C++ namespaces with '::'."
             ),
             "inputSchema": {
@@ -471,7 +515,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "list_module_imports",
-            "description": "List direct imports of one exact C++20 module. Metadata only.",
+            "description": "[Module] List direct imports of one exact C++20 module. Metadata only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -486,7 +530,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "list_module_imported_by",
-            "description": "List modules that directly import one exact C++20 module. Metadata only.",
+            "description": "[Module] List modules that directly import one exact C++20 module. Metadata only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -501,7 +545,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "get_module_tree",
-            "description": "Return a bounded C++20 module name tree from module_map.json. Metadata only.",
+            "description": "[Module] Return a bounded C++20 module name tree from module_map.json. Metadata only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -515,10 +559,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # Data/member tools
         {
             "name": "find_data",
             "description": (
-                "Find indexed C++ data/value declarations by metadata. "
+                "[Data] Find indexed C++ data/value declarations by metadata. "
                 "Use this for class/struct fields, static data members, globals, "
                 "namespace constants, enum values, variable templates, and concepts. "
                 "This is metadata-only and does not resolve types. "
@@ -552,7 +598,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "list_type_members",
             "description": (
-                "List indexed data/value declarations directly contained by a class, struct, or namespace. "
+                "[Data] List indexed data/value declarations directly contained by a class, struct, or namespace. "
                 "Use this to inspect member fields/constants after reading a method body. "
                 "Returns metadata only: name, typeText, signature and source range."
             ),
@@ -577,7 +623,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "read_data",
             "description": (
-                "Read original source lines for an indexed data/value declaration by dataId. "
+                "[Data] Read original source lines for an indexed data/value declaration by dataId. "
                 "This is a read-only range operation."
             ),
             "inputSchema": {
@@ -592,10 +638,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # Comment extraction tools
         {
             "name": "get_symbol_leading_comment",
             "description": (
-                "Extract the exact leading comment range immediately before an indexed symbol. "
+                "[Comment] Extract the exact leading comment range immediately before an indexed symbol. "
                 "This reads the original source file on demand and does not use a comment index. "
                 "read_symbol remains clean and returns only the exact symbol range."
             ),
@@ -625,7 +673,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_data_leading_comment",
             "description": (
-                "Extract the exact leading comment range immediately before an indexed data/value declaration. "
+                "[Comment] Extract the exact leading comment range immediately before an indexed data/value declaration. "
                 "Use this for fields, globals, enum values, variable templates, and concepts."
             ),
             "inputSchema": {
@@ -653,7 +701,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_file_header_comment",
             "description": (
-                "Extract the initial file header comment from a file. "
+                "[Comment] Extract the initial file header comment from a file. "
                 "This only inspects the start of the file and stops at the first code line."
             ),
             "inputSchema": {
@@ -677,7 +725,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_module_header_comment",
             "description": (
-                "Extract file-header comments from files that define a C++20 module or module partition. "
+                "[Comment] Extract file-header comments from files that define a C++20 module or module partition. "
                 "Returns one result per module file and does not guess a single canonical file when several exist."
             ),
             "inputSchema": {
@@ -698,10 +746,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+
+        # File overview/search tools
         {
             "name": "get_file_structure",
             "description": (
-                "Return a structured overview of one indexed source file using index metadata only. "
+                "[File] Return a structured overview of one indexed source file using index metadata only. "
                 "This includes module metadata, symbol counts, data declaration counts, diagnostics, "
                 "section ranges, and an ordered outline. This does not analyze code semantics."
             ),
@@ -762,7 +812,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "search_source",
             "description": (
-                "Search raw source text in indexed files. This is a plain line-based text search, "
+                "[Search] Search raw source text in indexed files. This is a plain line-based text search, "
                 "not semantic C++ reference resolution. It searches comments and strings too. "
                 "Use filePattern or file to narrow broad queries."
             ),
@@ -1400,6 +1450,116 @@ class CodeIndexTools:
         )
         return make_json_text_result(results)
 
+    def get_nearest_symbol_for_line(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        line = require_int(arguments, "line")
+        include_data = optional_bool(arguments, "includeData", True)
+        limit = clamp_int(arguments.get("limit", 10), minimum=1, maximum=50)
+        file_item = self.index.get_file_item(file)
+
+        if file_item is None:
+            return make_text_result(f"File not found: {file}", is_error=True)
+
+        file_id = str(file_item["fileId"])
+        relative_path = str(file_item["relativePath"])
+        containing: list[dict[str, Any]] = []
+        nearest_before: list[dict[str, Any]] = []
+        nearest_after: list[dict[str, Any]] = []
+
+        def classify(item: dict[str, Any], *, kind: str) -> None:
+            start_line = int(item.get("startLine") or 0)
+            end_line = int(item.get("endLine") or start_line)
+
+            if start_line <= line <= end_line:
+                distance = 0
+                relation = "containing"
+            elif end_line < line:
+                distance = line - end_line
+                relation = "before"
+            else:
+                distance = start_line - line
+                relation = "after"
+
+            result = {
+                "kind": kind,
+                "relation": relation,
+                "distance": distance,
+                "relativePath": relative_path,
+                "startLine": start_line,
+                "endLine": end_line,
+            }
+
+            if kind == "symbol":
+                result.update(
+                    {
+                        "symbolId": item.get("symbolId"),
+                        "type": item.get("type"),
+                        "qualifiedName": item.get("qualifiedName") or item.get("shortName"),
+                        "signature": item.get("signature"),
+                    }
+                )
+            else:
+                result.update(
+                    {
+                        "dataId": item.get("dataId"),
+                        "declarationKind": item.get("declarationKind"),
+                        "qualifiedName": item.get("qualifiedName") or item.get("name"),
+                        "signature": item.get("signature"),
+                        "typeText": item.get("typeText"),
+                    }
+                )
+
+            if relation == "containing":
+                containing.append(result)
+            elif relation == "before":
+                nearest_before.append(result)
+            else:
+                nearest_after.append(result)
+
+        for symbol in self.index.symbols:
+            if symbol.get("fileId") == file_id:
+                classify(symbol, kind="symbol")
+
+        if include_data:
+            for data_item in self.index.data:
+                if data_item.get("fileId") == file_id:
+                    classify(data_item, kind="data")
+
+        containing.sort(
+            key=lambda item: (
+                int(item.get("endLine") or 0) - int(item.get("startLine") or 0),
+                int(item.get("startLine") or 0),
+                str(item.get("qualifiedName") or ""),
+            )
+        )
+        nearest_before.sort(
+            key=lambda item: (
+                int(item.get("distance") or 0),
+                -int(item.get("endLine") or 0),
+                str(item.get("qualifiedName") or ""),
+            )
+        )
+        nearest_after.sort(
+            key=lambda item: (
+                int(item.get("distance") or 0),
+                int(item.get("startLine") or 0),
+                str(item.get("qualifiedName") or ""),
+            )
+        )
+
+        return make_json_text_result(
+            {
+                "schema": "cpp.nearest_symbol_for_line.v1",
+                "fileId": file_id,
+                "relativePath": relative_path,
+                "line": line,
+                "includeData": include_data,
+                "containing": containing[:limit],
+                "nearestBefore": nearest_before[:limit],
+                "nearestAfter": nearest_after[:limit],
+            }
+        )
+
     def find_module(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
 
@@ -1854,18 +2014,28 @@ class McpServer:
     def __init__(self, tools: CodeIndexTools) -> None:
         self.tools = tools
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            # Project/cache tools
             "get_project_summary": self.tools.get_project_summary,
             "reload_index_cache": self.tools.reload_index_cache,
+
+            # Symbol/source navigation tools
             "find_symbol": self.tools.find_symbol,
             "find_declaration": self.tools.find_declaration,
             "read_symbol": self.tools.read_symbol,
             "read_range": self.tools.read_range,
+            "get_nearest_symbol_for_line": self.tools.get_nearest_symbol_for_line,
+
+            # File navigation tools
             "list_file_symbols": self.tools.list_file_symbols,
             "find_files": self.tools.find_files,
             "find_symbols_glob": self.tools.find_symbols_glob,
+
+            # Data/member tools
             "find_data": self.tools.find_data,
             "list_type_members": self.tools.list_type_members,
             "read_data": self.tools.read_data,
+
+            # Module metadata tools
             "search_modules": self.tools.search_modules,
             "get_module_map_summary": self.tools.get_module_map_summary,
             "get_module_info": self.tools.get_module_info,
@@ -1874,6 +2044,8 @@ class McpServer:
             "list_module_imports": self.tools.list_module_imports,
             "list_module_imported_by": self.tools.list_module_imported_by,
             "get_module_tree": self.tools.get_module_tree,
+
+            # File overview/comment/search tools
             "get_file_structure": self.tools.get_file_structure,
             "get_symbol_leading_comment": self.tools.get_symbol_leading_comment,
             "get_data_leading_comment": self.tools.get_data_leading_comment,
@@ -1885,6 +2057,7 @@ class McpServer:
         if self.tools.change_tracker is not None:
             self.tool_handlers.update(
                 {
+                    # Change tracking tools
                     "list_changed_files": self.tools.list_changed_files,
                     "list_recent_revisions": self.tools.list_recent_revisions,
                     "get_revision_summary": self.tools.get_revision_summary,

@@ -88,7 +88,7 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "list_changed_files",
             "description": (
-                "List current changed files from the read-only change tracking layer. "
+                "[Change] List current changed files from the read-only change tracking layer. "
                 "This returns change evidence only and does not modify the repository."
             ),
             "inputSchema": {
@@ -114,7 +114,7 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "list_recent_revisions",
-            "description": "List recent revisions from the read-only change tracking layer.",
+            "description": "[Change] List recent revisions from the read-only change tracking layer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -131,7 +131,7 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "get_revision_summary",
-            "description": "Summarize files changed by one revision. This is read-only change evidence.",
+            "description": "[Change] Summarize files changed by one revision. This is read-only change evidence.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -154,7 +154,7 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_file_change_hunks",
             "description": (
-                "Return structured change hunks for one file, optionally intersected with indexed "
+                "[Change] Return structured change hunks for one file, optionally intersected with indexed "
                 "symbol/data ranges. Hunks are routing evidence, not semantic analysis."
             ),
             "inputSchema": {
