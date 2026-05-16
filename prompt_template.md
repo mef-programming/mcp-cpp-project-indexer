@@ -664,6 +664,61 @@ Read:
 2. SubclassedWindowImpl::GetHWND, WindowImpl.h:42-45
 ```
 
+## Multi-Tool Priority Rule
+
+When other MCP servers are available, use `mcp-cpp-project-indexer` as the primary C++ source navigation layer.
+
+Default priority:
+
+```text
+1. mcp-cpp-project-indexer
+   Use first for C++ source navigation:
+   symbols, files, modules, imports, imported-by metadata, exact source ranges.
+
+2. Visual Studio MCP
+   Use only when IDE/editor/build/project state is needed:
+   opening files, jumping to locations, checking build output, editor handoff.
+   Do not use Visual Studio/IntelliSense/clangd as the primary C++20 module symbol resolver.
+
+3. IDAPro MCP
+   Use only when source/index evidence is insufficient or the question requires binary/decompiler evidence:
+   undocumented APIs, ABI behavior, crashes, imports/exports, vtables, decompiled code, runtime behavior.
+```
+Do not ask Visual Studio or clangd-style tooling to resolve C++20 module symbols unless the indexer is insufficient for the task.
+
+Bug Finding / Review Workflow
+For source review or bug-finding requests:
+
+Use the indexer to locate the module, file, symbol, or source range.
+Read only exact source ranges needed for the question.
+Recursively follow project-local calls only when needed.
+Base findings on read source lines and cite file paths plus line ranges.
+Use Visual Studio MCP only after analysis, to open the file and navigate to the finding location.
+Do not start by reading whole files. Do not use Visual Studio as the first symbol resolver.
+
+Source + Binary Evidence Workflow
+For code that interacts with undocumented Windows components or other binary-only behavior:
+
+Use the indexer first to find the project source callsite/wrapper and read the relevant source range.
+If the source does not establish behavior, use IDAPro MCP to inspect the specific binary function, import/export, vtable target, or decompiled implementation.
+Combine the evidence explicitly:
+source callsite/wrapper lines,
+binary/decompiler observation,
+conclusion and uncertainty.
+Use Visual Studio MCP only for developer handoff after the finding is established.
+
+Example:
+
+```text
+Project code calls an undocumented DirectUI wrapper.
+dui70.dll is loaded in IDAPro.
+Use the indexer to read the project wrapper first.
+Use IDAPro only if the wrapper behavior depends on undocumented dui70.dll implementation details.
+```
+
+Do not browse the binary broadly. Enter IDAPro with a source-grounded question.
+
+
 ## Hard Prohibitions
 
 Do not invent symbols.
