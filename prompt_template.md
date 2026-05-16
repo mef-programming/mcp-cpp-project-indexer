@@ -84,9 +84,29 @@ Before using tools, classify the request:
 | Raw text/callsite candidate search | `search_source` | Yes, before claiming behavior |
 | Implementation analysis | `read_symbol` / `read_range` | Yes |
 | Bug review | locate first, then read exact ranges | Yes |
-| IDE handoff | Visual Studio MCP after analysis | Not for reasoning |
+| Recent edits / verify user changes | `list_changed_files` / `get_file_change_hunks` | Read affected symbols only when needed |
+| IDE handoff | Visual Studio MCP after indexer/change evidence | Not source evidence unless requested |
 | Binary/undocumented behavior | IDAPro MCP only after source evidence is insufficient | Source first, binary second |
 | Current changes / diffs / commit-message help | change tracking tools | Read source before behavior claims |
+
+### Default Compact Mode
+
+Prefer the smallest useful tool output first:
+
+- use `compact:true` when available
+- use `includeSource:false` for change hunks until source text is needed
+- use `includeOutline:false` for first-pass file orientation
+- use `hideNamespaces:true` for navigation queries unless namespace declarations matter
+- use `symbolTypes`, `dataKinds`, `limit`, `outlineLimit`, `maxHunks`, and `maxLines` to bound output
+
+Escalate only when needed:
+
+```text
+metadata / compact routing
+-> indexed ranges or compact outline
+-> read_symbol/read_range for current source
+-> source hunks with includeSource:true only when the diff text itself is needed
+```
 
 ### Change Tracking / Diff Rules
 
@@ -105,6 +125,24 @@ Correct workflow:
 3. If hunk output includes `indexedRanges`, use them as routing hints only.
 4. Read current source with `read_symbol` or `read_range` before making behavior claims.
 5. Generate review comments or commit-message suggestions only from diff evidence plus any source ranges that were read.
+
+For changed-code review, use this low-token path by default:
+
+```text
+list_changed_files / get_revision_summary
+-> get_file_change_hunks(includeIndexedRanges:true, includeSource:false)
+-> read_symbol only for suspicious changed symbols
+-> get_file_change_hunks(includeSource:true) only when diff text is needed
+```
+
+If working changes are empty but the user says they changed, fixed, or just committed something, inspect recent revisions before assuming no change exists:
+
+```text
+list_changed_files
+-> if empty and user expected changes:
+   list_recent_revisions
+   get_revision_summary({"revision": "HEAD", ...})
+```
 
 Use wording like:
 
@@ -137,14 +175,19 @@ Commit-message workflow:
 Review workflow:
 
 ```text
-1. list_changed_files
-2. get_file_change_hunks(includeIndexedRanges: true)
+1. list_changed_files({"scope": "all", "compact": true})
+2. get_file_change_hunks(includeIndexedRanges: true, includeSource: false)
 3. For each hunk:
    identify intersecting symbol/data range
-   read_symbol/read_range current source
+   read_symbol/read_range current source only if the hunk is plausibly relevant
    reason only from changed hunk plus read source
-4. Report findings with file path and line range
+4. Use get_file_change_hunks(includeSource: true) only when the actual diff text is needed
+5. Report findings with file path and line range
 ```
+
+Prefer findings that are real project risks over broad defensive contract checks.
+Distinguish bugs, invariant/documentation issues, cleanup, and defensive hardening.
+If project style intentionally fail-fasts on invariant violation, do not recommend defensive checks unless the current code hides the violation or turns it into a harder-to-diagnose failure.
 
 ### Evidence Discipline
 
@@ -1110,6 +1153,7 @@ Default priority:
    Use only when IDE/editor/build/project state is needed:
    opening files, jumping to locations, checking build output, editor handoff.
    Do not use Visual Studio/IntelliSense/clangd as the primary C++20 module symbol resolver.
+   Visual Studio MCP may be used for navigation after indexer evidence, but it is not source evidence unless explicitly requested.
 
 3. IDAPro MCP
    Use only when source/index evidence is insufficient or the question requires binary/decompiler evidence:
@@ -1122,15 +1166,25 @@ Do not ask Visual Studio or clangd-style tooling to resolve C++20 module symbols
 
 For source review or bug-finding requests:
 
-1. Use the indexer to locate the module, file, symbol, or source range.
-2. Read only exact source ranges needed for the question.
-3. Recursively follow project-local calls only when needed.
-4. Base findings on read source lines and cite file paths plus line ranges.
-5. Use Visual Studio MCP only after analysis, to open the file and navigate to the finding location.
+1. If reviewing changed code, start with change tracking and route by changed hunks.
+2. Otherwise use the indexer to locate the module, file, symbol, or source range.
+3. Read only exact source ranges needed for the question.
+4. Recursively follow project-local calls only when needed.
+5. Base findings on read source lines and cite file paths plus line ranges.
+6. Use Visual Studio MCP only after analysis, to open the file and navigate to the finding location.
 
 Do not start by reading whole files.
 
 Do not use Visual Studio as the first symbol resolver.
+
+Prefer findings that are real project risks. Separate:
+
+- bug
+- invariant/documentation issue
+- cleanup
+- defensive hardening
+
+If project style intentionally fail-fasts on invariant violation, do not recommend defensive checks unless the current code hides the violation or makes diagnosis worse.
 
 ### Source + Binary Evidence Workflow
 
