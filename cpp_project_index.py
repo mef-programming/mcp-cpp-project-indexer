@@ -987,10 +987,24 @@ class LoadedProjectIndex:
         *,
         limit: int = 20,
         symbol_types: set[str] | None = None,
+        container: str | None = None,
+        file: str | None = None,
+        file_pattern: str | None = None,
         exact_only: bool = False,
         hide_namespaces: bool = False,
         compact: bool = False,
     ) -> list[dict[str, Any]]:
+        file_id_filter: str | None = None
+
+        if file:
+            file_item = self.get_file_item(file)
+
+            if file_item is None:
+                return []
+
+            file_id_filter = str(file_item["fileId"])
+
+        normalized_file_pattern = normalize_glob_pattern(file_pattern).casefold() if file_pattern else None
         direct_ids = self.names.get(query, [])
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -1006,6 +1020,18 @@ class LoadedProjectIndex:
 
             if not symbol_matches_namespace_filter(symbol, hide_namespaces):
                 return False
+
+            if not symbol_matches_container_filter(symbol, container):
+                return False
+
+            if file_id_filter is not None and symbol.get("fileId") != file_id_filter:
+                return False
+
+            if normalized_file_pattern is not None:
+                relative_path = str(symbol.get("relativePath") or "").casefold()
+
+                if not fnmatchcase(relative_path, normalized_file_pattern):
+                    return False
 
             match_kind = symbol_match_kind(symbol, query)
 
@@ -1042,6 +1068,18 @@ class LoadedProjectIndex:
 
                 if not symbol_matches_namespace_filter(symbol, hide_namespaces):
                     continue
+
+                if not symbol_matches_container_filter(symbol, container):
+                    continue
+
+                if file_id_filter is not None and symbol.get("fileId") != file_id_filter:
+                    continue
+
+                if normalized_file_pattern is not None:
+                    relative_path = str(symbol.get("relativePath") or "").casefold()
+
+                    if not fnmatchcase(relative_path, normalized_file_pattern):
+                        continue
 
                 haystacks = [
                     str(symbol.get("shortName") or ""),

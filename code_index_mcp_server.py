@@ -197,6 +197,18 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "items": {"type": "string"},
                         "description": "Optional list of symbol type filters, e.g. ['method', 'function', 'type_alias'].",
                     },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional containing class/struct/namespace filter, e.g. 'Editor' or 'Namespace::Editor'.",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Optional fileId or project-relative path filter.",
+                    },
+                    "filePattern": {
+                        "type": "string",
+                        "description": "Optional glob filter over project-relative file paths, e.g. 'DWrapper/Direct2D/*'.",
+                    },
                     "exactOnly": {
                         "type": "boolean",
                         "default": False,
@@ -1363,11 +1375,20 @@ class CodeIndexTools:
         exact_only = optional_bool(arguments, "exactOnly", False)
         hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
         symbol_types = optional_string_set(arguments, "symbolTypes")
+        container = optional_string(arguments, "container")
+        file = optional_string(arguments, "file")
+        file_pattern = optional_string(arguments, "filePattern")
+
+        if file is not None and file_pattern is not None:
+            raise McpError(-32602, "file cannot be combined with filePattern")
 
         results = self.index.find_symbol(
             query,
             limit=limit,
             symbol_types=symbol_types,
+            container=container,
+            file=file,
+            file_pattern=file_pattern,
             exact_only=exact_only,
             hide_namespaces=hide_namespaces,
             compact=compact,

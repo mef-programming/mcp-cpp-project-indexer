@@ -433,14 +433,21 @@ Prefer compact routing options when they reduce noise:
 find_symbol({"query": "Widget::OnScroll", "compact": true, "hideNamespaces": true})
 find_symbol({"query": "PurgeCache", "symbolTypes": ["function", "method"], "compact": true})
 find_symbol({"query": "PFNSetScrollInfo", "exactOnly": true, "compact": true})
+find_symbol({"query": "Paint", "container": "MetadataDisplayElement", "symbolTypes": ["method"], "compact": true})
+find_symbol({"query": "Paint", "file": "DWrapper/Direct2D/Renderer/Shell/MetadataDisplayElement.cpp", "compact": true})
 ```
 
 Use:
 
 - `compact:true` when you only need routing metadata
 - `symbolTypes` to narrow broad symbol queries
+- `container` when the containing class/struct/namespace is known
+- `file` or `filePattern` when the relevant file or subtree is already known
 - `exactOnly:true` when the user gives a precise name and substring matches would be noisy
 - `hideNamespaces:true` to avoid namespace reopening noise in navigation queries
+
+Do not combine `file` and `filePattern`. These are metadata filters, not
+semantic overload resolution.
 
 Treat `matchKind` as match-quality metadata only. It helps choose which source range to read next; it is not semantic analysis.
 

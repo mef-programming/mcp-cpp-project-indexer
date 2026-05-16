@@ -868,12 +868,16 @@ Optional routing controls:
 
 - `compact`: return only compact routing fields
 - `symbolTypes`: filter by indexed symbol kind, e.g. `method`, `function`, `type_alias`
+- `container`: filter to symbols contained by a class/struct/namespace name or suffix
+- `file`: filter to one fileId or project-relative path
+- `filePattern`: filter by project-relative path glob
 - `exactOnly`: return only exact short-name or qualified-name matches, including case-insensitive exact matches
 - `hideNamespaces`: hide namespace reopening symbols from navigation results
 
 Each returned item includes `matchKind` to describe why it matched, such as `exact_short_name`, `qualified_name_substring`, or `signature_substring`.
 
-It does not read source code and does not resolve overloads semantically.
+Do not combine `file` and `filePattern`. These controls are locator filters;
+they do not read source code and do not resolve overloads semantically.
 
 `list_file_symbols` can also return smaller file-level symbol candidate lists when the file is already known:
 
