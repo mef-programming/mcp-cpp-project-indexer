@@ -102,6 +102,7 @@ class UpdateResult:
     modules: int
     diagnostics: int
     state_initialized: bool
+    incremental_aggregation_timings: list[dict[str, Any]]
 
 
 class UpdateProgress:
@@ -505,6 +506,46 @@ def write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def jsonl_line_may_match_file_id(line: str, file_ids: set[str]) -> bool:
+    return any(
+        f'"fileId":"{file_id}"' in line or f'"fileId": "{file_id}"' in line
+        for file_id in file_ids
+    )
+
+
+def rewrite_jsonl_replacing_file_ids(
+    *,
+    path: Path,
+    changed_file_ids: set[str],
+    changed_items: list[dict[str, Any]],
+    id_key: str,
+) -> tuple[int, set[str]]:
+    temp_path = path.with_name(path.name + ".tmp")
+    removed_ids: set[str] = set()
+    kept_count = 0
+
+    with path.open("r", encoding="utf-8") as source, temp_path.open("w", encoding="utf-8") as target:
+        for line in source:
+            if not line.strip():
+                continue
+
+            if jsonl_line_may_match_file_id(line, changed_file_ids):
+                item = json.loads(line)
+
+                if item.get("fileId") in changed_file_ids:
+                    removed_ids.add(str(item.get(id_key)))
+                    continue
+
+            target.write(line if line.endswith("\n") else line + "\n")
+            kept_count += 1
+
+        for item in changed_items:
+            target.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    temp_path.replace(path)
+    return kept_count + len(changed_items), removed_ids
+
+
 def save_index_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -594,6 +635,41 @@ def update_alias_index(
                 ids.append(item_id)
 
     return dict(sorted(updated.items(), key=lambda item: item[0].casefold()))
+
+
+def record_phase(
+    timings: list[dict[str, Any]] | None,
+    phase: str,
+    started: float,
+) -> float:
+    now = time.perf_counter()
+
+    if timings is not None:
+        timings.append(
+            {
+                "phase": phase,
+                "seconds": now - started,
+            }
+        )
+
+    return now
+
+
+def print_phase_timings(title: str, timings: list[dict[str, Any]]) -> None:
+    if not timings:
+        return
+
+    total = sum(float(item.get("seconds") or 0.0) for item in timings)
+    width = max(len(str(item.get("phase") or "")) for item in timings)
+    print(title, file=sys.stderr)
+    print("=" * len(title), file=sys.stderr)
+
+    for item in timings:
+        phase = str(item.get("phase") or "")
+        seconds = float(item.get("seconds") or 0.0)
+        print(f"{phase:<{width}}  {seconds:6.2f}s", file=sys.stderr)
+
+    print(f"{'total':<{width}}  {total:6.2f}s", file=sys.stderr)
 
 
 def aggregate_project_index(
@@ -723,11 +799,15 @@ def aggregate_project_index_incremental(
     index_root: Path,
     changed_file_indexes: list[dict[str, Any]],
     extra_diagnostics: list[dict[str, Any]] | None = None,
+    timings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    phase_started = time.perf_counter()
     manifest = load_manifest(index_root)
 
     if manifest is None:
         raise SystemExit("Manifest missing during incremental aggregation.")
+
+    phase_started = record_phase(timings, "load manifest", phase_started)
 
     changed_file_ids = {
         file_index["fileId"]
@@ -755,32 +835,18 @@ def aggregate_project_index_incremental(
         if file_id not in replaced_file_ids:
             manifest_files.append(file_item)
 
-    original_symbols = load_jsonl(index_root / "symbols.jsonl")
-    original_data_items = load_jsonl(index_root / "data.jsonl")
-    removed_symbol_ids: set[str] = set()
-    removed_data_ids: set[str] = set()
-    symbols: list[dict[str, Any]] = []
-    data_items: list[dict[str, Any]] = []
+    phase_started = record_phase(timings, "update manifest entries", phase_started)
+
     changed_symbols: list[dict[str, Any]] = []
     changed_data_items: list[dict[str, Any]] = []
 
-    for item in original_symbols:
-        if item.get("fileId") in changed_file_ids:
-            removed_symbol_ids.add(str(item.get("symbolId")))
-        else:
-            symbols.append(item)
-
-    for item in original_data_items:
-        if item.get("fileId") in changed_file_ids:
-            removed_data_ids.add(str(item.get("dataId")))
-        else:
-            data_items.append(item)
     diagnostics = [
         item
         for item in load_json_or_none(index_root / "diagnostics.json") or []
         if item.get("fileId") not in changed_file_ids
     ]
     diagnostics.extend(extra_diagnostics or [])
+    phase_started = record_phase(timings, "load/filter diagnostics", phase_started)
 
     for file_index in changed_file_indexes:
         file_id = file_index["fileId"]
@@ -799,7 +865,6 @@ def aggregate_project_index_incremental(
                 file_index=file_index,
                 symbol=symbol,
             )
-            symbols.append(symbol_ref)
             changed_symbols.append(symbol_ref)
 
         for data_item in file_index.get("data", []):
@@ -807,10 +872,11 @@ def aggregate_project_index_incremental(
                 file_index=file_index,
                 data_item=data_item,
             )
-            data_items.append(data_ref)
             changed_data_items.append(data_ref)
 
-    symbols.sort(
+    phase_started = record_phase(timings, "merge changed file refs", phase_started)
+
+    changed_symbols.sort(
         key=lambda item: (
             item["qualifiedName"] or item["shortName"] or "",
             item["relativePath"],
@@ -819,7 +885,7 @@ def aggregate_project_index_incremental(
         )
     )
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
-    data_items.sort(
+    changed_data_items.sort(
         key=lambda item: (
             item["qualifiedName"] or item["name"] or "",
             item["relativePath"],
@@ -827,10 +893,31 @@ def aggregate_project_index_incremental(
             item["endLine"],
         )
     )
+    phase_started = record_phase(timings, "sort changed refs", phase_started)
+
+    symbol_count, removed_symbol_ids = rewrite_jsonl_replacing_file_ids(
+        path=index_root / "symbols.jsonl",
+        changed_file_ids=changed_file_ids,
+        changed_items=changed_symbols,
+        id_key="symbolId",
+    )
+    phase_started = record_phase(timings, "rewrite symbols.jsonl", phase_started)
+
+    data_count, removed_data_ids = rewrite_jsonl_replacing_file_ids(
+        path=index_root / "data.jsonl",
+        changed_file_ids=changed_file_ids,
+        changed_items=changed_data_items,
+        id_key="dataId",
+    )
+    phase_started = record_phase(timings, "rewrite data.jsonl", phase_started)
 
     modules = rebuild_modules(manifest_files)
+    phase_started = record_phase(timings, "rebuild modules", phase_started)
+
     existing_names = load_json_or_none(index_root / "names.json") or {}
     existing_data_names = load_json_or_none(index_root / "data_names.json") or {}
+    phase_started = record_phase(timings, "load alias indexes", phase_started)
+
     names = update_alias_index(
         existing=existing_names if isinstance(existing_names, dict) else {},
         removed_ids=removed_symbol_ids,
@@ -838,6 +925,8 @@ def aggregate_project_index_incremental(
         id_key="symbolId",
         aliases_for_item=search_aliases_for_symbol,
     )
+    phase_started = record_phase(timings, "update names", phase_started)
+
     data_names = update_alias_index(
         existing=existing_data_names if isinstance(existing_data_names, dict) else {},
         removed_ids=removed_data_ids,
@@ -845,6 +934,8 @@ def aggregate_project_index_incremental(
         id_key="dataId",
         aliases_for_item=search_aliases_for_data,
     )
+    phase_started = record_phase(timings, "update data_names", phase_started)
+
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
         "root": root.resolve().as_posix(),
@@ -852,22 +943,30 @@ def aggregate_project_index_incremental(
         "files": manifest_files,
         "counts": {
             "files": len(manifest_files),
-            "symbols": len(symbols),
+            "symbols": symbol_count,
             "names": len(names),
-            "data": len(data_items),
+            "data": data_count,
             "dataNames": len(data_names),
             "modules": len(modules),
             "diagnostics": len(diagnostics),
         },
     }
+    phase_started = record_phase(timings, "build manifest", phase_started)
 
     save_index_json(index_root / "manifest.json", manifest)
+    phase_started = record_phase(timings, "write manifest", phase_started)
+
     save_index_json(index_root / "names.json", names)
+    phase_started = record_phase(timings, "write names", phase_started)
+
     save_index_json(index_root / "modules.json", modules)
+    phase_started = record_phase(timings, "write modules", phase_started)
+
     save_index_json(index_root / "diagnostics.json", diagnostics)
+    phase_started = record_phase(timings, "write diagnostics", phase_started)
+
     save_index_json(index_root / "data_names.json", data_names)
-    write_jsonl(index_root / "symbols.jsonl", symbols)
-    write_jsonl(index_root / "data.jsonl", data_items)
+    record_phase(timings, "write data_names", phase_started)
 
     return manifest
 
@@ -987,6 +1086,7 @@ def run_update(
             modules=0,
             diagnostics=0,
             state_initialized=plan.state_initialized,
+            incremental_aggregation_timings=[],
         )
 
     if not plan.added and not plan.modified and not plan.deleted_relative_paths:
@@ -1005,6 +1105,7 @@ def run_update(
             modules=counts.get("modules", 0),
             diagnostics=counts.get("diagnostics", 0),
             state_initialized=plan.state_initialized,
+            incremental_aggregation_timings=[],
         )
 
     index_root.mkdir(parents=True, exist_ok=True)
@@ -1053,11 +1154,13 @@ def run_update(
         and not plan.deleted_relative_paths
     ):
         progress.status("Aggregating changed file indexes")
+        incremental_aggregation_timings: list[dict[str, Any]] = []
         manifest = aggregate_project_index_incremental(
             root=root,
             index_root=index_root,
             changed_file_indexes=changed_file_indexes,
             extra_diagnostics=changed_file_diagnostics,
+            timings=incremental_aggregation_timings,
         )
         new_state_files: dict[str, dict[str, Any]] = {}
 
@@ -1096,6 +1199,12 @@ def run_update(
         )
         progress.done("Incremental aggregation complete")
 
+        if progress_enabled:
+            print_phase_timings(
+                "Incremental aggregation timing",
+                incremental_aggregation_timings,
+            )
+
         counts = manifest["counts"]
 
         return UpdateResult(
@@ -1111,6 +1220,7 @@ def run_update(
             modules=counts["modules"],
             diagnostics=counts["diagnostics"],
             state_initialized=plan.state_initialized,
+            incremental_aggregation_timings=incremental_aggregation_timings,
         )
 
     current_file_indexes: list[dict[str, Any]] = []
@@ -1179,6 +1289,7 @@ def run_update(
         modules=counts["modules"],
         diagnostics=counts["diagnostics"],
         state_initialized=plan.state_initialized,
+        incremental_aggregation_timings=[],
     )
 
 
@@ -1373,6 +1484,7 @@ def main() -> int:
         "dataNames": result.data_names,
         "modules": result.modules,
         "diagnostics": result.diagnostics,
+        "incrementalAggregationTimings": result.incremental_aggregation_timings,
     }
 
     if args.summary_json_file is not None:
