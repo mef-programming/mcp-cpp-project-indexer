@@ -536,6 +536,117 @@ restart the Claude client so the updated tool schema is visible.
 
 ---
 
+## Possible workflow setups
+
+### Source-grounded bug finding
+
+A practical review workflow is to use `mcp-cpp-project-indexer` as the primary
+navigation layer and let the AI reason only from exact source ranges it has read.
+
+Typical flow:
+
+```text
+1. User asks:
+     Review module X, file X, or function X for bugs.
+
+2. AI uses mcp-cpp-project-indexer:
+     find module/file/symbol
+     read exact source ranges
+     follow only relevant project-local calls
+     avoid whole-file reads unless needed
+
+3. AI reports findings:
+     file path
+     line range
+     source-grounded explanation
+     uncertainty where more context is needed
+
+4. AI uses Visual Studio MCP only after analysis:
+     open the file
+     navigate to the exact finding location
+```
+
+This keeps the model context clean. The indexer handles routing and token
+reduction; the AI performs the analysis from original source lines; Visual Studio
+is used as the developer-facing editor handoff.
+
+### Tool priority with Visual Studio MCP
+
+In C++20 module-heavy projects, Visual Studio/IntelliSense/clangd-style tooling
+may fail to resolve module symbols reliably enough for AI navigation.
+
+Recommended role split:
+
+```text
+mcp-cpp-project-indexer
+  Primary navigation layer.
+  Use for symbols, files, modules, source ranges, imports, imported-by metadata.
+
+Visual Studio MCP
+  Editor and project-state layer.
+  Use for opening files, jumping to locations, looking at build/output/editor state.
+  Do not use as the primary C++20 module symbol resolver.
+
+IDAPro MCP
+  Binary/decompiler layer.
+  Use only when source evidence is insufficient, or for ABI, crash, reverse
+  engineering, decompiled code, imports/exports, or binary-behavior questions.
+```
+
+Prompt rule:
+
+```text
+Use mcp-cpp-project-indexer first for C++ source navigation.
+Use Visual Studio MCP only when IDE/editor/build state is needed.
+Use IDAPro MCP only when the question requires binary or decompiler evidence.
+```
+
+### Source plus binary evidence for undocumented APIs
+
+For code that interacts with undocumented Windows components, source evidence may
+not be enough. A useful setup is to keep the relevant DLL loaded in IDAPro and let
+the AI inspect decompiled/disassembled code only when source-level evidence leaves
+behavior unclear.
+
+Example scenario:
+
+```text
+Project code uses wrappers around undocumented DirectUI behavior.
+IDAPro has dui70.dll loaded.
+
+1. AI uses mcp-cpp-project-indexer first:
+     find the project wrapper/function
+     read the exact source range
+     follow only relevant local calls
+
+2. If behavior is still unclear:
+     use IDAPro MCP to inspect the corresponding function, import, export,
+     vtable target, or decompiled implementation in dui70.dll
+
+3. AI combines evidence:
+     source callsite and wrapper behavior
+     binary/decompiler evidence from the undocumented implementation
+     final finding with source line ranges and binary evidence notes
+
+4. AI uses Visual Studio MCP only for handoff:
+     open the project source file
+     navigate to the line that should be reviewed or changed
+```
+
+This keeps reverse-engineering work targeted. The AI does not browse the binary
+blindly; it enters IDAPro with a source-grounded question. That reduces irrelevant
+context, lowers token usage, and helps the model keep the source/binary reasoning
+chain intact.
+
+### Why this setup works
+
+The expensive part of AI code review is often not reasoning; it is locating the
+small amount of source that actually matters. The indexer reduces the navigation
+problem to compact metadata and exact source ranges. Other tools can then stay
+focused on what they are good at: IDE interaction, build state, or binary facts.
+
+---
+
 ## Command line reference
 
 ### `build_file_index.py`
