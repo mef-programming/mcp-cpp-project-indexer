@@ -106,6 +106,7 @@ Escalate only when needed:
 metadata / compact routing
 -> indexed ranges or compact outline
 -> read_symbol/read_range for current source
+-> read_range with line/beforeLines/afterLines for compact context around one source line
 -> read_symbol with startOffset/endOffset for large symbol slices
 -> search_source with symbolId for lexical checks inside one symbol
 -> source hunks with includeSource:true only when the diff text itself is needed
@@ -841,6 +842,10 @@ Use `read_range(file, startLine, endLine)` when:
 - you need nearby context around a symbol
 - you need to inspect module/import declarations or local surrounding code
 - you need to verify a lexical `search_source` match
+
+Use `read_range(file, line, beforeLines, afterLines)` when you have one relevant
+line from a hunk, diagnostic, search result, Visual Studio, or IDA note and only
+need compact surrounding context.
 
 Do not read entire files unless the user explicitly asks and the file is small enough.
 

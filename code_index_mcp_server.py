@@ -293,7 +293,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "read_range",
-            "description": "[Source] Read original source lines from a fileId or project-relative path, with absolute line numbers.",
+            "description": (
+                "[Source] Read original source lines from a fileId or project-relative path. "
+                "Use startLine/endLine for explicit ranges, or line with beforeLines/afterLines "
+                "for compact context around diagnostics, hunks, and search matches."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -309,6 +313,25 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer",
                         "minimum": 1,
                     },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional center line for around-line reads. Cannot be combined with startLine/endLine.",
+                    },
+                    "beforeLines": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 2000,
+                        "default": 5,
+                        "description": "Number of context lines before line when using around-line mode.",
+                    },
+                    "afterLines": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 2000,
+                        "default": 5,
+                        "description": "Number of context lines after line when using around-line mode.",
+                    },
                     "maxLines": {
                         "type": "integer",
                         "minimum": 1,
@@ -316,7 +339,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "default": 500,
                     },
                 },
-                "required": ["file", "startLine", "endLine"],
+                "required": ["file"],
                 "additionalProperties": False,
             },
         },
@@ -1454,9 +1477,33 @@ class CodeIndexTools:
 
     def read_range(self, arguments: dict[str, Any]) -> dict[str, Any]:
         file = require_string(arguments, "file")
-        start_line = require_int(arguments, "startLine")
-        end_line = require_int(arguments, "endLine")
+        start_line = optional_int(arguments, "startLine")
+        end_line = optional_int(arguments, "endLine")
+        line = optional_int(arguments, "line")
+        before_lines = clamp_int(arguments.get("beforeLines", 5), minimum=0, maximum=2000)
+        after_lines = clamp_int(arguments.get("afterLines", 5), minimum=0, maximum=2000)
         max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=2000)
+
+        has_explicit_range = start_line is not None or end_line is not None
+        has_around_line = line is not None
+
+        if has_explicit_range and has_around_line:
+            raise McpError(-32602, "line cannot be combined with startLine/endLine")
+
+        if has_explicit_range:
+            if start_line is None or end_line is None:
+                raise McpError(-32602, "startLine and endLine must be provided together")
+            if start_line < 1 or end_line < 1:
+                raise McpError(-32602, "startLine and endLine must be >= 1")
+            mode = "range"
+        elif has_around_line:
+            if line < 1:
+                raise McpError(-32602, "line must be >= 1")
+            start_line = max(1, line - before_lines)
+            end_line = line + after_lines
+            mode = "around_line"
+        else:
+            raise McpError(-32602, "Provide either startLine/endLine or line")
 
         if end_line < start_line:
             raise McpError(-32602, "endLine must be >= startLine")
@@ -1471,12 +1518,22 @@ class CodeIndexTools:
 
         header = {
             "file": file,
+            "mode": mode,
             "requestedStartLine": start_line,
             "requestedEndLine": end_line,
             "returnedStartLine": start_line,
             "returnedEndLine": effective_end,
             "truncated": effective_end < end_line,
         }
+
+        if mode == "around_line":
+            header.update(
+                {
+                    "line": line,
+                    "beforeLines": before_lines,
+                    "afterLines": after_lines,
+                }
+            )
 
         return make_text_result(
             json.dumps(header, indent=2, ensure_ascii=False)

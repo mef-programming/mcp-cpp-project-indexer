@@ -840,6 +840,7 @@ find_declaration(query)
 find_symbols_glob(pattern)
 read_symbol(symbolId)
 read_range(file, startLine, endLine)
+read_range(file, line, beforeLines, afterLines)
 get_nearest_symbol_for_line(file, line)
 list_file_symbols(file)
 ```
@@ -851,6 +852,11 @@ behavior claims.
 
 `read_symbol` accepts optional `startOffset`/`endOffset` or absolute
 `startLine`/`endLine` to read only a slice of a large symbol body.
+
+`read_range` accepts either explicit `startLine`/`endLine` or a compact
+around-line form with `line`, `beforeLines`, and `afterLines`. The around-line
+form is intended for diagnostics, hunks, search matches, Visual Studio handoff,
+and IDA notes where the caller has one relevant source line.
 
 `find_symbol` searches symbol metadata only:
 
