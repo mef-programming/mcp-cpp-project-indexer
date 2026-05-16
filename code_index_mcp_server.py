@@ -888,6 +888,9 @@ class ServerIndexWatcher:
         except (OSError, json.JSONDecodeError):
             return True
 
+        if summary.get("structuralUnchanged") is True:
+            return False
+
         return any(
             int(summary.get(key) or 0) > 0
             for key in ("added", "modified", "deleted")

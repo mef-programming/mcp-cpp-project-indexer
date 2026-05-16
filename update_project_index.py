@@ -103,6 +103,7 @@ class UpdateResult:
     diagnostics: int
     state_initialized: bool
     incremental_aggregation_timings: list[dict[str, Any]]
+    structural_unchanged: bool
 
 
 class UpdateProgress:
@@ -485,6 +486,33 @@ def make_update_plan(
 
 def load_file_index_by_id(index_root: Path, file_id: str) -> dict[str, Any]:
     return json.loads((index_root / "files" / f"{file_id}.json").read_text(encoding="utf-8"))
+
+
+def structural_file_index_view(file_index: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": file_index.get("schema"),
+        "fileId": file_index.get("fileId"),
+        "relativePath": file_index.get("relativePath"),
+        "displayName": file_index.get("displayName"),
+        "extension": file_index.get("extension"),
+        "language": file_index.get("language"),
+        "pathHash": file_index.get("pathHash"),
+        "lineCount": file_index.get("lineCount"),
+        "module": file_index.get("module"),
+        "imports": file_index.get("imports", []),
+        "includes": file_index.get("includes", []),
+        "exports": file_index.get("exports", []),
+        "symbols": file_index.get("symbols", []),
+        "data": file_index.get("data", []),
+        "diagnostics": file_index.get("diagnostics", []),
+    }
+
+
+def structurally_equal_file_indexes(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    return structural_file_index_view(left) == structural_file_index_view(right)
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1087,6 +1115,7 @@ def run_update(
             diagnostics=0,
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=[],
+            structural_unchanged=False,
         )
 
     if not plan.added and not plan.modified and not plan.deleted_relative_paths:
@@ -1106,6 +1135,7 @@ def run_update(
             diagnostics=counts.get("diagnostics", 0),
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=[],
+            structural_unchanged=False,
         )
 
     index_root.mkdir(parents=True, exist_ok=True)
@@ -1121,6 +1151,19 @@ def run_update(
 
     changed_paths = [*plan.added, *plan.modified]
     updated_by_key: dict[str, dict[str, Any]] = {}
+    old_modified_file_indexes: dict[str, dict[str, Any]] = {}
+
+    for path in plan.modified:
+        key = normalize_relative_path(path, root, case_insensitive=case_insensitive_paths)
+        manifest_item = manifest_by_path.get(key)
+
+        if manifest_item is None:
+            continue
+
+        old_modified_file_indexes[key] = load_file_index_by_id(
+            index_root,
+            str(manifest_item["fileId"]),
+        )
 
     def update_progress(completed: int, total: int, path: Path) -> None:
         progress.file("Reindexing", completed, total, path)
@@ -1147,6 +1190,81 @@ def run_update(
         updated_by_key[key] = file_index
 
     state_files = existing_state_files(load_update_state(index_root))
+    structural_unchanged = False
+
+    if (
+        known_files_only
+        and plan.modified
+        and not plan.added
+        and not plan.deleted_relative_paths
+        and len(changed_file_indexes) == len(plan.modified)
+    ):
+        structural_unchanged = True
+
+        for file_index in changed_file_indexes:
+            relative_path = file_index["relativePath"]
+            key = relative_path.casefold() if case_insensitive_paths else relative_path
+            old_file_index = old_modified_file_indexes.get(key)
+
+            if old_file_index is None or not structurally_equal_file_indexes(old_file_index, file_index):
+                structural_unchanged = False
+                break
+
+    if structural_unchanged:
+        new_state_files: dict[str, dict[str, Any]] = {}
+
+        for key, path in sorted(current_by_key.items(), key=lambda item: item[0].casefold()):
+            file_index = updated_by_key.get(key)
+
+            if file_index is not None:
+                new_state_files[key] = make_state_file_entry(
+                    path=path,
+                    root=root,
+                    file_id=file_index["fileId"],
+                    raw_content_hash=file_index["contentHash"],
+                )
+                continue
+
+            state_item = state_files.get(key)
+
+            if state_item is not None:
+                new_state_files[key] = dict(state_item)
+                continue
+
+            manifest_item = manifest_by_path.get(key)
+
+            if manifest_item is not None:
+                new_state_files[key] = make_state_file_entry(
+                    path=path,
+                    root=root,
+                    file_id=str(manifest_item["fileId"]),
+                    raw_content_hash=current_hashes[key],
+                )
+
+        save_update_state(
+            index_root=index_root,
+            root=root,
+            files=new_state_files,
+        )
+        progress.done("Structural index unchanged; skipped aggregate rewrite")
+        counts = (load_manifest(index_root) or {"counts": {}}).get("counts", {})
+
+        return UpdateResult(
+            added=len(plan.added),
+            modified=len(plan.modified),
+            deleted=len(plan.deleted_relative_paths),
+            unchanged=len(plan.unchanged),
+            files=counts.get("files", 0),
+            symbols=counts.get("symbols", 0),
+            names=counts.get("names", 0),
+            data=counts.get("data", 0),
+            data_names=counts.get("dataNames", 0),
+            modules=counts.get("modules", 0),
+            diagnostics=counts.get("diagnostics", 0),
+            state_initialized=plan.state_initialized,
+            incremental_aggregation_timings=[],
+            structural_unchanged=True,
+        )
 
     if (
         known_files_only
@@ -1221,6 +1339,7 @@ def run_update(
             diagnostics=counts["diagnostics"],
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=incremental_aggregation_timings,
+            structural_unchanged=False,
         )
 
     current_file_indexes: list[dict[str, Any]] = []
@@ -1290,6 +1409,7 @@ def run_update(
         diagnostics=counts["diagnostics"],
         state_initialized=plan.state_initialized,
         incremental_aggregation_timings=[],
+        structural_unchanged=False,
     )
 
 
@@ -1485,6 +1605,7 @@ def main() -> int:
         "modules": result.modules,
         "diagnostics": result.diagnostics,
         "incrementalAggregationTimings": result.incremental_aggregation_timings,
+        "structuralUnchanged": result.structural_unchanged,
     }
 
     if args.summary_json_file is not None:
