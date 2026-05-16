@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -16,6 +17,19 @@ from cpp_project_index import (
 
 
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
+WATCH_UPDATE_SUMMARY_NAME = ".watch_update_summary.json"
+
+
+def summary_has_index_changes(summary_path: Path) -> bool:
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+
+    return any(
+        int(summary.get(key) or 0) > 0
+        for key in ("added", "modified", "deleted")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +197,7 @@ def run_update(
     index_root: Path,
     jobs: int,
     known_files_only: bool,
+    changed_files: list[Path],
     build_module_map: bool,
     indexer_root: Path,
 ) -> int:
@@ -196,9 +211,19 @@ def run_update(
         "--jobs",
         str(jobs),
     ]
+    summary_path = index_root / WATCH_UPDATE_SUMMARY_NAME
+    update_args.extend(["--summary-json-file", str(summary_path)])
 
     if known_files_only:
         update_args.append("--known-files-only")
+
+        for path in changed_files:
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                relative = path
+
+            update_args.extend(["--changed-file", relative.as_posix()])
 
     print()
     print("Command:")
@@ -209,6 +234,11 @@ def run_update(
 
     if completed.returncode != 0:
         return completed.returncode
+
+    if not summary_has_index_changes(summary_path):
+        print()
+        print("No index changes after content-hash check; skipping module map.")
+        return 0
 
     if not build_module_map:
         return 0
@@ -377,6 +407,7 @@ def main() -> int:
                 index_root=index_root,
                 jobs=args.jobs,
                 known_files_only=not pending_diff.requires_full_discovery_update,
+                changed_files=pending_diff.modified,
                 build_module_map=args.module_map,
                 indexer_root=indexer_root,
             )

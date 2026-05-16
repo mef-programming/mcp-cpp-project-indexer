@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
@@ -335,6 +335,7 @@ def make_update_plan(
     case_insensitive_paths: bool,
     force: bool,
     known_files_only: bool,
+    changed_files: list[Path] | None = None,
     progress: UpdateProgress | None = None,
 ) -> tuple[UpdatePlan, dict[str, Path], dict[str, str], dict[str, dict[str, Any]]]:
     manifest = load_manifest(index_root)
@@ -345,6 +346,13 @@ def make_update_plan(
     state = load_update_state(index_root)
     state_files = existing_state_files(state)
     state_initialized = state is None
+    explicit_changed_keys: set[str] | None = None
+
+    if changed_files:
+        explicit_changed_keys = {
+            normalize_relative_path(path if path.is_absolute() else root / path, root, case_insensitive=case_insensitive_paths)
+            for path in changed_files
+        }
 
     if known_files_only:
         source_files = []
@@ -379,8 +387,16 @@ def make_update_plan(
     for path in source_files:
         key = normalize_relative_path(path, root, case_insensitive=case_insensitive_paths)
         current_by_key[key] = path
+        manifest_item = manifest_by_path.get(key)
         state_item = state_files.get(key)
         stamp = file_mtime_size(path)
+
+        if explicit_changed_keys is not None and key not in explicit_changed_keys:
+            if state_item is not None and isinstance(state_item.get("rawContentHash"), str):
+                current_hashes[key] = str(state_item["rawContentHash"])
+            elif manifest_item is not None and isinstance(manifest_item.get("contentHash"), str):
+                current_hashes[key] = str(manifest_item["contentHash"])
+            continue
 
         if (
             state_item is not None
@@ -419,6 +435,10 @@ def make_update_plan(
 
         if force:
             modified.append(path)
+            continue
+
+        if explicit_changed_keys is not None and key not in explicit_changed_keys:
+            unchanged.append(path)
             continue
 
         if state_item is None:
@@ -482,7 +502,15 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for item in items:
-            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def save_index_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
 
 
 def manifest_ref_from_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
@@ -531,6 +559,41 @@ def rebuild_modules(manifest_files: list[dict[str, Any]]) -> dict[str, list[str]
             modules[str(full_module_name)].append(file_item["fileId"])
 
     return dict(sorted(modules.items(), key=lambda item: item[0].casefold()))
+
+
+def update_alias_index(
+    *,
+    existing: dict[str, Any],
+    removed_ids: set[str],
+    changed_items: list[dict[str, Any]],
+    id_key: str,
+    aliases_for_item: Callable[[dict[str, Any]], list[str]],
+) -> dict[str, list[str]]:
+    updated: dict[str, list[str]] = {}
+
+    for alias, raw_ids in existing.items():
+        if not isinstance(raw_ids, list):
+            continue
+
+        ids = [
+            str(item_id)
+            for item_id in raw_ids
+            if isinstance(item_id, str) and item_id not in removed_ids
+        ]
+
+        if ids:
+            updated[str(alias)] = ids
+
+    for item in changed_items:
+        item_id = str(item[id_key])
+
+        for alias in aliases_for_item(item):
+            ids = updated.setdefault(alias, [])
+
+            if item_id not in ids:
+                ids.append(item_id)
+
+    return dict(sorted(updated.items(), key=lambda item: item[0].casefold()))
 
 
 def aggregate_project_index(
@@ -692,16 +755,26 @@ def aggregate_project_index_incremental(
         if file_id not in replaced_file_ids:
             manifest_files.append(file_item)
 
-    symbols = [
-        item
-        for item in load_jsonl(index_root / "symbols.jsonl")
-        if item.get("fileId") not in changed_file_ids
-    ]
-    data_items = [
-        item
-        for item in load_jsonl(index_root / "data.jsonl")
-        if item.get("fileId") not in changed_file_ids
-    ]
+    original_symbols = load_jsonl(index_root / "symbols.jsonl")
+    original_data_items = load_jsonl(index_root / "data.jsonl")
+    removed_symbol_ids: set[str] = set()
+    removed_data_ids: set[str] = set()
+    symbols: list[dict[str, Any]] = []
+    data_items: list[dict[str, Any]] = []
+    changed_symbols: list[dict[str, Any]] = []
+    changed_data_items: list[dict[str, Any]] = []
+
+    for item in original_symbols:
+        if item.get("fileId") in changed_file_ids:
+            removed_symbol_ids.add(str(item.get("symbolId")))
+        else:
+            symbols.append(item)
+
+    for item in original_data_items:
+        if item.get("fileId") in changed_file_ids:
+            removed_data_ids.add(str(item.get("dataId")))
+        else:
+            data_items.append(item)
     diagnostics = [
         item
         for item in load_json_or_none(index_root / "diagnostics.json") or []
@@ -722,20 +795,20 @@ def aggregate_project_index_incremental(
             )
 
         for symbol in file_index.get("symbols", []):
-            symbols.append(
-                symbol_ref_from_file_symbol(
-                    file_index=file_index,
-                    symbol=symbol,
-                )
+            symbol_ref = symbol_ref_from_file_symbol(
+                file_index=file_index,
+                symbol=symbol,
             )
+            symbols.append(symbol_ref)
+            changed_symbols.append(symbol_ref)
 
         for data_item in file_index.get("data", []):
-            data_items.append(
-                data_ref_from_file_data(
-                    file_index=file_index,
-                    data_item=data_item,
-                )
+            data_ref = data_ref_from_file_data(
+                file_index=file_index,
+                data_item=data_item,
             )
+            data_items.append(data_ref)
+            changed_data_items.append(data_ref)
 
     symbols.sort(
         key=lambda item: (
@@ -756,8 +829,22 @@ def aggregate_project_index_incremental(
     )
 
     modules = rebuild_modules(manifest_files)
-    names = rebuild_names(symbols)
-    data_names = rebuild_data_names(data_items)
+    existing_names = load_json_or_none(index_root / "names.json") or {}
+    existing_data_names = load_json_or_none(index_root / "data_names.json") or {}
+    names = update_alias_index(
+        existing=existing_names if isinstance(existing_names, dict) else {},
+        removed_ids=removed_symbol_ids,
+        changed_items=changed_symbols,
+        id_key="symbolId",
+        aliases_for_item=search_aliases_for_symbol,
+    )
+    data_names = update_alias_index(
+        existing=existing_data_names if isinstance(existing_data_names, dict) else {},
+        removed_ids=removed_data_ids,
+        changed_items=changed_data_items,
+        id_key="dataId",
+        aliases_for_item=search_aliases_for_data,
+    )
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
         "root": root.resolve().as_posix(),
@@ -774,11 +861,11 @@ def aggregate_project_index_incremental(
         },
     }
 
-    save_json(index_root / "manifest.json", manifest)
-    save_json(index_root / "names.json", names)
-    save_json(index_root / "modules.json", modules)
-    save_json(index_root / "diagnostics.json", diagnostics)
-    save_json(index_root / "data_names.json", data_names)
+    save_index_json(index_root / "manifest.json", manifest)
+    save_index_json(index_root / "names.json", names)
+    save_index_json(index_root / "modules.json", modules)
+    save_index_json(index_root / "diagnostics.json", diagnostics)
+    save_index_json(index_root / "data_names.json", data_names)
     write_jsonl(index_root / "symbols.jsonl", symbols)
     write_jsonl(index_root / "data.jsonl", data_items)
 
@@ -826,6 +913,7 @@ def run_update(
     dry_run: bool,
     force: bool,
     known_files_only: bool,
+    changed_files: list[Path] | None,
     progress_enabled: bool,
     jobs: int,
 ) -> UpdateResult:
@@ -849,6 +937,7 @@ def run_update(
         case_insensitive_paths=case_insensitive_paths,
         force=force,
         known_files_only=known_files_only,
+        changed_files=changed_files,
         progress=progress,
     )
 
@@ -1216,6 +1305,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--changed-file",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "Known changed file path, absolute or project-relative. "
+            "May be passed multiple times by a watcher to avoid hashing unchanged files."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1225,6 +1324,12 @@ def main() -> int:
         "--print-summary-json",
         action="store_true",
         help="Print summary as JSON.",
+    )
+    parser.add_argument(
+        "--summary-json-file",
+        type=Path,
+        default=None,
+        help="Write update summary JSON to this file while keeping normal console output.",
     )
 
     args = parser.parse_args()
@@ -1245,6 +1350,7 @@ def main() -> int:
         dry_run=args.dry_run,
         force=args.force,
         known_files_only=args.known_files_only,
+        changed_files=args.changed_file,
         progress_enabled=args.progress and not args.print_summary_json,
         jobs=args.jobs,
     )
@@ -1268,6 +1374,9 @@ def main() -> int:
         "modules": result.modules,
         "diagnostics": result.diagnostics,
     }
+
+    if args.summary_json_file is not None:
+        save_json(args.summary_json_file, summary)
 
     if args.print_summary_json:
         print(json.dumps(summary, indent=2, ensure_ascii=False))

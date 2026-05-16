@@ -22,6 +22,7 @@ from watch_project_index import (
 
 SERVER_NAME = "vs-project-indexer"
 SERVER_VERSION = "0.1"
+WATCH_UPDATE_SUMMARY_NAME = ".watch_update_summary.json"
 DEFAULT_PROJECT_ROOT = Path(
     os.environ.get("MCP_CPP_PROJECT_ROOT", Path.cwd())
 )
@@ -880,7 +881,20 @@ class ServerIndexWatcher:
             case_insensitive_paths=True,
         )
 
-    def _run_update(self, *, known_files_only: bool) -> int:
+    @staticmethod
+    def _summary_has_index_changes(summary_path: Path) -> bool:
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return True
+
+        return any(
+            int(summary.get(key) or 0) > 0
+            for key in ("added", "modified", "deleted")
+        )
+
+    def _run_update(self, *, known_files_only: bool, changed_files: list[Path]) -> tuple[int, bool]:
+        summary_path = self.tools.index_root / WATCH_UPDATE_SUMMARY_NAME
         update_args = [
             sys.executable,
             str(self.indexer_root / "update_project_index.py"),
@@ -890,10 +904,20 @@ class ServerIndexWatcher:
             str(self.tools.index_root),
             "--jobs",
             str(self.jobs),
+            "--summary-json-file",
+            str(summary_path),
         ]
 
         if known_files_only:
             update_args.append("--known-files-only")
+
+            for path in changed_files:
+                try:
+                    relative = path.relative_to(self.tools.project_root)
+                except ValueError:
+                    relative = path
+
+                update_args.extend(["--changed-file", relative.as_posix()])
 
         print(
             "[mcp-cpp-project-indexer] watcher update: "
@@ -909,10 +933,18 @@ class ServerIndexWatcher:
         )
 
         if completed.returncode != 0:
-            return completed.returncode
+            return completed.returncode, False
+
+        if not self._summary_has_index_changes(summary_path):
+            print(
+                "[mcp-cpp-project-indexer] watcher no index changes after content-hash check",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 0, False
 
         if not self.module_map:
-            return 0
+            return 0, True
 
         module_args = [
             sys.executable,
@@ -926,12 +958,13 @@ class ServerIndexWatcher:
             file=sys.stderr,
             flush=True,
         )
-        return subprocess.run(
+        module_result = subprocess.run(
             module_args,
             check=False,
             stdout=sys.stderr,
             stderr=sys.stderr,
         ).returncode
+        return module_result, module_result == 0
 
     def _run(self) -> None:
         try:
@@ -985,8 +1018,9 @@ class ServerIndexWatcher:
                     file=sys.stderr,
                     flush=True,
                 )
-                result = self._run_update(
+                result, index_changed = self._run_update(
                     known_files_only=not pending_diff.requires_full_discovery_update,
+                    changed_files=pending_diff.modified,
                 )
 
                 if result != 0:
@@ -998,14 +1032,15 @@ class ServerIndexWatcher:
                     continue
 
                 snapshot = pending_snapshot
-                self.tools.reload_index_cache_from_disk(
-                    reason="Server index watcher updated the index on disk."
-                )
-                print(
-                    "[mcp-cpp-project-indexer] watcher reloaded MCP cache",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                if index_changed:
+                    self.tools.reload_index_cache_from_disk(
+                        reason="Server index watcher updated the index on disk."
+                    )
+                    print(
+                        "[mcp-cpp-project-indexer] watcher reloaded MCP cache",
+                        file=sys.stderr,
+                        flush=True,
+                    )
         except Exception:  # noqa: BLE001 - watcher must not take down MCP server.
             print(
                 "[mcp-cpp-project-indexer] watcher stopped after exception:",

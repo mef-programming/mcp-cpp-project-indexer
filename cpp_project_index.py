@@ -594,7 +594,7 @@ def build_file_indexes_for_project(
     if total == 0:
         return file_indexes, diagnostics
 
-    if jobs <= 1:
+    if jobs <= 1 or total <= 1:
         for path in source_files:
             completed += 1
 
