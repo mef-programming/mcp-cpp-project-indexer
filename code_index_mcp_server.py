@@ -111,6 +111,29 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "reload_index_cache",
+            "description": (
+                "Reload the in-memory project index cache from index files on disk. "
+                "This does not rebuild or update the index. "
+                "Use only when the user explicitly asks to reload, or after the user says "
+                "they rebuilt/updated the index and wants this MCP server to see the new data."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Short reason for the reload, e.g. "
+                            "'User rebuilt the index and asked to reload the MCP cache'."
+                        ),
+                    },
+                },
+                "required": ["reason"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "find_symbol",
             "description": (
                 "Find C++ project symbols by name metadata. "
@@ -815,6 +838,11 @@ class CodeIndexTools:
         self.module_map_path = index_root / "module_map.json"
         self.module_map: dict[str, Any] | None = None
 
+        self._load_module_map()
+
+    def _load_module_map(self) -> None:
+        self.module_map = None
+
         if self.module_map_path.exists():
             self.module_map = json.loads(
                 self.module_map_path.read_text(encoding="utf-8")
@@ -840,6 +868,47 @@ class CodeIndexTools:
                 "projectRoot": self.project_root.as_posix(),
                 "indexRoot": self.index_root.as_posix(),
                 "counts": counts,
+            }
+        )
+
+    def reload_index_cache(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        reason = require_string(arguments, "reason")
+        manifest_path = self.index_root / "manifest.json"
+
+        before_counts = dict(self.index.manifest.get("counts", {}))
+        before_root = self.index.manifest.get("root")
+        before_manifest_mtime = (
+            manifest_path.stat().st_mtime
+            if manifest_path.exists()
+            else None
+        )
+        before_module_map_loaded = self.module_map is not None
+
+        self.index = LoadedProjectIndex(self.index_root)
+        self._load_module_map()
+
+        after_counts = dict(self.index.manifest.get("counts", {}))
+        after_root = self.index.manifest.get("root")
+        after_manifest_mtime = (
+            manifest_path.stat().st_mtime
+            if manifest_path.exists()
+            else None
+        )
+
+        return make_json_text_result(
+            {
+                "reloaded": True,
+                "reason": reason,
+                "indexRoot": self.index_root.as_posix(),
+                "projectRoot": self.project_root.as_posix(),
+                "manifestRootBefore": before_root,
+                "manifestRootAfter": after_root,
+                "manifestMtimeBefore": before_manifest_mtime,
+                "manifestMtimeAfter": after_manifest_mtime,
+                "countsBefore": before_counts,
+                "countsAfter": after_counts,
+                "moduleMapLoadedBefore": before_module_map_loaded,
+                "moduleMapLoadedAfter": self.module_map is not None,
             }
         )
 
@@ -1416,6 +1485,7 @@ class McpServer:
         self.tools = tools
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "get_project_summary": self.tools.get_project_summary,
+            "reload_index_cache": self.tools.reload_index_cache,
             "find_symbol": self.tools.find_symbol,
             "find_declaration": self.tools.find_declaration,
             "read_symbol": self.tools.read_symbol,

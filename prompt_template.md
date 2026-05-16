@@ -399,6 +399,14 @@ read_range({
 
 But this is for source inspection/debugging, not required for normal module-structure answers.
 
+## Index Cache Reload Rule
+
+Use `reload_index_cache` only when the user explicitly asks to reload the MCP server cache, or after the user says the index was rebuilt/updated and wants the running server to see the new data.
+
+`reload_index_cache` does not rebuild the project index. It only reloads the already-written index files from disk into the MCP server's memory.
+
+Do not call it proactively during normal navigation.
+
 ## Reading Rules
 
 Use `read_symbol(symbolId)` when a symbol was found by the index.
