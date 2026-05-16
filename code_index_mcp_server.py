@@ -6,10 +6,18 @@ import sys
 import traceback
 import os
 import re
+import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from cpp_project_index import LoadedProjectIndex
+from cpp_project_index import LoadedProjectIndex, normalize_jobs
+from watch_project_index import (
+    SnapshotEntry,
+    diff_snapshots,
+    snapshot_source_files,
+)
 
 
 SERVER_NAME = "vs-project-indexer"
@@ -830,6 +838,183 @@ def _trim_tree(node: dict[str, Any], *, max_depth: int, depth: int = 0) -> dict[
 # Tool implementation
 # ---------------------------------------------------------------------------
 
+class ServerIndexWatcher:
+    def __init__(
+        self,
+        *,
+        tools: "CodeIndexTools",
+        poll_interval: float,
+        debounce: float,
+        jobs: int,
+        module_map: bool,
+    ) -> None:
+        self.tools = tools
+        self.poll_interval = max(0.1, poll_interval)
+        self.debounce = max(0.1, debounce)
+        self.jobs = jobs
+        self.module_map = module_map
+        self.indexer_root = Path(__file__).resolve().parent
+        self.thread = threading.Thread(
+            target=self._run,
+            name="mcp-cpp-project-indexer-watch",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        print(
+            (
+                "[mcp-cpp-project-indexer] starting index watcher "
+                f"poll={self.poll_interval:.2f}s debounce={self.debounce:.2f}s "
+                f"jobs={normalize_jobs(self.jobs)} module_map={self.module_map}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        self.thread.start()
+
+    def _snapshot(self) -> dict[str, SnapshotEntry]:
+        return snapshot_source_files(
+            root=self.tools.project_root,
+            extensions=None,
+            excluded_dir_names=None,
+            case_insensitive_paths=True,
+        )
+
+    def _run_update(self, *, known_files_only: bool) -> int:
+        update_args = [
+            sys.executable,
+            str(self.indexer_root / "update_project_index.py"),
+            "--root",
+            str(self.tools.project_root),
+            "--index-root",
+            str(self.tools.index_root),
+            "--jobs",
+            str(self.jobs),
+        ]
+
+        if known_files_only:
+            update_args.append("--known-files-only")
+
+        print(
+            "[mcp-cpp-project-indexer] watcher update: "
+            + " ".join(update_args),
+            file=sys.stderr,
+            flush=True,
+        )
+        completed = subprocess.run(
+            update_args,
+            check=False,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
+
+        if completed.returncode != 0:
+            return completed.returncode
+
+        if not self.module_map:
+            return 0
+
+        module_args = [
+            sys.executable,
+            str(self.indexer_root / "build_module_map.py"),
+            "--index-root",
+            str(self.tools.index_root),
+        ]
+        print(
+            "[mcp-cpp-project-indexer] watcher module map: "
+            + " ".join(module_args),
+            file=sys.stderr,
+            flush=True,
+        )
+        return subprocess.run(
+            module_args,
+            check=False,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        ).returncode
+
+    def _run(self) -> None:
+        try:
+            snapshot = self._snapshot()
+            print(
+                f"[mcp-cpp-project-indexer] watcher initial files: {len(snapshot)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+            while True:
+                time.sleep(self.poll_interval)
+                current = self._snapshot()
+                diff = diff_snapshots(snapshot, current, root=self.tools.project_root)
+
+                if not diff.changed:
+                    continue
+
+                pending_since = time.monotonic()
+                pending_snapshot = current
+                pending_diff = diff
+
+                while True:
+                    time.sleep(self.poll_interval)
+                    current = self._snapshot()
+                    next_diff = diff_snapshots(
+                        pending_snapshot,
+                        current,
+                        root=self.tools.project_root,
+                    )
+
+                    if next_diff.changed:
+                        pending_since = time.monotonic()
+                        pending_snapshot = current
+                        pending_diff = diff_snapshots(
+                            snapshot,
+                            current,
+                            root=self.tools.project_root,
+                        )
+
+                    if time.monotonic() - pending_since >= self.debounce:
+                        break
+
+                print(
+                    (
+                        "[mcp-cpp-project-indexer] watcher changes "
+                        f"added={len(pending_diff.added)} "
+                        f"modified={len(pending_diff.modified)} "
+                        f"deleted={len(pending_diff.deleted)}"
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                result = self._run_update(
+                    known_files_only=not pending_diff.requires_full_discovery_update,
+                )
+
+                if result != 0:
+                    print(
+                        f"[mcp-cpp-project-indexer] watcher update failed: {result}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    continue
+
+                snapshot = pending_snapshot
+                self.tools.reload_index_cache_from_disk(
+                    reason="Server index watcher updated the index on disk."
+                )
+                print(
+                    "[mcp-cpp-project-indexer] watcher reloaded MCP cache",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except Exception:  # noqa: BLE001 - watcher must not take down MCP server.
+            print(
+                "[mcp-cpp-project-indexer] watcher stopped after exception:",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+
+
 class CodeIndexTools:
     def __init__(self, *, project_root: Path, index_root: Path) -> None:
         self.project_root = project_root
@@ -837,8 +1022,30 @@ class CodeIndexTools:
         self.index = LoadedProjectIndex(index_root)
         self.module_map_path = index_root / "module_map.json"
         self.module_map: dict[str, Any] | None = None
+        self.index_lock = threading.RLock()
+        self.watcher: ServerIndexWatcher | None = None
 
         self._load_module_map()
+
+    def start_index_watcher(
+        self,
+        *,
+        poll_interval: float,
+        debounce: float,
+        jobs: int,
+        module_map: bool,
+    ) -> None:
+        if self.watcher is not None:
+            return
+
+        self.watcher = ServerIndexWatcher(
+            tools=self,
+            poll_interval=poll_interval,
+            debounce=debounce,
+            jobs=jobs,
+            module_map=module_map,
+        )
+        self.watcher.start()
 
     def _load_module_map(self) -> None:
         self.module_map = None
@@ -871,32 +1078,31 @@ class CodeIndexTools:
             }
         )
 
-    def reload_index_cache(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        reason = require_string(arguments, "reason")
+    def reload_index_cache_from_disk(self, *, reason: str) -> dict[str, Any]:
         manifest_path = self.index_root / "manifest.json"
 
-        before_counts = dict(self.index.manifest.get("counts", {}))
-        before_root = self.index.manifest.get("root")
-        before_manifest_mtime = (
-            manifest_path.stat().st_mtime
-            if manifest_path.exists()
-            else None
-        )
-        before_module_map_loaded = self.module_map is not None
+        with self.index_lock:
+            before_counts = dict(self.index.manifest.get("counts", {}))
+            before_root = self.index.manifest.get("root")
+            before_manifest_mtime = (
+                manifest_path.stat().st_mtime
+                if manifest_path.exists()
+                else None
+            )
+            before_module_map_loaded = self.module_map is not None
 
-        self.index = LoadedProjectIndex(self.index_root)
-        self._load_module_map()
+            self.index = LoadedProjectIndex(self.index_root)
+            self._load_module_map()
 
-        after_counts = dict(self.index.manifest.get("counts", {}))
-        after_root = self.index.manifest.get("root")
-        after_manifest_mtime = (
-            manifest_path.stat().st_mtime
-            if manifest_path.exists()
-            else None
-        )
+            after_counts = dict(self.index.manifest.get("counts", {}))
+            after_root = self.index.manifest.get("root")
+            after_manifest_mtime = (
+                manifest_path.stat().st_mtime
+                if manifest_path.exists()
+                else None
+            )
 
-        return make_json_text_result(
-            {
+            return {
                 "reloaded": True,
                 "reason": reason,
                 "indexRoot": self.index_root.as_posix(),
@@ -910,6 +1116,11 @@ class CodeIndexTools:
                 "moduleMapLoadedBefore": before_module_map_loaded,
                 "moduleMapLoadedAfter": self.module_map is not None,
             }
+
+    def reload_index_cache(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        reason = require_string(arguments, "reason")
+        return make_json_text_result(
+            self.reload_index_cache_from_disk(reason=reason)
         )
 
     def find_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1633,6 +1844,39 @@ def main() -> None:
         default=DEFAULT_INDEX_ROOT,
         help="Directory containing manifest.json, names.json, modules.json, symbols.jsonl and files/.",
     )
+    parser.add_argument(
+        "--watch-index",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Start a background source watcher. After changes settle, the server "
+            "updates index files on disk and reloads its in-memory cache."
+        ),
+    )
+    parser.add_argument(
+        "--watch-poll-interval",
+        type=float,
+        default=1.0,
+        help="Seconds between watcher source tree scans.",
+    )
+    parser.add_argument(
+        "--watch-debounce",
+        type=float,
+        default=1.5,
+        help="Seconds to wait for changes to settle before running an index update.",
+    )
+    parser.add_argument(
+        "--watch-jobs",
+        type=int,
+        default=1,
+        help="Worker process count for watcher-triggered index updates. Use 0 for auto.",
+    )
+    parser.add_argument(
+        "--watch-module-map",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Rebuild module_map.json after watcher-triggered index updates.",
+    )
     args = parser.parse_args()
 
     if not args.project_root.exists():
@@ -1648,6 +1892,15 @@ def main() -> None:
         project_root=args.project_root,
         index_root=args.index_root,
     )
+
+    if args.watch_index:
+        tools.start_index_watcher(
+            poll_interval=args.watch_poll_interval,
+            debounce=args.watch_debounce,
+            jobs=args.watch_jobs,
+            module_map=args.watch_module_map,
+        )
+
     server = McpServer(tools)
     server.run()
 

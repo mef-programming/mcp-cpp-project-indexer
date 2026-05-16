@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import time
 from collections import defaultdict
@@ -16,6 +17,7 @@ from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
     PROJECT_INDEX_SCHEMA,
+    UPDATE_STATE_SCHEMA,
     discover_source_files,
     file_index_output_path,
     search_aliases_for_symbol,
@@ -24,11 +26,57 @@ from cpp_project_index import (
     search_aliases_for_data,
     build_file_indexes_for_project,
     normalize_jobs,
+    update_state_path,
 )
 
 
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
-UPDATE_STATE_SCHEMA = "cpp.project_index.update_state.v1"
+
+
+def trim_progress_line(prefix: str, relative: str) -> str:
+    width = max(40, shutil.get_terminal_size(fallback=(120, 20)).columns - 1)
+    available = max(10, width - len(prefix))
+
+    if len(relative) > available:
+        relative = "..." + relative[-max(0, available - 3):]
+
+    return prefix + relative
+
+
+class ProgressLineWriter:
+    def __init__(self) -> None:
+        self.last_width = 0
+
+    def write(self, text: str) -> None:
+        width = max(40, shutil.get_terminal_size(fallback=(120, 20)).columns - 1)
+        text = text[:width]
+        clear_width = max(self.last_width, len(text), width)
+        sys.stderr.write("\r" + (" " * clear_width) + "\r" + text)
+        sys.stderr.flush()
+        self.last_width = len(text)
+
+    def finish(self) -> None:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        self.last_width = 0
+
+    def clear(self) -> None:
+        self.write("")
+
+
+_PROGRESS_LINE = ProgressLineWriter()
+
+
+def write_progress_line(text: str) -> None:
+    _PROGRESS_LINE.write(text)
+
+
+def finish_progress_line() -> None:
+    _PROGRESS_LINE.finish()
+
+
+def clear_progress_line() -> None:
+    _PROGRESS_LINE.clear()
 
 
 @dataclass(slots=True)
@@ -60,8 +108,11 @@ class UpdateProgress:
     def __init__(self, *, root: Path, enabled: bool) -> None:
         self.root = root
         self.enabled = enabled
+        self.frames = "|/-\\"
         self.started = time.monotonic()
         self.last_update = 0.0
+        self.tick = 0
+        self.active = False
 
     def _relative(self, path: Path) -> str:
         try:
@@ -69,20 +120,19 @@ class UpdateProgress:
         except ValueError:
             relative = path.as_posix()
 
-        max_path_len = 90
-
-        if len(relative) > max_path_len:
-            return "..." + relative[-max_path_len:]
-
         return relative
 
     def status(self, text: str) -> None:
         if not self.enabled:
             return
 
+        now = time.monotonic()
+        self.last_update = now
+        self.tick += 1
+        self.active = True
+        frame = self.frames[self.tick % len(self.frames)]
         elapsed = time.monotonic() - self.started
-        sys.stderr.write(f"\r- {text} {elapsed:6.1f}s{'':<80}")
-        sys.stderr.flush()
+        write_progress_line(f"{frame} {text} {elapsed:6.1f}s")
 
     def file(self, text: str, completed: int, total: int, path: Path) -> None:
         if not self.enabled:
@@ -94,14 +144,17 @@ class UpdateProgress:
             return
 
         self.last_update = now
+        self.tick += 1
+        self.active = True
+        frame = self.frames[self.tick % len(self.frames)]
         percent = completed * 100.0 / max(1, total)
         elapsed = now - self.started
         relative = self._relative(path)
-        sys.stderr.write(
-            f"\r- {text} {completed}/{total} "
-            f"({percent:5.1f}%) {elapsed:6.1f}s  {relative:<90}"
+        prefix = (
+            f"{frame} {text} {completed}/{total} "
+            f"({percent:5.1f}%) {elapsed:6.1f}s  "
         )
-        sys.stderr.flush()
+        write_progress_line(trim_progress_line(prefix, relative))
 
     def discovered(self, visited: int, path: Path) -> None:
         if not self.enabled:
@@ -113,21 +166,32 @@ class UpdateProgress:
             return
 
         self.last_update = now
+        self.tick += 1
+        self.active = True
+        frame = self.frames[self.tick % len(self.frames)]
         elapsed = now - self.started
         relative = self._relative(path)
-        sys.stderr.write(
-            f"\r- Discovering files {visited} scanned "
-            f"{elapsed:6.1f}s  {relative:<90}"
+        prefix = (
+            f"{frame} Discovering files {visited} scanned "
+            f"{elapsed:6.1f}s  "
         )
-        sys.stderr.flush()
+        write_progress_line(trim_progress_line(prefix, relative))
 
     def done(self, text: str) -> None:
         if not self.enabled:
             return
 
         elapsed = time.monotonic() - self.started
-        sys.stderr.write(f"\r- {text} {elapsed:6.1f}s{'':<90}\n")
-        sys.stderr.flush()
+        write_progress_line(f"| {text} {elapsed:6.1f}s")
+        finish_progress_line()
+        self.active = False
+
+    def clear_line(self) -> None:
+        if not self.enabled or not self.active:
+            return
+
+        clear_progress_line()
+        self.active = False
 
 
 # ---------------------------------------------------------------------------
@@ -153,15 +217,38 @@ def raw_content_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def file_mtime_size(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+
+    return stat.st_mtime_ns, stat.st_size
+
+
+def make_state_file_entry(
+    *,
+    path: Path,
+    root: Path,
+    file_id: str,
+    raw_content_hash: str,
+) -> dict[str, Any]:
+    stamp = file_mtime_size(path)
+    relative_path = path.relative_to(root).as_posix()
+    return {
+        "relativePath": relative_path,
+        "fileId": file_id,
+        "rawContentHash": raw_content_hash,
+        "mtimeNs": stamp[0] if stamp is not None else None,
+        "size": stamp[1] if stamp is not None else None,
+    }
+
+
 def load_json_or_none(path: Path) -> Any | None:
     if not path.exists():
         return None
 
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def update_state_path(index_root: Path) -> Path:
-    return index_root / "update_state.json"
 
 
 def load_update_state(index_root: Path) -> dict[str, Any] | None:
@@ -287,18 +374,36 @@ def make_update_plan(
 
     current_by_key: dict[str, Path] = {}
     current_hashes: dict[str, str] = {}
-    total = len(source_files)
+    hash_candidates: list[tuple[str, Path]] = []
 
-    for index, path in enumerate(source_files, start=1):
-        if progress is not None:
-            progress.file("Hashing files", index, total, path)
-
+    for path in source_files:
         key = normalize_relative_path(path, root, case_insensitive=case_insensitive_paths)
         current_by_key[key] = path
+        state_item = state_files.get(key)
+        stamp = file_mtime_size(path)
+
+        if (
+            state_item is not None
+            and stamp is not None
+            and state_item.get("mtimeNs") == stamp[0]
+            and state_item.get("size") == stamp[1]
+            and isinstance(state_item.get("rawContentHash"), str)
+        ):
+            current_hashes[key] = str(state_item["rawContentHash"])
+            continue
+
+        hash_candidates.append((key, path))
+
+    total_hash_candidates = len(hash_candidates)
+
+    for index, (key, path) in enumerate(hash_candidates, start=1):
+        if progress is not None:
+            progress.file("Hashing changed candidates", index, total_hash_candidates, path)
+
         current_hashes[key] = raw_content_hash(path)
 
     if progress is not None:
-        progress.done(f"Hashing complete: {len(current_hashes)} files")
+        progress.done(f"Hashing complete: {total_hash_candidates} candidate files")
 
     added: list[Path] = []
     modified: list[Path] = []
@@ -317,10 +422,10 @@ def make_update_plan(
             continue
 
         if state_item is None:
-            # First incremental run after a full build. Trust the existing file
-            # index and initialize our raw-content hash state instead of
-            # reparsing every file.
-            unchanged.append(path)
+            # Without a previous raw-content hash we cannot prove the existing
+            # per-file index still matches the current source text. Reindex the
+            # file once, then persist rawContentHash for later fast updates.
+            modified.append(path)
             continue
 
         if state_item.get("rawContentHash") != current_hashes[key]:
@@ -359,6 +464,73 @@ def make_update_plan(
 
 def load_file_index_by_id(index_root: Path, file_id: str) -> dict[str, Any]:
     return json.loads((index_root / "files" / f"{file_id}.json").read_text(encoding="utf-8"))
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+
+            if line:
+                result.append(json.loads(line))
+
+    return result
+
+
+def write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for item in items:
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def manifest_ref_from_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fileId": file_index["fileId"],
+        "relativePath": file_index["relativePath"],
+        "contentHash": file_index["contentHash"],
+        "lineCount": file_index["lineCount"],
+        "unitKind": file_index["module"]["unitKind"],
+        "fullModuleName": file_index["module"].get("fullModuleName"),
+        "symbols": len(file_index.get("symbols", [])),
+        "data": len(file_index.get("data", [])),
+        "diagnostics": len(file_index.get("diagnostics", [])),
+    }
+
+
+def rebuild_names(symbols: list[dict[str, Any]]) -> dict[str, list[str]]:
+    names: dict[str, list[str]] = defaultdict(list)
+
+    for symbol in symbols:
+        for alias in search_aliases_for_symbol(symbol):
+            if symbol["symbolId"] not in names[alias]:
+                names[alias].append(symbol["symbolId"])
+
+    return dict(sorted(names.items(), key=lambda item: item[0].casefold()))
+
+
+def rebuild_data_names(data_items: list[dict[str, Any]]) -> dict[str, list[str]]:
+    data_names: dict[str, list[str]] = defaultdict(list)
+
+    for data_item in data_items:
+        for alias in search_aliases_for_data(data_item):
+            if data_item["dataId"] not in data_names[alias]:
+                data_names[alias].append(data_item["dataId"])
+
+    return dict(sorted(data_names.items(), key=lambda item: item[0].casefold()))
+
+
+def rebuild_modules(manifest_files: list[dict[str, Any]]) -> dict[str, list[str]]:
+    modules: dict[str, list[str]] = defaultdict(list)
+
+    for file_item in manifest_files:
+        full_module_name = file_item.get("fullModuleName")
+
+        if full_module_name:
+            modules[str(full_module_name)].append(file_item["fileId"])
+
+    return dict(sorted(modules.items(), key=lambda item: item[0].casefold()))
 
 
 def aggregate_project_index(
@@ -482,6 +654,137 @@ def aggregate_project_index(
     return manifest
 
 
+def aggregate_project_index_incremental(
+    *,
+    root: Path,
+    index_root: Path,
+    changed_file_indexes: list[dict[str, Any]],
+    extra_diagnostics: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    manifest = load_manifest(index_root)
+
+    if manifest is None:
+        raise SystemExit("Manifest missing during incremental aggregation.")
+
+    changed_file_ids = {
+        file_index["fileId"]
+        for file_index in changed_file_indexes
+    }
+    changed_manifest_by_id = {
+        file_index["fileId"]: manifest_ref_from_file_index(file_index)
+        for file_index in changed_file_indexes
+    }
+
+    manifest_files: list[dict[str, Any]] = []
+    replaced_file_ids: set[str] = set()
+
+    for file_item in manifest.get("files", []):
+        file_id = str(file_item.get("fileId") or "")
+        replacement = changed_manifest_by_id.get(file_id)
+
+        if replacement is not None:
+            manifest_files.append(replacement)
+            replaced_file_ids.add(file_id)
+        else:
+            manifest_files.append(file_item)
+
+    for file_id, file_item in changed_manifest_by_id.items():
+        if file_id not in replaced_file_ids:
+            manifest_files.append(file_item)
+
+    symbols = [
+        item
+        for item in load_jsonl(index_root / "symbols.jsonl")
+        if item.get("fileId") not in changed_file_ids
+    ]
+    data_items = [
+        item
+        for item in load_jsonl(index_root / "data.jsonl")
+        if item.get("fileId") not in changed_file_ids
+    ]
+    diagnostics = [
+        item
+        for item in load_json_or_none(index_root / "diagnostics.json") or []
+        if item.get("fileId") not in changed_file_ids
+    ]
+    diagnostics.extend(extra_diagnostics or [])
+
+    for file_index in changed_file_indexes:
+        file_id = file_index["fileId"]
+
+        for diagnostic in file_index.get("diagnostics", []):
+            diagnostics.append(
+                {
+                    "fileId": file_id,
+                    "relativePath": file_index["relativePath"],
+                    **diagnostic,
+                }
+            )
+
+        for symbol in file_index.get("symbols", []):
+            symbols.append(
+                symbol_ref_from_file_symbol(
+                    file_index=file_index,
+                    symbol=symbol,
+                )
+            )
+
+        for data_item in file_index.get("data", []):
+            data_items.append(
+                data_ref_from_file_data(
+                    file_index=file_index,
+                    data_item=data_item,
+                )
+            )
+
+    symbols.sort(
+        key=lambda item: (
+            item["qualifiedName"] or item["shortName"] or "",
+            item["relativePath"],
+            item["startLine"],
+            item["endLine"],
+        )
+    )
+    manifest_files.sort(key=lambda item: item["relativePath"].casefold())
+    data_items.sort(
+        key=lambda item: (
+            item["qualifiedName"] or item["name"] or "",
+            item["relativePath"],
+            item["startLine"],
+            item["endLine"],
+        )
+    )
+
+    modules = rebuild_modules(manifest_files)
+    names = rebuild_names(symbols)
+    data_names = rebuild_data_names(data_items)
+    manifest = {
+        "schema": PROJECT_INDEX_SCHEMA,
+        "root": root.resolve().as_posix(),
+        "filesDir": "files",
+        "files": manifest_files,
+        "counts": {
+            "files": len(manifest_files),
+            "symbols": len(symbols),
+            "names": len(names),
+            "data": len(data_items),
+            "dataNames": len(data_names),
+            "modules": len(modules),
+            "diagnostics": len(diagnostics),
+        },
+    }
+
+    save_json(index_root / "manifest.json", manifest)
+    save_json(index_root / "names.json", names)
+    save_json(index_root / "modules.json", modules)
+    save_json(index_root / "diagnostics.json", diagnostics)
+    save_json(index_root / "data_names.json", data_names)
+    write_jsonl(index_root / "symbols.jsonl", symbols)
+    write_jsonl(index_root / "data.jsonl", data_items)
+
+    return manifest
+
+
 # ---------------------------------------------------------------------------
 # Update execution
 # ---------------------------------------------------------------------------
@@ -549,6 +852,7 @@ def run_update(
         progress=progress,
     )
 
+    progress.clear_line()
     print("Update plan")
     print("===========")
     print("Added:    ", len(plan.added))
@@ -596,6 +900,24 @@ def run_update(
             state_initialized=plan.state_initialized,
         )
 
+    if not plan.added and not plan.modified and not plan.deleted_relative_paths:
+        manifest = load_manifest(index_root) or {"counts": {}}
+        counts = manifest.get("counts", {})
+        return UpdateResult(
+            added=0,
+            modified=0,
+            deleted=0,
+            unchanged=len(plan.unchanged),
+            files=counts.get("files", 0),
+            symbols=counts.get("symbols", 0),
+            names=counts.get("names", 0),
+            data=counts.get("data", 0),
+            data_names=counts.get("dataNames", 0),
+            modules=counts.get("modules", 0),
+            diagnostics=counts.get("diagnostics", 0),
+            state_initialized=plan.state_initialized,
+        )
+
     index_root.mkdir(parents=True, exist_ok=True)
     files_dir = index_root / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
@@ -634,6 +956,74 @@ def run_update(
         key = relative_path.casefold() if case_insensitive_paths else relative_path
         updated_by_key[key] = file_index
 
+    state_files = existing_state_files(load_update_state(index_root))
+
+    if (
+        known_files_only
+        and not plan.added
+        and not plan.deleted_relative_paths
+    ):
+        progress.status("Aggregating changed file indexes")
+        manifest = aggregate_project_index_incremental(
+            root=root,
+            index_root=index_root,
+            changed_file_indexes=changed_file_indexes,
+            extra_diagnostics=changed_file_diagnostics,
+        )
+        new_state_files: dict[str, dict[str, Any]] = {}
+
+        for key, path in sorted(current_by_key.items(), key=lambda item: item[0].casefold()):
+            file_index = updated_by_key.get(key)
+
+            if file_index is not None:
+                new_state_files[key] = make_state_file_entry(
+                    path=path,
+                    root=root,
+                    file_id=file_index["fileId"],
+                    raw_content_hash=file_index["contentHash"],
+                )
+                continue
+
+            state_item = state_files.get(key)
+
+            if state_item is not None:
+                new_state_files[key] = dict(state_item)
+                continue
+
+            manifest_item = manifest_by_path.get(key)
+
+            if manifest_item is not None:
+                new_state_files[key] = make_state_file_entry(
+                    path=path,
+                    root=root,
+                    file_id=str(manifest_item["fileId"]),
+                    raw_content_hash=current_hashes[key],
+                )
+
+        save_update_state(
+            index_root=index_root,
+            root=root,
+            files=new_state_files,
+        )
+        progress.done("Incremental aggregation complete")
+
+        counts = manifest["counts"]
+
+        return UpdateResult(
+            added=len(plan.added),
+            modified=len(plan.modified),
+            deleted=len(plan.deleted_relative_paths),
+            unchanged=len(plan.unchanged),
+            files=counts["files"],
+            symbols=counts["symbols"],
+            names=counts["names"],
+            data=counts.get("data", 0),
+            data_names=counts.get("dataNames", 0),
+            modules=counts["modules"],
+            diagnostics=counts["diagnostics"],
+            state_initialized=plan.state_initialized,
+        )
+
     current_file_indexes: list[dict[str, Any]] = []
     new_state_files: dict[str, dict[str, Any]] = {}
     total_current = len(current_by_key)
@@ -662,11 +1052,12 @@ def run_update(
                 file_index = load_file_index_by_id(index_root, manifest_item["fileId"])
 
         current_file_indexes.append(file_index)
-        new_state_files[key] = {
-            "relativePath": file_index["relativePath"],
-            "fileId": file_index["fileId"],
-            "rawContentHash": current_hashes[key],
-        }
+        new_state_files[key] = make_state_file_entry(
+            path=path,
+            root=root,
+            file_id=file_index["fileId"],
+            raw_content_hash=current_hashes[key],
+        )
 
     progress.done(f"Loaded file indexes: {len(current_file_indexes)} files")
     progress.status("Aggregating project index")

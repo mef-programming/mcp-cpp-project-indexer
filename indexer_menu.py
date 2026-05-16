@@ -370,6 +370,28 @@ def update_all_known_files_only(ctx: MenuContext) -> int:
     return build_module_map(ctx)
 
 
+def watch_project_index(ctx: MenuContext) -> int:
+    script = ctx.script("watch_project_index.py")
+
+    if not require_file(script):
+        return 2
+
+    return run_command(
+        [
+            str(ctx.python),
+            str(script),
+            "--root",
+            str(ctx.root),
+            "--index-root",
+            str(ctx.index_root),
+            "--indexer-root",
+            str(ctx.indexer_root),
+            "--jobs",
+            str(ctx.jobs),
+        ]
+    )
+
+
 def run_mcp_server(ctx: MenuContext) -> int:
     script = ctx.script("code_index_mcp_server.py")
 
@@ -385,6 +407,28 @@ def run_mcp_server(ctx: MenuContext) -> int:
             str(ctx.root),
             "--index-root",
             str(ctx.index_root),
+        ]
+    )
+
+
+def run_mcp_server_with_watcher(ctx: MenuContext) -> int:
+    script = ctx.script("code_index_mcp_server.py")
+
+    if not require_file(script):
+        return 2
+
+    print("Starting MCP server with index watcher. Stop with Ctrl+C.")
+    return run_command(
+        [
+            str(ctx.python),
+            str(script),
+            "--project-root",
+            str(ctx.root),
+            "--index-root",
+            str(ctx.index_root),
+            "--watch-index",
+            "--watch-jobs",
+            str(ctx.jobs),
         ]
     )
 
@@ -439,6 +483,7 @@ def menu_items() -> list[tuple[str, Callable[[MenuContext], int]]]:
         ("Fast update known indexed files", update_project_index_known_files_only),
         ("Update project index + module map", update_all),        
         ("Fast update known indexed files + module map", update_all_known_files_only),
+        ("Watch project index", watch_project_index),
         ("Show project summary", show_project_summary),
         ("Show diagnostics", show_diagnostics),
         ("Dump module tree to module-tree.txt", dump_module_tree),
@@ -446,6 +491,7 @@ def menu_items() -> list[tuple[str, Callable[[MenuContext], int]]]:
         ("Build single file index", build_single_file),
         ("Print LM Studio mcp.json config", print_lmstudio_config),
         ("Run MCP server", run_mcp_server),
+        ("Run MCP server with index watcher", run_mcp_server_with_watcher),
         ("Clean index directory", clean_index),
     ]
 
@@ -533,11 +579,13 @@ def parse_args() -> argparse.Namespace:
             "update-known",
             "update-all",
             "update-known-all",
+            "watch",
             "summary",
             "diagnostics",
             "dump-module-tree",
             "lmstudio-config",
             "server",
+            "server-watch",
         ],
         default=None,
         help="Run one action non-interactively instead of showing the menu.",
@@ -572,11 +620,13 @@ def main() -> int:
         "update-known": update_project_index_known_files_only,
         "update-all": update_all,
         "update-known-all": update_all_known_files_only,
+        "watch": watch_project_index,
         "summary": show_project_summary,
         "diagnostics": show_diagnostics,
         "dump-module-tree": dump_module_tree,
         "lmstudio-config": print_lmstudio_config,
         "server": run_mcp_server,
+        "server-watch": run_mcp_server_with_watcher,
     }
 
     if args.action:

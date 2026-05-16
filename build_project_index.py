@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -13,6 +14,51 @@ from cpp_project_index import (
     DEFAULT_SOURCE_EXTENSIONS,
     build_project_index,
 )
+
+
+def trim_progress_line(prefix: str, relative: str) -> str:
+    width = max(40, shutil.get_terminal_size(fallback=(120, 20)).columns - 1)
+    available = max(10, width - len(prefix))
+
+    if len(relative) > available:
+        relative = "..." + relative[-max(0, available - 3):]
+
+    return prefix + relative
+
+
+class ProgressLineWriter:
+    def __init__(self) -> None:
+        self.last_width = 0
+
+    def write(self, text: str) -> None:
+        width = max(40, shutil.get_terminal_size(fallback=(120, 20)).columns - 1)
+        text = text[:width]
+        clear_width = max(self.last_width, len(text), width)
+        sys.stderr.write("\r" + (" " * clear_width) + "\r" + text)
+        sys.stderr.flush()
+        self.last_width = len(text)
+
+    def finish(self) -> None:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        self.last_width = 0
+
+
+def write_progress_line(text: str) -> None:
+    _PROGRESS_LINE.write(text)
+
+
+_PROGRESS_LINE = ProgressLineWriter()
+
+
+def finish_progress_line() -> None:
+    _PROGRESS_LINE.finish()
+
+
+def clear_progress_line() -> None:
+    _PROGRESS_LINE.write("")
+    sys.stderr.flush()
+
 
 class ProgressSpinner:
     def __init__(self, *, root: Path) -> None:
@@ -37,31 +83,25 @@ class ProgressSpinner:
         except ValueError:
             relative = path.as_posix()
 
-        # Keep the line reasonably short.
-        max_path_len = 90
-
-        if len(relative) > max_path_len:
-            relative = "..." + relative[-max_path_len:]
-
         elapsed = now - self.started
-
-        sys.stderr.write(
-            f"\r{frame} Indexing {index}/{total} "
+        prefix = (
+            f"{frame} Indexing {index}/{total} "
             f"({percent:5.1f}%) "
-            f"{elapsed:6.1f}s  {relative:<90}"
+            f"{elapsed:6.1f}s  "
         )
-        sys.stderr.flush()
+        write_progress_line(trim_progress_line(prefix, relative))
 
         if index == total:
-            sys.stderr.write("\n")
-            sys.stderr.flush()
+            finish_progress_line()
 
 
 class DiscoveryProgress:
     def __init__(self, *, root: Path) -> None:
         self.root = root
+        self.frames = "|/-\\"
         self.started = time.monotonic()
         self.last_update = 0.0
+        self.tick = 0
 
     def __call__(self, visited: int, path: Path) -> None:
         now = time.monotonic()
@@ -71,32 +111,27 @@ class DiscoveryProgress:
             return
 
         self.last_update = now
+        self.tick += 1
+        frame = self.frames[self.tick % len(self.frames)]
 
         try:
             relative = path.relative_to(self.root).as_posix()
         except ValueError:
             relative = path.as_posix()
 
-        max_path_len = 90
-
-        if len(relative) > max_path_len:
-            relative = "..." + relative[-max_path_len:]
-
         elapsed = now - self.started
-
-        sys.stderr.write(
-            f"\r- Discovering files {visited} scanned "
-            f"{elapsed:6.1f}s  {relative:<90}"
+        prefix = (
+            f"{frame} Discovering files {visited} scanned "
+            f"{elapsed:6.1f}s  "
         )
-        sys.stderr.flush()
+        write_progress_line(trim_progress_line(prefix, relative))
 
     def finish(self, total: int) -> None:
         elapsed = time.monotonic() - self.started
-        sys.stderr.write(
-            f"\r- Discovering files complete: {total} source files "
-            f"{elapsed:6.1f}s{'':<80}\n"
+        write_progress_line(
+            f"| Discovering files complete: {total} source files {elapsed:6.1f}s"
         )
-        sys.stderr.flush()
+        finish_progress_line()
 
 
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
@@ -293,6 +328,7 @@ def main() -> None:
         "modules": result.modules_count,
         "diagnostics": result.diagnostics_count,
         "manifest": (result.output_root / "manifest.json").as_posix(),
+        "updateState": (result.output_root / "update_state.json").as_posix(),
         "symbolsJsonl": (result.output_root / "symbols.jsonl").as_posix(),
         "namesJson": (result.output_root / "names.json").as_posix(),
         "modulesJson": (result.output_root / "modules.json").as_posix(),
@@ -312,6 +348,7 @@ def main() -> None:
     print("Modules:", summary["modules"])
     print("Diagnostics:", summary["diagnostics"])
     print("Manifest:", summary["manifest"])
+    print("State:", summary["updateState"])
     print("Jobs:", normalize_jobs(args.jobs))
     print("Symbols JSONL:", summary["symbolsJsonl"])
     print("Names JSON:", summary["namesJson"])

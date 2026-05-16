@@ -54,6 +54,7 @@ DEFAULT_EXCLUDED_DIR_NAMES = {
 }
 
 PROJECT_INDEX_SCHEMA = "cpp.project_index.v1"
+UPDATE_STATE_SCHEMA = "cpp.project_index.update_state.v1"
 
 SYMBOL_COMPACT_FIELDS = {
     "symbolId",
@@ -290,6 +291,50 @@ def discover_source_files(
 
     files.sort(key=lambda item: item.as_posix().casefold())
     return files
+
+
+def update_state_path(index_root: Path) -> Path:
+    return index_root / "update_state.json"
+
+
+def save_update_state_from_file_indexes(
+    *,
+    index_root: Path,
+    root: Path,
+    file_indexes: list[dict[str, Any]],
+    case_insensitive_paths: bool,
+) -> None:
+    files: dict[str, dict[str, Any]] = {}
+
+    for file_index in file_indexes:
+        relative_path = str(file_index["relativePath"])
+        key = relative_path.casefold() if case_insensitive_paths else relative_path
+        path = root / relative_path
+
+        try:
+            stat = path.stat()
+            mtime_ns = stat.st_mtime_ns
+            size = stat.st_size
+        except OSError:
+            mtime_ns = None
+            size = None
+
+        files[key] = {
+            "relativePath": relative_path,
+            "fileId": file_index["fileId"],
+            "rawContentHash": file_index["contentHash"],
+            "mtimeNs": mtime_ns,
+            "size": size,
+        }
+
+    save_json(
+        update_state_path(index_root),
+        {
+            "schema": UPDATE_STATE_SCHEMA,
+            "root": root.resolve().as_posix(),
+            "files": dict(sorted(files.items(), key=lambda item: item[0].casefold())),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +880,12 @@ def build_project_index(
     save_json(output_root / "data_names.json", dict(sorted(data_names.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "modules.json", dict(sorted(modules.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "diagnostics.json", diagnostics)
+    save_update_state_from_file_indexes(
+        index_root=output_root,
+        root=root,
+        file_indexes=file_indexes,
+        case_insensitive_paths=case_insensitive_paths,
+    )
 
     with (output_root / "symbols.jsonl").open("w", encoding="utf-8") as handle:
         for symbol in symbols:
