@@ -7,12 +7,11 @@ import sys
 import time
 from pathlib import Path
 
-from cpp_project_index import build_project_index, normalize_jobs
-
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
     build_project_index,
+    normalize_jobs,
 )
 
 
@@ -327,6 +326,8 @@ def main() -> None:
         "names": result.names_count,
         "modules": result.modules_count,
         "diagnostics": result.diagnostics_count,
+        "totalCodeLines": result.total_code_lines,
+        "totalTokens": result.total_tokens,
         "manifest": (result.output_root / "manifest.json").as_posix(),
         "updateState": (result.output_root / "update_state.json").as_posix(),
         "symbolsJsonl": (result.output_root / "symbols.jsonl").as_posix(),
@@ -347,6 +348,8 @@ def main() -> None:
     print("Names:", summary["names"])
     print("Modules:", summary["modules"])
     print("Diagnostics:", summary["diagnostics"])
+    print("Total code lines:", summary["totalCodeLines"])
+    print("Total tokens:", summary["totalTokens"])
     print("Manifest:", summary["manifest"])
     print("State:", summary["updateState"])
     print("Jobs:", normalize_jobs(args.jobs))

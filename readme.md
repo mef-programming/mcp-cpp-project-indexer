@@ -222,7 +222,13 @@ Symbols: 97583
 Names: 95674
 Modules: 3774
 Diagnostics: 7
+Total code lines: 1750000
+Total tokens: 14200000
 ```
+
+`Total tokens` is the indexer's lexer token count over the indexed source after
+comment blanking. It is a project-size metric, not an LLM billing-token count.
+
 ## Incremental update
 
 After a full index build, changed files can be detected and re-indexed incrementally.

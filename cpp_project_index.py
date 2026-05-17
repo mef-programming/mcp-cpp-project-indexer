@@ -209,6 +209,33 @@ def is_exact_symbol_match(symbol: dict[str, Any], query: str) -> bool:
     }
 
 
+def project_stats_from_manifest_files(files: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "totalCodeLines": sum(int(item.get("lineCount") or 0) for item in files),
+        "totalTokens": sum(int(item.get("tokenCount") or 0) for item in files),
+    }
+
+
+def project_stats_from_manifest(manifest: dict[str, Any]) -> dict[str, int]:
+    stats = manifest.get("stats")
+
+    if isinstance(stats, dict):
+        return {
+            "totalCodeLines": int(stats.get("totalCodeLines") or 0),
+            "totalTokens": int(stats.get("totalTokens") or 0),
+        }
+
+    files = manifest.get("files")
+
+    if isinstance(files, list):
+        return project_stats_from_manifest_files(files)
+
+    return {
+        "totalCodeLines": 0,
+        "totalTokens": 0,
+    }
+
+
 @dataclass(slots=True)
 class ProjectIndexBuildResult:
     root: Path
@@ -220,6 +247,8 @@ class ProjectIndexBuildResult:
     data_names_count: int
     modules_count: int
     diagnostics_count: int
+    total_code_lines: int
+    total_tokens: int
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +825,7 @@ def build_project_index(
                 "relativePath": file_index["relativePath"],
                 "contentHash": file_index["contentHash"],
                 "lineCount": file_index["lineCount"],
+                "tokenCount": file_index.get("tokenCount", 0),
                 "unitKind": file_index["module"]["unitKind"],
                 "fullModuleName": file_index["module"].get("fullModuleName"),
                 "symbols": len(file_index.get("symbols", [])),
@@ -864,6 +894,7 @@ def build_project_index(
         "root": root.resolve().as_posix(),
         "filesDir": "files",
         "files": manifest_files,
+        "stats": project_stats_from_manifest_files(manifest_files),
         "counts": {
             "files": len(manifest_files),
             "symbols": len(symbols),
@@ -905,6 +936,8 @@ def build_project_index(
         data_names_count=len(data_names),
         modules_count=len(modules),
         diagnostics_count=len(diagnostics),
+        total_code_lines=manifest["stats"]["totalCodeLines"],
+        total_tokens=manifest["stats"]["totalTokens"],
     )
 
 

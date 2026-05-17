@@ -34,6 +34,7 @@ class StructuralScanResult:
     scope_intervals: list[dict[str, Any]]
     function_body_ranges: list[dict[str, Any]]
     diagnostics: list[Diagnostic]
+    token_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -1188,6 +1189,7 @@ def scan_structure(
         scope_intervals=scope_intervals,
         function_body_ranges=function_body_ranges,
         diagnostics=diagnostics,
+        token_count=len(tokens),
     )
 
 

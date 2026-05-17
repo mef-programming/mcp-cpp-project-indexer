@@ -26,6 +26,8 @@ from cpp_project_index import (
     search_aliases_for_data,
     build_file_indexes_for_project,
     normalize_jobs,
+    project_stats_from_manifest,
+    project_stats_from_manifest_files,
     update_state_path,
 )
 
@@ -588,6 +590,7 @@ def manifest_ref_from_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
         "relativePath": file_index["relativePath"],
         "contentHash": file_index["contentHash"],
         "lineCount": file_index["lineCount"],
+        "tokenCount": file_index.get("tokenCount", 0),
         "unitKind": file_index["module"]["unitKind"],
         "fullModuleName": file_index["module"].get("fullModuleName"),
         "symbols": len(file_index.get("symbols", [])),
@@ -724,6 +727,7 @@ def aggregate_project_index(
                 "relativePath": file_index["relativePath"],
                 "contentHash": file_index["contentHash"],
                 "lineCount": file_index["lineCount"],
+                "tokenCount": file_index.get("tokenCount", 0),
                 "unitKind": file_index["module"]["unitKind"],
                 "fullModuleName": file_index["module"].get("fullModuleName"),
                 "symbols": len(file_index.get("symbols", [])),
@@ -792,6 +796,7 @@ def aggregate_project_index(
         "root": root.resolve().as_posix(),
         "filesDir": "files",
         "files": manifest_files,
+        "stats": project_stats_from_manifest_files(manifest_files),
         "counts": {
             "files": len(manifest_files),
             "symbols": len(symbols),
@@ -969,6 +974,7 @@ def aggregate_project_index_incremental(
         "root": root.resolve().as_posix(),
         "filesDir": "files",
         "files": manifest_files,
+        "stats": project_stats_from_manifest_files(manifest_files),
         "counts": {
             "files": len(manifest_files),
             "symbols": symbol_count,
@@ -1586,6 +1592,14 @@ def main() -> int:
         jobs=args.jobs,
     )
 
+    index_stats = {"totalCodeLines": 0, "totalTokens": 0}
+
+    if not args.dry_run:
+        manifest = load_manifest(index_root)
+
+        if manifest is not None:
+            index_stats = project_stats_from_manifest(manifest)
+
     summary = {
         "root": root.as_posix(),
         "indexRoot": index_root.as_posix(),
@@ -1604,6 +1618,8 @@ def main() -> int:
         "dataNames": result.data_names,
         "modules": result.modules,
         "diagnostics": result.diagnostics,
+        "totalCodeLines": index_stats["totalCodeLines"],
+        "totalTokens": index_stats["totalTokens"],
         "incrementalAggregationTimings": result.incremental_aggregation_timings,
         "structuralUnchanged": result.structural_unchanged,
     }
@@ -1631,6 +1647,8 @@ def main() -> int:
         print("Data names: ", result.data_names)
         print("Modules:    ", result.modules)
         print("Diagnostics:", result.diagnostics)
+        print("Code lines: ", index_stats["totalCodeLines"])
+        print("Tokens:     ", index_stats["totalTokens"])
         print("State:      ", update_state_path(index_root).as_posix())
         print("Jobs:       ", normalize_jobs(args.jobs))
 
