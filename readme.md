@@ -229,6 +229,12 @@ Total tokens: 14200000
 `Total tokens` is the indexer's lexer token count over the indexed source after
 comment blanking. It is a project-size metric, not an LLM billing-token count.
 
+When the project root is inside a Git worktree and `git` is available, file
+discovery respects Git ignore rules by filtering candidates through
+`git check-ignore --stdin`. This excludes paths matched by `.gitignore`,
+`.git/info/exclude`, or the user's global Git ignore file. Non-Git projects, or
+systems without Git, fall back to the built-in excluded directory list.
+
 ## Incremental update
 
 After a full index build, changed files can be detected and re-indexed incrementally.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
+import subprocess
 import time
 
 from collections import defaultdict
@@ -263,6 +265,68 @@ def _is_excluded_dir_name(name: str, excluded_dir_names: set[str]) -> bool:
     return name.casefold() in excluded_dir_names
 
 
+def git_ignored_source_files(root: Path, files: list[Path]) -> set[Path]:
+    if not files:
+        return set()
+
+    root = root.resolve()
+    git_executable = shutil.which("git")
+
+    if git_executable is None:
+        return set()
+
+    try:
+        inside_worktree = subprocess.run(
+            [git_executable, "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    if inside_worktree.returncode != 0 or inside_worktree.stdout.strip() != "true":
+        return set()
+
+    relative_paths = [
+        path.resolve().relative_to(root).as_posix()
+        for path in files
+    ]
+
+    try:
+        ignored = subprocess.run(
+            [git_executable, "-C", str(root), "check-ignore", "--stdin"],
+            input="\n".join(relative_paths),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    if ignored.returncode not in {0, 1}:
+        return set()
+
+    ignored_paths = {
+        item.strip()
+        for item in ignored.stdout.splitlines()
+        if item.strip()
+    }
+
+    return {
+        root / relative_path
+        for relative_path in ignored_paths
+    }
+
+
 def discover_source_files(
     root: Path,
     *,
@@ -317,6 +381,19 @@ def discover_source_files(
             files.append(path)
 
     walk(root)
+
+    ignored_files = git_ignored_source_files(root, files)
+
+    if ignored_files:
+        ignored_resolved = {
+            path.resolve()
+            for path in ignored_files
+        }
+        files = [
+            path
+            for path in files
+            if path.resolve() not in ignored_resolved
+        ]
 
     files.sort(key=lambda item: item.as_posix().casefold())
     return files
