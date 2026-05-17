@@ -839,6 +839,11 @@ get_file_change_hunks
 Use them for current changes, recent revisions, hunk inspection, review of
 modified files, and commit-message suggestions.
 
+When the user says they fixed, changed, saved, updated, committed, or wants
+current work reviewed, the agent should check these tools before normal source
+navigation. In watcher setups, the index may already be current, and the change
+tools provide the cheapest route to the affected file/symbol ranges.
+
 `get_file_change_hunks` can include `indexedRanges`, which are intersections
 between changed hunk line ranges and indexed symbol/data ranges. These are
 routing hints only. Read the relevant source with `read_symbol` or `read_range`

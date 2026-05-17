@@ -116,6 +116,11 @@ metadata / compact routing
 
 Use change tracking tools only when the user asks about current changes, diffs, recent revisions, commit-message help, or review of modified files.
 
+When the user says they fixed, changed, saved, updated, committed, or wants you
+to verify/review current work, first use `[Change]` tools before normal source
+navigation. The watcher may already have updated and reloaded the index; the
+change tools are the cheap way to discover what actually changed.
+
 The change tracking tools are read-only and file-based. They return JSON and support compact/filter flags to reduce response size. They do not modify the repository.
 
 The tools are exposed only when change tracking is available for the project.
