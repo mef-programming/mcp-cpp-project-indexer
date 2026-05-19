@@ -225,6 +225,85 @@ PACKING_SCHEMA_PROPERTIES = {
 }
 
 
+DATA_COMPACT_FIELDS = {
+    "dataId",
+    "declarationKind",
+    "scopeKind",
+    "name",
+    "qualifiedName",
+    "container",
+    "typeText",
+    "relativePath",
+    "startLine",
+    "endLine",
+    "signature",
+}
+
+MODULE_FILE_COMPACT_FIELDS = {
+    "moduleName",
+    "fullModuleName",
+    "fileId",
+    "relativePath",
+    "unitKind",
+    "lineCount",
+    "symbols",
+    "diagnostics",
+}
+
+MODULE_IMPORT_COMPACT_FIELDS = {
+    "kind",
+    "module",
+    "resolvedModule",
+    "isExported",
+    "relativePath",
+    "startLine",
+    "endLine",
+}
+
+MODULE_IMPORTED_BY_COMPACT_FIELDS = {
+    "module",
+    "relativePath",
+    "kind",
+    "isExported",
+    "sourceLine",
+}
+
+
+def compact_dict(item: dict[str, Any], fields: set[str]) -> dict[str, Any]:
+    return {
+        key: item.get(key)
+        for key in fields
+        if key in item
+    }
+
+
+def compact_data_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_dict(item, DATA_COMPACT_FIELDS) for item in items]
+
+
+def compact_module_files(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_dict(item, MODULE_FILE_COMPACT_FIELDS) for item in items]
+
+
+def compact_module_imports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_dict(item, MODULE_IMPORT_COMPACT_FIELDS) for item in items]
+
+
+def compact_module_imported_by(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [compact_dict(item, MODULE_IMPORTED_BY_COMPACT_FIELDS) for item in items]
+
+
+def compact_module_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fullModuleName": entry.get("fullModuleName"),
+        "primaryModuleName": entry.get("primaryModuleName"),
+        "partitionName": entry.get("partitionName"),
+        "files": compact_module_files(entry.get("files", [])),
+        "imports": compact_module_imports(entry.get("imports", [])),
+        "importedBy": compact_module_imported_by(entry.get("importedBy", [])),
+    }
+
+
 def add_response_packing_options(tools: list[dict[str, Any]]) -> None:
     for tool in tools:
         if tool.get("name") not in PACKABLE_TOOL_NAMES:
@@ -282,11 +361,15 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "find_symbol",
             "description": (
                 "[Symbol] Find C++ project symbols by name metadata. "
+                "Use when the user names a function, method, type, namespace, operator, "
+                "constructor, destructor, or declaration-like symbol. "
                 "Use this for functions, methods, classes, structs, enums, constructors, "
                 "destructors, operators, and namespaces. "
                 "The required argument is 'query'. "
                 "Searches symbol metadata only: shortName, qualifiedName/search aliases, "
                 "and fallback signature substring. "
+                "matchKind reports lookup quality: exact_qualified_name/exact_short_name "
+                "are strong matches; substring, signature, and metadata matches are weaker routing candidates. "
                 "It does not read source code, resolve overloads, analyze behavior, "
                 "find references, or build call graphs. "
                 "After selecting a result, call read_symbol(symbolId) to read the exact source range."
@@ -389,7 +472,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "read_symbol",
             "description": (
                 "[Source] Read original source lines for a symbolId, with absolute line numbers. "
-                "Use startOffset/endOffset to read only a slice of a large symbol body. "
+                "Use startOffset/endOffset to read only a slice of a large symbol body, "
+                "for example startOffset:0,endOffset:20 for the first 21 lines. "
                 "This is a read-only range operation."
             ),
             "inputSchema": {
@@ -487,7 +571,9 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "get_nearest_symbol_for_line",
             "description": (
                 "[Symbol] Return indexed symbol/data ranges that contain or are nearest to one file line. "
-                "This is metadata-only and intended for diagnostics, hunks, build output, and IDE/binary handoff."
+                "Use when a diagnostic, hunk, build output, Visual Studio location, or IDA note gives "
+                "you a file and line number. This is metadata-only and intended for diagnostics, "
+                "hunks, build output, and IDE/binary handoff."
             ),
             "inputSchema": {
                 "type": "object",
@@ -562,14 +648,23 @@ def tool_definitions() -> list[dict[str, Any]]:
         # Module metadata tools
         {
             "name": "find_module",
-            "description": "[Module] Find files that define a C++20 module or module partition.",
+            "description": (
+                "[Module] Find files that define a C++20 module or module partition. "
+                "Use when the user gives a C++20 module name and asks where it is defined. "
+                "This is metadata-only; do not pass C++ namespaces with '::'."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "moduleName": {
                         "type": "string",
                         "description": "Full module name, e.g. uiframework.Elements:ElementImpl.",
-                    }
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact module/file routing fields only.",
+                    },
                 },
                 "required": ["moduleName"],
                 "additionalProperties": False,
@@ -589,7 +684,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "moduleName": {
                         "type": "string",
-                    }
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact module/file routing fields only.",
+                    },
                 },
                 "required": ["moduleName"],
                 "additionalProperties": False,
@@ -686,7 +786,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "get_module_info",
             "description": (
                 "[Module] Return module metadata for one exact C++20 module name, including files, "
-                "imports and importedBy. Do not pass C++ namespaces with '::'."
+                "direct imports, re-exports, and modules that directly import it. "
+                "Use for module structure questions. Metadata only; do not pass C++ namespaces with '::'."
             ),
             "inputSchema": {
                 "type": "object",
@@ -694,7 +795,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "moduleName": {
                         "type": "string",
                         "description": "Exact C++20 module name, e.g. SmartFTP.Shell.Browser:Impl.",
-                    }
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact files/imports/importedBy routing fields only.",
+                    },
                 },
                 "required": ["moduleName"],
                 "additionalProperties": False,
@@ -702,14 +808,22 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "list_module_imports",
-            "description": "[Module] List direct imports of one exact C++20 module. Metadata only.",
+            "description": (
+                "[Module] List direct outgoing imports of one exact C++20 module. "
+                "Use for questions like 'What does module A import?'. Metadata only."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "moduleName": {
                         "type": "string",
                         "description": "Exact C++20 module name.",
-                    }
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact import routing fields only.",
+                    },
                 },
                 "required": ["moduleName"],
                 "additionalProperties": False,
@@ -717,14 +831,22 @@ def tool_definitions() -> list[dict[str, Any]]:
         },
         {
             "name": "list_module_imported_by",
-            "description": "[Module] List modules that directly import one exact C++20 module. Metadata only.",
+            "description": (
+                "[Module] List modules that directly import one exact C++20 module. "
+                "Use for reverse questions like 'Who imports module B?'. Metadata only."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "moduleName": {
                         "type": "string",
                         "description": "Exact C++20 module name.",
-                    }
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact importing-module routing fields only.",
+                    },
                 },
                 "required": ["moduleName"],
                 "additionalProperties": False,
@@ -755,6 +877,8 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "Use this for class/struct fields, static data members, globals, "
                 "namespace constants, enum values, variable templates, and concepts. "
                 "This is metadata-only and does not resolve types. "
+                "typeText is source text, not resolved type information; use it only as "
+                "a routing hint for further symbol/source lookup. "
                 "After selecting a result, call read_data(dataId) to read the exact declaration range."
             ),
             "inputSchema": {
@@ -778,6 +902,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "maximum": 500,
                         "default": 20,
                     },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact data routing fields only.",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -787,7 +916,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "[Data] List indexed data/value declarations directly contained by a class, struct, or namespace. "
                 "Use this to inspect member fields/constants after reading a method body. "
-                "Returns metadata only: name, typeText, signature and source range."
+                "Returns metadata only: name, typeText, signature and source range. "
+                "typeText is source text, not resolved type information."
             ),
             "inputSchema": {
                 "type": "object",
@@ -801,6 +931,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "minimum": 1,
                         "maximum": 1000,
                         "default": 500,
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return compact data routing fields only.",
                     },
                 },
                 "required": ["container"],
@@ -939,6 +1074,7 @@ def tool_definitions() -> list[dict[str, Any]]:
             "name": "get_file_structure",
             "description": (
                 "[File] Return a structured overview of one indexed source file using index metadata only. "
+                "Use for first-pass orientation in large files, with includeOutline:false when counts/sections are enough. "
                 "This includes module metadata, symbol counts, data declaration counts, diagnostics, "
                 "section ranges, and an ordered outline. This does not analyze code semantics."
             ),
@@ -1080,7 +1216,9 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "[Search] Search raw source text in indexed files. This is a plain line-based text search, "
                 "not semantic C++ reference resolution. It searches comments and strings too. "
-                "Use symbolId, filePattern, or file to narrow broad queries."
+                "Use when metadata lookup is not enough and you need lexical source-text occurrences. "
+                "Use symbolId to search only inside one already-located symbol body; prefer symbolId, "
+                "filePattern, or file to narrow broad queries."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1967,6 +2105,7 @@ class CodeIndexTools:
 
     def find_module(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
+        compact = optional_bool(arguments, "compact", False)
 
         if "::" in module_name:
             return self.json_result(
@@ -1984,7 +2123,12 @@ class CodeIndexTools:
                 is_error=False,
             )
 
-        return self.json_result(arguments, self.index.find_module(module_name))
+        results = self.index.find_module(module_name)
+
+        if compact:
+            results = compact_module_files(results)
+
+        return self.json_result(arguments, results)
 
     def list_module_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self.find_module(arguments)
@@ -2034,6 +2178,7 @@ class CodeIndexTools:
 
     def get_module_info(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
+        compact = optional_bool(arguments, "compact", False)
 
         if "::" in module_name:
             return self.json_result(
@@ -2062,10 +2207,14 @@ class CodeIndexTools:
                 }
             )
 
+        if compact:
+            result = compact_module_entry(result)
+
         return self.json_result(arguments, result)
 
     def list_module_imports(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
+        compact = optional_bool(arguments, "compact", False)
         module_map = self.require_module_map()
         entry = module_map.get("modules", {}).get(module_name)
 
@@ -2079,17 +2228,23 @@ class CodeIndexTools:
                 }
             )
 
+        imports = entry.get("imports", [])
+
+        if compact:
+            imports = compact_module_imports(imports)
+
         return self.json_result(
             arguments,
             {
                 "moduleName": module_name,
-                "imports": entry.get("imports", []),
+                "imports": imports,
                 "found": True,
             }
         )
 
     def list_module_imported_by(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
+        compact = optional_bool(arguments, "compact", False)
         module_map = self.require_module_map()
         entry = module_map.get("modules", {}).get(module_name)
 
@@ -2103,11 +2258,16 @@ class CodeIndexTools:
                 }
             )
 
+        imported_by = entry.get("importedBy", [])
+
+        if compact:
+            imported_by = compact_module_imported_by(imported_by)
+
         return self.json_result(
             arguments,
             {
                 "moduleName": module_name,
-                "importedBy": entry.get("importedBy", []),
+                "importedBy": imported_by,
                 "found": True,
             }
         )
@@ -2131,19 +2291,29 @@ class CodeIndexTools:
     def find_data(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = require_query(arguments)
         container = arguments.get("container")
+        compact = optional_bool(arguments, "compact", False)
 
         if container is not None and not isinstance(container, str):
             raise McpError(-32602, "container must be a string when provided")
 
         limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=500)
         results = self.index.find_data(query, container=container, limit=limit)
+
+        if compact:
+            results = compact_data_items(results)
+
         return self.json_result(arguments, results)
 
 
     def list_type_members(self, arguments: dict[str, Any]) -> dict[str, Any]:
         container = require_string(arguments, "container")
+        compact = optional_bool(arguments, "compact", False)
         limit = clamp_int(arguments.get("limit", 500), minimum=1, maximum=1000)
         results = self.index.list_type_members(container, limit=limit)
+
+        if compact:
+            results = compact_data_items(results)
+
         return self.json_result(arguments, results)
 
 

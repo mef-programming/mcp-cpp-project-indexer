@@ -1018,7 +1018,10 @@ Optional routing controls:
 - `exactOnly`: return only exact short-name or qualified-name matches, including case-insensitive exact matches
 - `hideNamespaces`: hide namespace reopening symbols from navigation results
 
-Each returned item includes `matchKind` to describe why it matched, such as `exact_short_name`, `qualified_name_substring`, or `signature_substring`.
+Each returned item includes `matchKind` to describe why it matched. Strong
+matches such as `exact_qualified_name` and `exact_short_name` are usually best
+for routing. Substring, signature, and metadata matches are weaker candidates
+that should be disambiguated before reading source.
 
 Do not combine `file` and `filePattern`. These controls are locator filters;
 they do not read source code and do not resolve overloads semantically.
@@ -1036,8 +1039,10 @@ tools keep their line-numbered source output unchanged.
 
 This is a locator filter only. It does not resolve inheritance, overloads, or type semantics.
 
-`search_source` accepts `symbolId` to search only inside one indexed symbol range.
-This is still lexical source search, not semantic call/reference resolution.
+`search_source` accepts `symbolId` to search only inside one indexed symbol
+range. This is the preferred way to do a lexical check inside an already-located
+function or method. It is still lexical source search, not semantic
+call/reference resolution.
 
 Canonical argument:
 
@@ -1158,6 +1163,30 @@ Who imports/consumes module X?   -> list_module_imported_by(X) or get_module_inf
 Do not answer reverse-import questions by searching source text first. The
 module map already stores `importedBy` metadata. Use source reads only when the
 caller asks to inspect the actual import line or when metadata looks suspicious.
+
+Module metadata tools accept `compact:true` where useful:
+
+- `find_module` / `list_module_files`: compact module/file routing fields
+- `get_module_info`: compact files, imports, and imported-by metadata
+- `list_module_imports`: compact outgoing import records
+- `list_module_imported_by`: compact importing-module records
+
+### Data/member tools
+
+```text
+find_data(query)
+list_type_members(container)
+read_data(dataId)
+```
+
+Use `find_data` for fields, globals, namespace constants, enum values, variable
+templates, and concepts. Use `list_type_members` when the containing type or
+namespace is already known. Both tools are metadata-only and accept
+`compact:true` for smaller routing output.
+
+`typeText` is the original source text for the declaration type. It is not a
+compiler-resolved type. Treat it as a hint for further symbol/source lookup, not
+as proof of semantic type identity.
 
 ---
 

@@ -155,7 +155,9 @@ def change_tracking_tool_definitions() -> list[dict[str, Any]]:
             "name": "get_file_change_hunks",
             "description": (
                 "[Change] Return structured change hunks for one file, optionally intersected with indexed "
-                "symbol/data ranges. Hunks are routing evidence, not semantic analysis."
+                "symbol/data ranges. Use when reviewing current changes, explaining a revision, or routing "
+                "from a changed line to the affected symbol/data range. Hunks are routing evidence, "
+                "not semantic analysis or correctness proof."
             ),
             "inputSchema": {
                 "type": "object",

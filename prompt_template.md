@@ -823,6 +823,15 @@ Use module-map tools for module metadata:
 - `list_module_imported_by`
 - `get_module_tree`
 
+Use `compact:true` on module metadata tools when routing fields are enough:
+
+```text
+find_module({"moduleName": "X", "compact": true})
+get_module_info({"moduleName": "X", "compact": true})
+list_module_imports({"moduleName": "X", "compact": true})
+list_module_imported_by({"moduleName": "X", "compact": true})
+```
+
 When using `list_module_imported_by`, each result should contain the importing module, source file, and source line. If you need to inspect the import declaration, use:
 
 ```text
@@ -1084,11 +1093,13 @@ The data index contains conservative C++ data/value declarations:
 - concepts
 
 It does not resolve types. `typeText` is a best-effort source string only.
+Use `compact:true` on `find_data` and `list_type_members` when routing fields
+are enough.
 
 When analyzing a method body and several member variables are referenced, prefer:
 
 ```text
-list_type_members({"container": "Widget"})
+list_type_members({"container": "Widget", "compact": true})
 ```
 
 over multiple individual calls such as:
@@ -1121,7 +1132,7 @@ _ScrollBars[nBar].SetPosition(...)
 Use:
 
 ```text
-list_type_members({"container": "Editor"})
+list_type_members({"container": "Editor", "compact": true})
 ```
 
 Metadata might show:
