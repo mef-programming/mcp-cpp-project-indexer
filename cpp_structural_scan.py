@@ -45,9 +45,8 @@ def build_qualified_name(scope_stack: list[ScopeFrame], name: str) -> str:
     if not name:
         return ""
 
-    # Already-qualified names, e.g. A::B::Foo, are kept as visible.
-    if "::" in name:
-        return name
+    if name.startswith("::"):
+        return name.lstrip(":")
 
     parts = [
         frame.name
@@ -56,6 +55,18 @@ def build_qualified_name(scope_stack: list[ScopeFrame], name: str) -> str:
         and frame.name
         and not frame.name.startswith("<")
     ]
+
+    # Names that are already qualified can still be relative to the current
+    # namespace, e.g. namespace N { void C::f(); } is N::C::f.
+    if "::" in name:
+        name_parts = name.split("::")
+
+        for index in range(1, len(parts) + 1):
+            if parts[-index:] == name_parts[:index]:
+                return "::".join([*parts[:-index], *name_parts])
+
+        return "::".join([*parts, name])
+
     parts.append(name)
     return "::".join(parts)
 

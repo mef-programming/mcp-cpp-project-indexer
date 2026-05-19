@@ -383,6 +383,8 @@ def symbol_from_event(
     symbol: dict[str, Any] = {
         "symbolId": symbol_id,
         "type": event.kind,
+        "shortName": event.name,
+        "qualifiedName": name,
         "container": container_from_qualified_name(name),
         "startLine": event.start_line,
         "endLine": end_line,
