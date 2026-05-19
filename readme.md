@@ -1,6 +1,7 @@
 # mcp-cpp-project-indexer
 
-`mcp-cpp-project-indexer` is a parser-based C++ source-range indexer for large projects and MCP-based AI code navigation.
+`mcp-cpp-project-indexer` is a deterministic C++ source-range indexer for
+large, module-heavy projects and MCP-based AI code navigation.
 
 It is not a compiler, LSP replacement, refactoring engine, semantic analyzer, or call-graph builder.
 
@@ -14,9 +15,128 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 
 ---
 
-## Core idea
+## 🚀 Production Scale & Performance
 
-Large C++ codebases are expensive to feed into an AI model when entire files are loaded.
+This project is used on real C++ codebases, not only toy examples. A recent
+production run indexed:
+
+- 📂 **7,046** source files
+- 📝 **979,658** source lines
+- 🏎️ **4,682,882** indexer lexer tokens
+- 🏷️ **97,924** indexed symbols
+- 🗃️ **36,551** indexed data declarations
+- 📦 **3,754** C++20 modules / module partitions
+- ⏱️ full index build in **19.5 seconds**
+
+It is designed for workflows that combine the Codex desktop app or other MCP
+clients with Visual Studio navigation and, when needed, binary/decompiler
+evidence from tools such as IDA Pro.
+
+In one measured workflow, exact source-range routing reduced source text read
+from roughly 2,000 lines to 283 lines, an **86% reduction**.
+
+---
+
+## 🤖 Development Backstory
+
+This project was shaped through a multi-model AI-assisted development workflow
+involving ChatGPT, Gemini, and DeepSeek. The goal was not to let one model
+blindly invent a broad tool, but to use multiple models and real production
+feedback to argue about scope, constraints, and workflow friction.
+
+1. **Architecture and scope debate**
+   ChatGPT and Gemini were used to debate the boundary of the tool: what it
+   should do, what it should avoid, and why it should stay a lightweight routing
+   index instead of becoming a compiler or `clangd` replacement.
+
+2. **Incremental implementation**
+   The codebase was implemented incrementally with an AI coding agent, with
+   each functional change tested against real C++20 module-heavy projects.
+
+3. **Live workflow testing and review**
+   During production use inside a 7,000-file codebase, separate AI-assisted
+   review sessions, including DeepSeek feedback, evaluated output size, ranking
+   quality, navigation friction, and context hygiene.
+
+4. **Iterative refinement**
+   Feedback from those sessions drove focused improvements: compact outputs,
+   symbol/file/container filters, change hunk routing, watcher reloads,
+   around-line reads, and tighter prompt rules.
+
+The result is a tool built with AI for AI-assisted code navigation, optimized
+around one strict principle: keep the indexer honest and small, and let the AI
+reason only from source ranges it explicitly reads.
+
+---
+
+## 💡 Why This Tool?
+
+Large C++ projects are expensive to feed into an AI model when entire files are
+loaded just to find one function, class, import, or declaration. C++20 modules
+make this harder: many IDE/LSP-style tools still struggle with large module
+graphs, partitions, generated SDK headers, and build-specific configuration.
+
+This indexer solves a narrower but very practical problem: it gives the AI a
+small, deterministic routing map. The AI can locate the relevant symbol,
+module, file, or changed hunk first, then read only the exact original source
+lines needed for the task.
+
+Example from a real bug-finding workflow:
+
+```text
+Whole file context:     ~2000 source lines
+On-demand source reads:  ~283 source lines
+--------------------------------------------
+Reduction:               ~86% less source text
+```
+
+---
+
+## 📊 Before / After
+
+| Standard AI code navigation | With mcp-cpp-project-indexer |
+|-----------------------------|------------------------------|
+| ❌ AI reads whole files to find a symbol | ✅ AI asks for compact metadata, then reads the exact source range |
+| ❌ Context fills with unrelated declarations and implementations | ✅ Context stays focused on the lines that matter |
+| ❌ C++20 module consumers/imports are hard to route through | ✅ Module imports, re-exports, partitions, and consumers are exposed directly |
+| ❌ Reviews start by scanning changed files manually | ✅ Change hunks are mapped to indexed symbol/data ranges |
+| ❌ Tooling may imply semantic certainty it does not have | ✅ The indexer only returns routing facts and original source ranges |
+
+The result is lower token usage, lower latency, less context drift, and more
+source-grounded analysis.
+
+---
+
+## How It Works
+
+The indexer deliberately avoids pretending to be a compiler.
+
+1. **Fast token/structure scan**
+   Source files are scanned with a lightweight Python lexer and structural
+   parser. The output is a deterministic table of contents: files, symbols,
+   data declarations, source ranges, diagnostics, and module facts.
+
+2. **C++20 module map**
+   Module interfaces, partitions, imports, export-imports, and consumers are
+   indexed so the AI can route through module-heavy code without asking an LSP
+   to solve the whole build.
+
+3. **Incremental update and watcher**
+   The updater tracks content hashes and rewrites only changed index data where
+   possible. The optional watcher can keep the MCP server cache fresh while you
+   work in Visual Studio.
+
+4. **MCP tools with compact output controls**
+   Tools expose exact routing metadata first. The AI escalates only when needed:
+   compact symbol lookup, file/module/change overview, exact `read_symbol` or
+   `read_range`, then deeper recursive source reads.
+
+The indexer is only the table of contents. The AI performs recursive
+exploration and code review from the original source lines it explicitly reads.
+
+---
+
+## Core Workflow
 
 Instead of this:
 
@@ -33,38 +153,14 @@ inspect visible calls
 read only relevant project callees
 ```
 
-Example result from a real workflow:
+For changed-code review:
 
 ```text
-Whole file:      ~2000 lines
-On-demand reads:  ~283 lines
-Reduction:        ~86% less source text
+list_changed_files
+get_file_change_hunks(includeIndexedRangeSummary:true, includeSource:false)
+get_file_change_hunks(symbolId/dataId, includeSource:true)
+read_symbol/read_range only when current source behavior is needed
 ```
-
-The indexer is only the table of contents. The AI performs recursive exploration on demand.
-
----
-
-## Why this project exists
-
-Modern C++ codebases that lean heavily on C++20 modules are still difficult to navigate with many existing tools.
-In practice, Microsoft IntelliSense and Clang-based compiler/tooling flows can struggle to model large module graphs
-reliably enough for AI-assisted code navigation. When module imports, partitions, generated SDK headers,
-build-specific configuration, or implementation units are not represented cleanly,
-generic IDE/LSP-style navigation becomes noisy or unusable for this workflow.
-
-This project takes a narrower route. It does not try to compile the program or replace IntelliSense.
-Instead, it builds a deterministic routing index for files, symbols, source ranges, and C++20 module relationships.
-That makes module-heavy projects navigable even when full semantic tooling is incomplete, unavailable,
- or too expensive to put in the model context.
-
-The goal is practical AI navigation:
-
-- keep the context clean
-- avoid loading thousands of irrelevant source lines
-- expose module imports and consumers directly
-- route from a symbol or module to exact original source lines
-- let the AI reason only after the relevant source range has been read
 
 ---
 
@@ -102,28 +198,6 @@ Intentionally not included:
 - no `analyze_symbol(symbolId)`
 
 The AI should read source ranges and reason from the original code.
-
----
-
-## Why this matters
-
-Without an index, an AI model often has to read entire C++ files just to discover
-where relevant declarations and implementations are located.
-
-Example:
-
-| Scenario | Source text read |
-|----------|------------------|
-| Full file scan | `CompositionHost.ixx` + `CompositionHost.cpp` = ~5,302 lines |
-| Indexed navigation | compact metadata for symbols/modules/files, then selected source ranges only |
-
-In this case, the index turns a ~5,300-line source scan into a compact structured
-overview of the file's symbols and source ranges. The model can then read only the
-specific functions, classes, data declarations, or type aliases needed for the
-question.
-
-This reduces token usage, latency, and irrelevant context while keeping the
-analysis grounded in exact source line ranges.
 
 ---
 
