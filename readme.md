@@ -1126,6 +1126,17 @@ UIFramework::Elements
 
 For namespaces/classes/functions, use `find_symbol` or `find_symbols_glob`.
 
+Direction matters:
+
+```text
+What does module X import?       -> list_module_imports(X) or get_module_info(X)
+Who imports/consumes module X?   -> list_module_imported_by(X) or get_module_info(X)
+```
+
+Do not answer reverse-import questions by searching source text first. The
+module map already stores `importedBy` metadata. Use source reads only when the
+caller asks to inspect the actual import line or when metadata looks suspicious.
+
 ---
 
 ## Recommended AI usage rules

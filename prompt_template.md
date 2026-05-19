@@ -77,6 +77,8 @@ Before using tools, classify the request:
 | Request type | First tool choice | Source reading needed? |
 |---|---|---|
 | Module structure | `get_module_info` | Usually no |
+| Who imports/consumes module X | `list_module_imported_by` or `get_module_info` | Usually no |
+| What module X imports | `list_module_imports` or `get_module_info` | Usually no |
 | File orientation | `get_file_structure` with compact options | No, unless behavior is asked |
 | Known symbol lookup | `find_symbol` with compact/exact/filter options | Only if behavior/details are asked |
 | Known file symbol list | `list_file_symbols` with compact/filter options | Only after selecting a candidate |
@@ -826,6 +828,36 @@ When using `list_module_imported_by`, each result should contain the importing m
 ```text
 read_range(relativePath, sourceLine, sourceLine)
 ```
+
+For reverse module-import questions, use reverse module metadata directly.
+
+If the user asks:
+
+```text
+Which modules import X?
+Who imports X?
+Who consumes X?
+Which modules depend on X?
+```
+
+Use:
+
+```text
+list_module_imported_by({"moduleName": "X"})
+```
+
+or:
+
+```text
+get_module_info({"moduleName": "X"})
+```
+
+Do not use `list_module_imports` for this question; it answers the opposite
+direction: what X imports.
+
+Do not search source text for `import X` as the first step. Source search is
+only a fallback if module metadata is missing, contradictory, or the user asks
+to inspect raw import lines.
 
 When module metadata shows `isExported:true`, distinguish direct imports from transitive availability.
 
