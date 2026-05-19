@@ -34,6 +34,7 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 - [Example Workflows](#example-workflows)
 - [Design Rules](#design-rules)
 - [Smoke Tests](#smoke-tests)
+- [Maintenance Checklist](#maintenance-checklist)
 
 ---
 
@@ -1498,3 +1499,10 @@ Expected behavior:
 - it does not confuse namespaces with modules
 - it calls `read_symbol` only after symbol metadata lookup
 - it follows project calls recursively only when needed
+
+## Maintenance Checklist
+
+After changing tool behavior, command-line switches, prompts, or documentation,
+run through [MAINTENANCE_CHECKLIST.md](MAINTENANCE_CHECKLIST.md). It covers the
+usual sync points: tool descriptions, prompt rules, README, menu/CLI flags,
+index data compatibility, smoke tests, relay assumptions, and commit prep.
