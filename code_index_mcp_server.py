@@ -863,6 +863,45 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "default": False,
                         "description": "Hide namespace reopening symbols from counts/outline.",
                     },
+                    "includeDebug": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include optional file-index debug sections when built with --emit-debug-file-indexes.",
+                    },
+                    "debugKinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "diagnostics",
+                                "structuralEvents",
+                                "scopeIntervals",
+                                "functionBodyRanges",
+                            ],
+                        },
+                        "description": "Optional debug section filters.",
+                    },
+                    "debugStartLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional start line for debug section filtering.",
+                    },
+                    "debugEndLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional end line for debug section filtering.",
+                    },
+                    "debugLimit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5000,
+                        "default": 200,
+                    },
+                    "compactDebug": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Return compact debug items with routing fields only.",
+                    },
                 },
                 "required": ["file"],
                 "additionalProperties": False,
@@ -2022,6 +2061,26 @@ class CodeIndexTools:
         include_data = optional_bool(arguments, "includeData", True)
         include_diagnostics = optional_bool(arguments, "includeDiagnostics", True)
         hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
+        include_debug = optional_bool(arguments, "includeDebug", False)
+        debug_kinds = optional_string_set(arguments, "debugKinds")
+        debug_start_line = optional_int(arguments, "debugStartLine")
+        debug_end_line = optional_int(arguments, "debugEndLine")
+        debug_limit = clamp_int(arguments.get("debugLimit", 200), minimum=1, maximum=5000)
+        compact_debug = optional_bool(arguments, "compactDebug", True)
+
+        allowed_debug_kinds = {
+            "diagnostics",
+            "structuralEvents",
+            "scopeIntervals",
+            "functionBodyRanges",
+        }
+
+        if debug_kinds is not None and not debug_kinds <= allowed_debug_kinds:
+            invalid = sorted(debug_kinds - allowed_debug_kinds)
+            raise McpError(-32602, f"Invalid debugKinds: {', '.join(invalid)}")
+
+        if debug_start_line is not None and debug_end_line is not None and debug_end_line < debug_start_line:
+            raise McpError(-32602, "debugEndLine must be >= debugStartLine")
 
         result = self.index.get_file_structure(
             file,
@@ -2033,6 +2092,12 @@ class CodeIndexTools:
             include_data=include_data,
             include_diagnostics=include_diagnostics,
             hide_namespaces=hide_namespaces,
+            include_debug=include_debug,
+            debug_kinds=debug_kinds,
+            debug_start_line=debug_start_line,
+            debug_end_line=debug_end_line,
+            debug_limit=debug_limit,
+            compact_debug=compact_debug,
         )
 
         if result is None:

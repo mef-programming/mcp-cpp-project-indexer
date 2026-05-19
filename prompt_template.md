@@ -536,12 +536,35 @@ Use:
 - `hideNamespaces:true` to remove namespace reopening noise
 - `outlineLimit` to prevent huge responses
 - `compactOutline:true` when outline items are only needed for routing
+- `includeDebug:true` only when investigating indexer/parser behavior
 
 If `outlineTruncated` is true, narrow filters or raise `outlineLimit` before assuming the outline is complete.
 
 Do not treat `get_file_structure` output as implementation behavior. It is a table of contents for the file.
 
 If the user asks what code does, use `get_file_structure` only for orientation, then read the relevant symbol/range with `read_symbol` or `read_range`.
+
+Use file-structure debug fields only when the user asks about parser/indexer
+diagnostics or when symbol ranges look suspicious. Debug sections are available
+only when file indexes were built with `--emit-debug-file-indexes`.
+
+Prefer:
+
+```text
+get_file_structure({
+  "file": "...",
+  "includeOutline": false,
+  "includeDebug": true,
+  "debugKinds": ["structuralEvents", "functionBodyRanges", "scopeIntervals"],
+  "debugStartLine": 120,
+  "debugEndLine": 180,
+  "compactDebug": true,
+  "debugLimit": 100
+})
+```
+
+Treat debug output as indexer evidence: it shows what the scanner saw, not what
+the program does.
 
 ---
 

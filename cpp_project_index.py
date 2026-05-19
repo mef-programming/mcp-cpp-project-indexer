@@ -150,6 +150,108 @@ def compact_file_structure_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+FILE_DEBUG_COMPACT_FIELDS = {
+    "kind",
+    "name",
+    "qualifiedName",
+    "startLine",
+    "endLine",
+    "startCol0",
+    "endCol0Exclusive",
+    "signature",
+    "fragment",
+    "scopeKind",
+    "parent",
+    "bodyStartLine",
+    "bodyEndLine",
+    "message",
+    "severity",
+    "code",
+}
+
+FILE_DEBUG_KINDS = {
+    "diagnostics",
+    "structuralEvents",
+    "scopeIntervals",
+    "functionBodyRanges",
+}
+
+
+def compact_file_debug_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item.get(key)
+        for key in FILE_DEBUG_COMPACT_FIELDS
+        if key in item
+    }
+
+
+def item_line_range(item: dict[str, Any]) -> tuple[int, int] | None:
+    range_item = item.get("range")
+
+    if isinstance(range_item, dict):
+        start_line = int(range_item.get("startLine") or 0)
+        end_line = int(range_item.get("endLine") or start_line or 0)
+    else:
+        start_line = int(
+            item.get("startLine")
+            or item.get("line")
+            or item.get("bodyStartLine")
+            or 0
+        )
+        end_line = int(
+            item.get("endLine")
+            or item.get("line")
+            or item.get("bodyEndLine")
+            or start_line
+            or 0
+        )
+
+    if start_line <= 0 and end_line <= 0:
+        return None
+
+    if end_line <= 0:
+        end_line = start_line
+
+    return start_line, end_line
+
+
+def item_overlaps_line_filter(
+    item: dict[str, Any],
+    start_line: int | None,
+    end_line: int | None,
+) -> bool:
+    if start_line is None and end_line is None:
+        return True
+
+    item_range = item_line_range(item)
+
+    if item_range is None:
+        return True
+
+    item_start, item_end = item_range
+    filter_start = start_line if start_line is not None else item_start
+    filter_end = end_line if end_line is not None else item_end
+    return item_start <= filter_end and filter_start <= item_end
+
+
+def normalize_debug_item(item: dict[str, Any]) -> dict[str, Any]:
+    range_item = item.get("range")
+
+    if isinstance(range_item, dict):
+        result = {
+            key: value
+            for key, value in item.items()
+            if key != "range"
+        }
+        result.setdefault("startLine", range_item.get("startLine"))
+        result.setdefault("endLine", range_item.get("endLine"))
+        result.setdefault("startCol0", range_item.get("startCol0"))
+        result.setdefault("endCol0Exclusive", range_item.get("endCol0Exclusive"))
+        return result
+
+    return dict(item)
+
+
 def data_matches_kind_filter(item: dict[str, Any], data_kinds: set[str] | None) -> bool:
     if not data_kinds:
         return True
@@ -1639,6 +1741,12 @@ class LoadedProjectIndex:
         include_data: bool = True,
         include_diagnostics: bool = True,
         hide_namespaces: bool = False,
+        include_debug: bool = False,
+        debug_kinds: set[str] | None = None,
+        debug_start_line: int | None = None,
+        debug_end_line: int | None = None,
+        debug_limit: int = 200,
+        compact_debug: bool = True,
     ) -> dict[str, Any] | None:
         file_item = self.get_file_item(file)
 
@@ -1648,6 +1756,7 @@ class LoadedProjectIndex:
         file_id = file_item["fileId"]
         relative_path = file_item["relativePath"]
         outline_limit = max(1, outline_limit)
+        debug_limit = max(1, debug_limit)
 
         all_file_symbols = [
             symbol
@@ -1856,6 +1965,12 @@ class LoadedProjectIndex:
                 "includeData": include_data,
                 "includeDiagnostics": include_diagnostics,
                 "hideNamespaces": hide_namespaces,
+                "includeDebug": include_debug,
+                "debugKinds": sorted(debug_kinds) if debug_kinds else None,
+                "debugStartLine": debug_start_line,
+                "debugEndLine": debug_end_line,
+                "debugLimit": debug_limit,
+                "compactDebug": compact_debug,
             },
             "counts": {
                 "symbols": len(file_symbols),
@@ -1876,7 +1991,102 @@ class LoadedProjectIndex:
         if include_outline:
             result["outline"] = outline
 
+        if include_debug:
+            result["debug"] = self.file_debug_structure(
+                file_id=file_id,
+                diagnostics=diagnostics,
+                debug_kinds=debug_kinds,
+                debug_start_line=debug_start_line,
+                debug_end_line=debug_end_line,
+                debug_limit=debug_limit,
+                compact_debug=compact_debug,
+            )
+
         return result
+
+    def file_debug_structure(
+        self,
+        *,
+        file_id: str,
+        diagnostics: list[dict[str, Any]],
+        debug_kinds: set[str] | None,
+        debug_start_line: int | None,
+        debug_end_line: int | None,
+        debug_limit: int,
+        compact_debug: bool,
+    ) -> dict[str, Any]:
+        requested_kinds = debug_kinds or set(FILE_DEBUG_KINDS)
+        requested_kinds = {
+            kind
+            for kind in requested_kinds
+            if kind in FILE_DEBUG_KINDS
+        }
+        file_index = self.load_file_index(file_id)
+        available_kinds = [
+            kind
+            for kind in sorted(FILE_DEBUG_KINDS)
+            if kind == "diagnostics" or kind in file_index
+        ]
+
+        if not any(kind in file_index for kind in FILE_DEBUG_KINDS - {"diagnostics"}):
+            return {
+                "available": False,
+                "reason": "File index does not contain debug sections. Rebuild with --emit-debug-file-indexes.",
+                "availableKinds": available_kinds,
+                "requestedKinds": sorted(requested_kinds),
+            }
+
+        result: dict[str, Any] = {
+            "available": True,
+            "availableKinds": available_kinds,
+            "requestedKinds": sorted(requested_kinds),
+            "compact": compact_debug,
+            "startLine": debug_start_line,
+            "endLine": debug_end_line,
+            "limit": debug_limit,
+            "truncated": False,
+            "counts": {},
+        }
+        remaining = debug_limit
+
+        for kind in sorted(requested_kinds):
+            if kind == "diagnostics":
+                source_items = diagnostics
+            else:
+                source_items = file_index.get(kind, [])
+
+            if not isinstance(source_items, list):
+                source_items = []
+
+            filtered_items = [
+                normalize_debug_item(item)
+                for item in source_items
+                if isinstance(item, dict)
+                and item_overlaps_line_filter(item, debug_start_line, debug_end_line)
+            ]
+            result["counts"][kind] = len(filtered_items)
+
+            if remaining <= 0:
+                result[kind] = []
+                result["truncated"] = result["truncated"] or bool(filtered_items)
+                continue
+
+            emitted = filtered_items[:remaining]
+            remaining -= len(emitted)
+
+            if len(emitted) < len(filtered_items):
+                result["truncated"] = True
+
+            if compact_debug:
+                result[kind] = [
+                    compact_file_debug_item(item)
+                    for item in emitted
+                ]
+            else:
+                result[kind] = emitted
+
+        return result
+
     def iter_search_files(
         self,
         *,

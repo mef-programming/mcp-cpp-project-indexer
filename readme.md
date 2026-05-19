@@ -1012,6 +1012,26 @@ Glob over project-relative paths only. This is not source grep.
 
 `get_file_structure` returns a metadata-only table of contents for one file. For large files, prefer `includeOutline:false` first. Use `symbolTypes`, `dataKinds`, `hideNamespaces`, `outlineLimit`, and `compactOutline:true` to keep responses small. After identifying a relevant outline item, read the source with `read_symbol` or `read_range` before making implementation claims.
 
+When file indexes were built with `--emit-debug-file-indexes`,
+`get_file_structure` can also include optional parser/indexer debug sections:
+
+```json
+{
+  "file": "...",
+  "includeOutline": false,
+  "includeDebug": true,
+  "debugKinds": ["structuralEvents", "scopeIntervals", "functionBodyRanges"],
+  "debugStartLine": 120,
+  "debugEndLine": 180,
+  "compactDebug": true,
+  "debugLimit": 100
+}
+```
+
+Use this only to investigate parser diagnostics, missing symbols, suspicious
+source ranges, or unexpected scope/function-body detection. Debug output is
+indexer evidence, not implementation behavior.
+
 Examples:
 
 ```text
