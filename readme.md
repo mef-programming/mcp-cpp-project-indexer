@@ -15,6 +15,28 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 
 ---
 
+## Contents
+
+- [Production Scale & Performance](#-production-scale--performance)
+- [Development Backstory](#-development-backstory)
+- [Why This Tool?](#-why-this-tool)
+- [Before / After](#-before--after)
+- [How It Works](#how-it-works)
+- [Core Workflow](#core-workflow)
+- [What It Does](#what-it-does)
+- [Build And Update](#build-a-project-index)
+- [Start The MCP Server](#start-the-mcp-server)
+- [Client Configuration](#lm-studio-mcp-configuration)
+- [Possible Workflow Setups](#possible-workflow-setups)
+- [Command Line Reference](#command-line-reference)
+- [Tool Overview](#tool-overview)
+- [Recommended AI Usage Rules](#recommended-ai-usage-rules)
+- [Example Workflows](#example-workflows)
+- [Design Rules](#design-rules)
+- [Smoke Tests](#smoke-tests)
+
+---
+
 ## 🚀 Production Scale & Performance
 
 This project is used on real C++ codebases, not only toy examples. A recent
