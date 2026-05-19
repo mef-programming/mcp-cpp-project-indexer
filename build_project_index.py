@@ -230,11 +230,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--emit-diagnostic-file-indexes",
         "--emit-debug-file-indexes",
+        dest="emit_debug_file_indexes",
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
-            "Emit debug scanner data inside files/<fileId>.json, such as "
+            "Emit indexer/scanner diagnostic data inside files/<fileId>.json, such as "
             "structuralEvents, scopeIntervals and functionBodyRanges. Default is false."
         ),
     )

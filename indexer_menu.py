@@ -14,11 +14,20 @@ DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
 
 
 class MenuContext:
-    def __init__(self, *, root: Path, index_root: Path, indexer_root: Path, jobs: int) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        index_root: Path,
+        indexer_root: Path,
+        jobs: int,
+        emit_debug_file_indexes: bool,
+    ) -> None:
         self.root = root.resolve()
         self.index_root = index_root.resolve()
         self.indexer_root = indexer_root.resolve()
         self.jobs = jobs
+        self.emit_debug_file_indexes = emit_debug_file_indexes
         self.python = Path(sys.executable)
 
     def script(self, name: str) -> Path:
@@ -53,6 +62,16 @@ def run_command(args: list[str], *, cwd: Path | None = None) -> int:
     return completed.returncode
 
 
+def append_debug_file_index_args(ctx: MenuContext, args: list[str]) -> None:
+    if ctx.emit_debug_file_indexes:
+        args.append("--emit-diagnostic-file-indexes")
+
+
+def append_server_watcher_debug_args(ctx: MenuContext, args: list[str]) -> None:
+    if ctx.emit_debug_file_indexes:
+        args.append("--watch-emit-diagnostic-file-indexes")
+
+
 def require_file(path: Path) -> bool:
     if path.exists():
         return True
@@ -67,18 +86,18 @@ def build_project_index(ctx: MenuContext) -> int:
     if not require_file(script):
         return 2
 
-    return run_command(
-        [
-            str(ctx.python),
-            str(script),
-            "--root",
-            str(ctx.root),
-            "--output-root",
-            str(ctx.index_root),
-            "--jobs",
-            str(ctx.jobs),
-        ]
-    )
+    args = [
+        str(ctx.python),
+        str(script),
+        "--root",
+        str(ctx.root),
+        "--output-root",
+        str(ctx.index_root),
+        "--jobs",
+        str(ctx.jobs),
+    ]
+    append_debug_file_index_args(ctx, args)
+    return run_command(args)
 
 
 def build_module_map(ctx: MenuContext) -> int:
@@ -251,7 +270,7 @@ def build_single_file(ctx: MenuContext) -> int:
         print(f"File not found: {file_path}")
         return 1
 
-    emit_debug = input("Emit debug data? [y/N]: ").strip().casefold() == "y"
+    emit_debug = input("Emit scanner diagnostics? [y/N]: ").strip().casefold() == "y"
     safe_name = file_path.name.replace(":", "_").replace("/", "_").replace("\\", "_")
     output = ctx.index_root / "debug" / f"{safe_name}.json"
 
@@ -267,7 +286,7 @@ def build_single_file(ctx: MenuContext) -> int:
     ]
 
     if emit_debug:
-        args.append("--emit-debug")
+        args.append("--emit-diagnostics")
 
     return run_command(args)
 
@@ -278,18 +297,18 @@ def update_project_index(ctx: MenuContext) -> int:
     if not require_file(script):
         return 2
 
-    return run_command(
-        [
-            str(ctx.python),
-            str(script),
-            "--root",
-            str(ctx.root),
-            "--index-root",
-            str(ctx.index_root),
-            "--jobs",
-            str(ctx.jobs),
-        ]
-    )
+    args = [
+        str(ctx.python),
+        str(script),
+        "--root",
+        str(ctx.root),
+        "--index-root",
+        str(ctx.index_root),
+        "--jobs",
+        str(ctx.jobs),
+    ]
+    append_debug_file_index_args(ctx, args)
+    return run_command(args)
 
 
 def update_project_index_known_files_only(ctx: MenuContext) -> int:
@@ -298,19 +317,19 @@ def update_project_index_known_files_only(ctx: MenuContext) -> int:
     if not require_file(script):
         return 2
 
-    return run_command(
-        [
-            str(ctx.python),
-            str(script),
-            "--root",
-            str(ctx.root),
-            "--index-root",
-            str(ctx.index_root),
-            "--jobs",
-            str(ctx.jobs),
-            "--known-files-only",
-        ]
-    )
+    args = [
+        str(ctx.python),
+        str(script),
+        "--root",
+        str(ctx.root),
+        "--index-root",
+        str(ctx.index_root),
+        "--jobs",
+        str(ctx.jobs),
+        "--known-files-only",
+    ]
+    append_debug_file_index_args(ctx, args)
+    return run_command(args)
 
 
 def update_project_index_dry_run(ctx: MenuContext) -> int:
@@ -376,20 +395,20 @@ def watch_project_index(ctx: MenuContext) -> int:
     if not require_file(script):
         return 2
 
-    return run_command(
-        [
-            str(ctx.python),
-            str(script),
-            "--root",
-            str(ctx.root),
-            "--index-root",
-            str(ctx.index_root),
-            "--indexer-root",
-            str(ctx.indexer_root),
-            "--jobs",
-            str(ctx.jobs),
-        ]
-    )
+    args = [
+        str(ctx.python),
+        str(script),
+        "--root",
+        str(ctx.root),
+        "--index-root",
+        str(ctx.index_root),
+        "--indexer-root",
+        str(ctx.indexer_root),
+        "--jobs",
+        str(ctx.jobs),
+    ]
+    append_debug_file_index_args(ctx, args)
+    return run_command(args)
 
 
 def run_mcp_server(ctx: MenuContext) -> int:
@@ -418,19 +437,19 @@ def run_mcp_server_with_watcher(ctx: MenuContext) -> int:
         return 2
 
     print("Starting MCP server with index watcher. Stop with Ctrl+C.")
-    return run_command(
-        [
-            str(ctx.python),
-            str(script),
-            "--project-root",
-            str(ctx.root),
-            "--index-root",
-            str(ctx.index_root),
-            "--watch-index",
-            "--watch-jobs",
-            str(ctx.jobs),
-        ]
-    )
+    args = [
+        str(ctx.python),
+        str(script),
+        "--project-root",
+        str(ctx.root),
+        "--index-root",
+        str(ctx.index_root),
+        "--watch-index",
+        "--watch-jobs",
+        str(ctx.jobs),
+    ]
+    append_server_watcher_debug_args(ctx, args)
+    return run_command(args)
 
 
 def print_lmstudio_config(ctx: MenuContext) -> int:
@@ -472,8 +491,16 @@ def clean_index(ctx: MenuContext) -> int:
     return 0
 
 
+def toggle_debug_file_indexes(ctx: MenuContext) -> int:
+    ctx.emit_debug_file_indexes = not ctx.emit_debug_file_indexes
+    state = "ON" if ctx.emit_debug_file_indexes else "OFF"
+    print(f"Indexer diagnostic file sections: {state}")
+    return 0
+
+
 def menu_items() -> list[tuple[str, Callable[[MenuContext], int]]]:
     return [
+        ("Toggle indexer diagnostic file sections for build/update/watch", toggle_debug_file_indexes),
         ("Build project index", build_project_index),
         ("Build module map", build_module_map),
         ("Build project index + module map", build_all),
@@ -507,6 +534,12 @@ def interactive_menu(ctx: MenuContext) -> int:
         print("Index root:  ", ctx.index_root)
         print("Indexer root:", ctx.indexer_root)
         print("Jobs:        ", ctx.jobs)
+        print(
+            "Diagnostics: ",
+            "ON (--emit-diagnostic-file-indexes)"
+            if ctx.emit_debug_file_indexes
+            else "OFF",
+        )
         print()
 
         for index, (title, _) in enumerate(items, start=1):
@@ -568,6 +601,17 @@ def parse_args() -> argparse.Namespace:
         help="Worker process count for build/update actions. Use 0 for auto.",
     )
     parser.add_argument(
+        "--emit-diagnostic-file-indexes",
+        "--emit-debug-file-indexes",
+        dest="emit_debug_file_indexes",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Pass diagnostic emission to build/update/watch actions. "
+            "In interactive mode this is the initial menu switch state."
+        ),
+    )
+    parser.add_argument(
         "--action",
         choices=[
             "build-index",
@@ -608,6 +652,7 @@ def main() -> int:
         index_root=index_root,
         indexer_root=indexer_root,
         jobs=args.jobs,
+        emit_debug_file_indexes=args.emit_debug_file_indexes,
     )
 
     action_map: dict[str, Callable[[MenuContext], int]] = {

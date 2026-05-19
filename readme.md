@@ -227,7 +227,8 @@ Generated files:
   .watch_update_summary.json  # temporary watcher/update summary
 ```
 
-Debug-only file-index fields are emitted only with `--emit-debug`:
+Scanner diagnostic file-index fields are emitted only with
+`--emit-diagnostics` or `--emit-diagnostic-file-indexes`:
 
 ```text
 scopeIntervals
@@ -245,17 +246,17 @@ From any directory:
 python <indexer-root>\build_file_index.py `
   --file <project-root>\path\to\file.ixx `
   --project-root <project-root> `
-  --output <project-root>\.mcp-cpp-project-indexer\debug_file.json
+  --output <project-root>\.mcp-cpp-project-indexer\diagnostic_file.json
 ```
 
-With debug scanner data:
+With scanner diagnostic data:
 
 ```powershell
 python <indexer-root>\build_file_index.py `
   --file <project-root>\path\to\file.ixx `
   --project-root <project-root> `
-  --output <project-root>\.mcp-cpp-project-indexer\debug_file.json `
-  --emit-debug
+  --output <project-root>\.mcp-cpp-project-indexer\diagnostic_file.json `
+  --emit-diagnostics
 ```
 
 If `--project-root` is omitted, the file's parent directory is used.
@@ -748,7 +749,8 @@ Build one per-file index JSON.
                                Case-fold relative paths before hashing. Default: true.
 --blank-comments / --no-blank-comments
                                Blank comments before scanning while preserving lines.
---emit-debug / --no-emit-debug Include scanner debug data.
+--emit-diagnostics / --no-emit-diagnostics
+                               Include scanner diagnostic data.
 --print-summary-json           Print summary JSON.
 ```
 
@@ -765,8 +767,10 @@ Build the full project index.
                                Case-fold relative paths before hashing. Default: true.
 --blank-comments / --no-blank-comments
                                Blank comments before scanning. Default: true.
---emit-debug-file-indexes / --no-emit-debug-file-indexes
-                               Include debug fields in files/<fileId>.json. Default: false.
+--emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
+                               Include scanner diagnostic fields in files/<fileId>.json.
+                               Compatibility alias: --emit-debug-file-indexes.
+                               Default: false.
 --print-summary-json           Print summary JSON.
 --list-defaults                Print default extensions and excluded directories.
 --jobs N                       Worker processes. 1 = sequential, 0 = conservative auto.
@@ -786,8 +790,10 @@ Incrementally update an existing project index.
                                Case-fold relative path keys. Default: true.
 --blank-comments / --no-blank-comments
                                Blank comments before scanning changed files. Default: true.
---emit-debug-file-indexes / --no-emit-debug-file-indexes
-                               Include debug fields in updated file indexes. Default: false.
+--emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
+                               Include scanner diagnostic fields in updated file indexes.
+                               Compatibility alias: --emit-debug-file-indexes.
+                               Default: false.
 --dry-run                      Show added/modified/deleted files without writing.
 --jobs N                       Worker processes for added/modified files.
 --force                        Reindex all current files.
@@ -815,6 +821,10 @@ Poll source files and run incremental updates after changes settle.
 --poll-interval SECONDS        Poll interval. Default: 1.0.
 --debounce SECONDS             Wait for changes to settle. Default: 1.5.
 --module-map / --no-module-map Rebuild module_map.json after real index changes. Default: true.
+--emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
+                               Pass diagnostic emission to watcher-triggered updates.
+                               Compatibility alias: --emit-debug-file-indexes.
+                               Default: false.
 ```
 
 ### `build_module_map.py`
@@ -853,6 +863,10 @@ Run the MCP stdio server.
 --watch-jobs N                 Worker process count for watcher update actions.
 --watch-module-map / --no-watch-module-map
                                Rebuild module_map.json after watcher updates. Default: true.
+--watch-emit-diagnostic-file-indexes / --no-watch-emit-diagnostic-file-indexes
+                               Pass diagnostic emission to server watcher updates.
+                               Compatibility alias: --watch-emit-debug-file-indexes.
+                               Default: false.
 ```
 
 ### `indexer_menu.py`
@@ -864,6 +878,10 @@ Interactive menu and non-interactive command wrapper.
 --index-root PATH              Index root. Default: <root>/.mcp-cpp-project-indexer.
 --indexer-root PATH            Directory containing the indexer scripts.
 --jobs N                       Worker process count for build/update actions.
+--emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
+                               Initial menu switch state for scanner diagnostic file sections.
+                               Compatibility alias: --emit-debug-file-indexes.
+                               Default: false.
 --action NAME                  Run one action without the menu.
 ```
 
@@ -968,6 +986,9 @@ and IDA notes where the caller has one relevant source line.
 Optional routing controls:
 
 - `compact`: return only compact routing fields
+- `responseFormat`: `pretty` or `minified` JSON for metadata responses
+- `omitNulls`: omit null fields from metadata responses
+- `omitEmpty`: omit empty arrays/objects from metadata responses
 - `symbolTypes`: filter by indexed symbol kind, e.g. `method`, `function`, `type_alias`
 - `container`: filter to symbols contained by a class/struct/namespace name or suffix
 - `file`: filter to one fileId or project-relative path
@@ -979,6 +1000,9 @@ Each returned item includes `matchKind` to describe why it matched, such as `exa
 
 Do not combine `file` and `filePattern`. These controls are locator filters;
 they do not read source code and do not resolve overloads semantically.
+
+Response packing options are exposed only on metadata/routing tools. Source
+tools keep their line-numbered source output unchanged.
 
 `list_file_symbols` can also return smaller file-level symbol candidate lists when the file is already known:
 
@@ -1012,25 +1036,58 @@ Glob over project-relative paths only. This is not source grep.
 
 `get_file_structure` returns a metadata-only table of contents for one file. For large files, prefer `includeOutline:false` first. Use `symbolTypes`, `dataKinds`, `hideNamespaces`, `outlineLimit`, and `compactOutline:true` to keep responses small. After identifying a relevant outline item, read the source with `read_symbol` or `read_range` before making implementation claims.
 
-When file indexes were built with `--emit-debug-file-indexes`,
-`get_file_structure` can also include optional parser/indexer debug sections:
+When file indexes were built with `--emit-diagnostic-file-indexes`,
+`get_file_structure` can also include optional parser/indexer diagnostic
+sections:
 
 ```json
 {
   "file": "...",
   "includeOutline": false,
-  "includeDebug": true,
-  "debugKinds": ["structuralEvents", "scopeIntervals", "functionBodyRanges"],
-  "debugStartLine": 120,
-  "debugEndLine": 180,
-  "compactDebug": true,
-  "debugLimit": 100
+  "includeIndexerDiagnostics": true,
+  "diagnosticKinds": ["structuralEvents", "scopeIntervals", "functionBodyRanges"],
+  "diagnosticStartLine": 120,
+  "diagnosticEndLine": 180,
+  "compactDiagnostics": true,
+  "diagnosticLimit": 100
 }
 ```
 
 Use this only to investigate parser diagnostics, missing symbols, suspicious
-source ranges, or unexpected scope/function-body detection. Debug output is
-indexer evidence, not implementation behavior.
+source ranges, or unexpected scope/function-body detection. Indexer diagnostic
+output is scanner evidence, not implementation behavior.
+
+Prompt wording matters here. The phrase "debug information" is too broad for
+many AI agents and can be confused with C++ debug-build code such as `DEBUG`,
+`_DEBUG`, `#ifdef DEBUG`, Visual Studio debugging, or logging branches. For
+indexer scanner data, ask for indexer/parser diagnostics explicitly.
+
+Good prompts:
+
+```text
+Show me which indexer diagnostics are present.
+Show me the parser/indexer diagnostics from the index.
+Show me indexerDiagnostics.diagnostics from get_file_structure(includeIndexerDiagnostics:true) for file X.
+Which indexerDiagnostics.diagnostics are available in the index for file X?
+Show me the source location for this indexer diagnostic.
+```
+
+Avoid ambiguous prompts such as:
+
+```text
+Show me debug information.
+Find the debug code.
+Where is DEBUG used?
+```
+
+The intended workflow is:
+
+```text
+get_file_structure(includeIndexerDiagnostics:true, compactDiagnostics:true)
+-> inspect indexerDiagnostics.diagnostics first
+-> read_range around the reported line
+-> optionally get_nearest_symbol_for_line for the containing symbol
+```
 
 Examples:
 
@@ -1172,7 +1229,8 @@ symbolId -> fileId -> startLine/endLine -> original source
 
 ### Keep runtime data small
 
-Runtime index stores routing facts. Debug scanner data is opt-in with `--emit-debug`.
+Runtime index stores routing facts. Scanner diagnostic data is opt-in with
+`--emit-diagnostics` or `--emit-diagnostic-file-indexes`.
 
 ### Keep search and browsing separate
 

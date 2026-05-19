@@ -203,6 +203,7 @@ def run_update(
     changed_files: list[Path],
     build_module_map: bool,
     indexer_root: Path,
+    emit_debug_file_indexes: bool,
 ) -> int:
     update_args = [
         str(sys.executable),
@@ -227,6 +228,9 @@ def run_update(
                 relative = path
 
             update_args.extend(["--changed-file", relative.as_posix()])
+
+    if emit_debug_file_indexes:
+        update_args.append("--emit-diagnostic-file-indexes")
 
     print()
     print("Command:")
@@ -327,6 +331,14 @@ def main() -> int:
         default=True,
         help="Rebuild module_map.json after each successful index update.",
     )
+    parser.add_argument(
+        "--emit-diagnostic-file-indexes",
+        "--emit-debug-file-indexes",
+        dest="emit_debug_file_indexes",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Pass diagnostic emission to watcher-triggered index updates.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -350,6 +362,7 @@ def main() -> int:
     print("Poll:       ", f"{args.poll_interval:.2f}s")
     print("Debounce:   ", f"{args.debounce:.2f}s")
     print("Module map: ", args.module_map)
+    print("Diagnostics:", args.emit_debug_file_indexes)
     print("Stop with Ctrl+C.")
 
     snapshot = snapshot_source_files(
@@ -413,6 +426,7 @@ def main() -> int:
                 changed_files=pending_diff.modified,
                 build_module_map=args.module_map,
                 indexer_root=indexer_root,
+                emit_debug_file_indexes=args.emit_debug_file_indexes,
             )
 
             if result == 0:

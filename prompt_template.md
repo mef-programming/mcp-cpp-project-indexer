@@ -89,6 +89,7 @@ Before using tools, classify the request:
 | IDE handoff | Visual Studio MCP after indexer/change evidence | Not source evidence unless requested |
 | Binary/undocumented behavior | IDAPro MCP only after source evidence is insufficient | Source first, binary second |
 | Current changes / diffs / commit-message help | change tracking tools | Read source before behavior claims |
+| Indexer diagnostics / parser scanner traces | `get_file_structure` with `includeIndexerDiagnostics:true` | No, unless investigating one suspicious range |
 
 ### Default Compact Mode
 
@@ -99,6 +100,8 @@ Prefer the smallest useful tool output first:
 - use `includeOutline:false` for first-pass file orientation
 - use `hideNamespaces:true` for navigation queries unless namespace declarations matter
 - use `symbolTypes`, `dataKinds`, `limit`, `outlineLimit`, `maxHunks`, and `maxLines` to bound output
+- use `responseFormat:"minified"`, `omitNulls:true`, and `omitEmpty:true` only on metadata/routing tools whose schema exposes those arguments
+- never apply response packing to source-reading output; line-numbered source text must stay unchanged
 
 Escalate only when needed:
 
@@ -536,7 +539,7 @@ Use:
 - `hideNamespaces:true` to remove namespace reopening noise
 - `outlineLimit` to prevent huge responses
 - `compactOutline:true` when outline items are only needed for routing
-- `includeDebug:true` only when investigating indexer/parser behavior
+- `includeIndexerDiagnostics:true` only when investigating indexer/parser behavior
 
 If `outlineTruncated` is true, narrow filters or raise `outlineLimit` before assuming the outline is complete.
 
@@ -544,27 +547,87 @@ Do not treat `get_file_structure` output as implementation behavior. It is a tab
 
 If the user asks what code does, use `get_file_structure` only for orientation, then read the relevant symbol/range with `read_symbol` or `read_range`.
 
-Use file-structure debug fields only when the user asks about parser/indexer
-diagnostics or when symbol ranges look suspicious. Debug sections are available
-only when file indexes were built with `--emit-debug-file-indexes`.
+Use file-structure indexer diagnostic fields only when the user asks about
+parser/indexer diagnostics, scanner trace output, or when symbol ranges look
+suspicious. Scanner diagnostic sections are available only when file indexes
+were built with `--emit-diagnostic-file-indexes`.
 
-Prefer:
+Avoid the word "debug" for indexer/scanner diagnostics. In a C++ project,
+"debug" often means C++ debug-build code, Visual Studio debugging, runtime
+debuggers, `_DEBUG`, `#ifdef DEBUG`, or logging branches. Do not search for
+C++ source tokens such as `DEBUG`, `_DEBUG`, `#ifdef DEBUG`, logging calls, or
+debug-only branches unless the user explicitly asks about C++ debug-build
+behavior.
+
+For scanner diagnostic availability checks, do not search index files with
+`search_source`. The index directory is not project source, and raw source
+search is the wrong tool for checking indexer diagnostic sections.
+
+For a simple "are emitted indexer diagnostics available?" question, one
+file-structure result is enough. Use any known indexed source file and keep the
+response compact:
 
 ```text
 get_file_structure({
   "file": "...",
   "includeOutline": false,
-  "includeDebug": true,
-  "debugKinds": ["structuralEvents", "functionBodyRanges", "scopeIntervals"],
-  "debugStartLine": 120,
-  "debugEndLine": 180,
-  "compactDebug": true,
-  "debugLimit": 100
+  "includeData": false,
+  "includeDiagnostics": false,
+  "includeIndexerDiagnostics": true,
+  "compactDiagnostics": true,
+  "responseFormat": "minified",
+  "omitNulls": true,
+  "omitEmpty": true
 })
 ```
 
-Treat debug output as indexer evidence: it shows what the scanner saw, not what
-the program does.
+If the response contains `indexerDiagnostics.available:false`, stop and report
+the `indexerDiagnostics.reason`. Do not verify more files unless the user asks,
+the result is contradictory, or you are investigating a file-specific indexer
+bug.
+
+When the user asks to "show the place where the problem is" after an
+indexer/parser diagnostic check, use indexer diagnostic entries as line-routing
+evidence:
+
+1. Inspect `indexerDiagnostics.diagnostics` first. If it contains entries,
+   report the file and diagnostic line/range, then read a small source range
+   around that line.
+2. If there is no diagnostic but a symbol/range looks suspicious, inspect
+   `functionBodyRanges`, `scopeIntervals`, and `structuralEvents` around the
+   suspicious line.
+3. Use `get_nearest_symbol_for_line` to map the diagnostic line to the
+   containing indexed symbol when useful.
+4. Use `read_range` with `beforeLines`/`afterLines` to show the exact source
+   location. Do not read the whole file.
+
+Indexer diagnostic section meanings:
+
+- `diagnostics`: parser/indexer warnings or errors with source location; start here for "problem location" requests.
+- `functionBodyRanges`: scanner-detected function body ranges; use when symbol extents look wrong.
+- `scopeIntervals`: scanner-detected namespace/type/function scopes; use when containment or nesting looks wrong.
+- `structuralEvents`: low-level scanner events; use only to explain why the indexer chose a range or scope.
+
+When investigating a specific suspicious parser/range issue, narrow scanner
+diagnostic output with `diagnosticKinds`, `diagnosticStartLine`,
+`diagnosticEndLine`, and `diagnosticLimit`:
+
+```text
+get_file_structure({
+  "file": "...",
+  "includeOutline": false,
+  "includeIndexerDiagnostics": true,
+  "diagnosticKinds": ["structuralEvents", "functionBodyRanges", "scopeIntervals"],
+  "diagnosticStartLine": 120,
+  "diagnosticEndLine": 180,
+  "compactDiagnostics": true,
+  "diagnosticLimit": 100,
+  "responseFormat": "minified"
+})
+```
+
+Treat indexer diagnostic output as scanner evidence: it shows what the scanner
+saw, not what the program does.
 
 ---
 

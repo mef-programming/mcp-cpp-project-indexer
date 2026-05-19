@@ -74,10 +74,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--emit-diagnostics",
         "--emit-debug",
+        dest="emit_debug",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Emit debug scanner data such as structuralEvents, scopeIntervals and functionBodyRanges.",
+        help="Emit scanner diagnostic data such as structuralEvents, scopeIntervals and functionBodyRanges.",
     )
 
     parser.add_argument(

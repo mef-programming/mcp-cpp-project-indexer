@@ -2031,7 +2031,7 @@ class LoadedProjectIndex:
         if not any(kind in file_index for kind in FILE_DEBUG_KINDS - {"diagnostics"}):
             return {
                 "available": False,
-                "reason": "File index does not contain debug sections. Rebuild with --emit-debug-file-indexes.",
+                "reason": "File index does not contain indexer diagnostic sections. Rebuild with --emit-diagnostic-file-indexes.",
                 "availableKinds": available_kinds,
                 "requestedKinds": sorted(requested_kinds),
             }

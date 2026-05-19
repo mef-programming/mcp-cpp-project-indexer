@@ -74,11 +74,78 @@ def make_text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     }
 
 
-def make_json_text_result(data: Any, *, is_error: bool = False) -> dict[str, Any]:
+def make_json_text_result(
+    data: Any,
+    *,
+    is_error: bool = False,
+    response_format: str = "pretty",
+    omit_nulls: bool = False,
+    omit_empty: bool = False,
+) -> dict[str, Any]:
+    payload = strip_json_values(
+        data,
+        omit_nulls=omit_nulls,
+        omit_empty=omit_empty,
+    )
+    separators = (",", ":") if response_format == "minified" else None
     return make_text_result(
-        json.dumps(data, indent=2, ensure_ascii=False),
+        json.dumps(
+            payload,
+            indent=None if response_format == "minified" else 2,
+            separators=separators,
+            ensure_ascii=False,
+        ),
         is_error=is_error,
     )
+
+
+def strip_json_values(
+    value: Any,
+    *,
+    omit_nulls: bool,
+    omit_empty: bool,
+) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+
+        for key, item in value.items():
+            stripped = strip_json_values(
+                item,
+                omit_nulls=omit_nulls,
+                omit_empty=omit_empty,
+            )
+
+            if omit_nulls and stripped is None:
+                continue
+
+            if omit_empty and stripped in ({}, []):
+                continue
+
+            result[key] = stripped
+
+        return result
+
+    if isinstance(value, list):
+        result = [
+            strip_json_values(
+                item,
+                omit_nulls=omit_nulls,
+                omit_empty=omit_empty,
+            )
+            for item in value
+        ]
+
+        if omit_empty:
+            return [
+                item
+                for item in result
+                if item not in ({}, [])
+                and not (omit_nulls and item is None)
+            ]
+
+        return result
+
+    return value
 
 
 def write_message(message: dict[str, Any]) -> None:
@@ -113,8 +180,69 @@ def read_messages():
 # Tool schemas
 # ---------------------------------------------------------------------------
 
+PACKABLE_TOOL_NAMES = {
+    "get_project_summary",
+    "list_changed_files",
+    "list_recent_revisions",
+    "get_revision_summary",
+    "get_file_change_hunks",
+    "find_symbol",
+    "find_declaration",
+    "get_nearest_symbol_for_line",
+    "list_file_symbols",
+    "find_module",
+    "list_module_files",
+    "find_files",
+    "find_symbols_glob",
+    "search_modules",
+    "get_module_map_summary",
+    "get_module_info",
+    "list_module_imports",
+    "list_module_imported_by",
+    "get_module_tree",
+    "find_data",
+    "list_type_members",
+    "get_file_structure",
+}
+
+PACKING_SCHEMA_PROPERTIES = {
+    "responseFormat": {
+        "type": "string",
+        "enum": ["pretty", "minified"],
+        "default": "pretty",
+        "description": "Format JSON tool responses. Minified reduces metadata-token overhead without changing data.",
+    },
+    "omitNulls": {
+        "type": "boolean",
+        "default": False,
+        "description": "Omit null fields from JSON metadata responses.",
+    },
+    "omitEmpty": {
+        "type": "boolean",
+        "default": False,
+        "description": "Omit empty arrays/objects from JSON metadata responses.",
+    },
+}
+
+
+def add_response_packing_options(tools: list[dict[str, Any]]) -> None:
+    for tool in tools:
+        if tool.get("name") not in PACKABLE_TOOL_NAMES:
+            continue
+
+        schema = tool.get("inputSchema")
+
+        if not isinstance(schema, dict):
+            continue
+
+        properties = schema.setdefault("properties", {})
+
+        if isinstance(properties, dict):
+            properties.update(PACKING_SCHEMA_PROPERTIES)
+
+
 def tool_definitions() -> list[dict[str, Any]]:
-    return [
+    tools = [
         # Project/cache tools
         {
             "name": "get_project_summary",
@@ -863,10 +991,49 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "default": False,
                         "description": "Hide namespace reopening symbols from counts/outline.",
                     },
+                    "includeIndexerDiagnostics": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include optional indexer/scanner diagnostic sections when built with --emit-diagnostic-file-indexes.",
+                    },
+                    "diagnosticKinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "diagnostics",
+                                "structuralEvents",
+                                "scopeIntervals",
+                                "functionBodyRanges",
+                            ],
+                        },
+                        "description": "Optional indexer/scanner diagnostic section filters.",
+                    },
+                    "diagnosticStartLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional start line for indexer/scanner diagnostic section filtering.",
+                    },
+                    "diagnosticEndLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional end line for indexer/scanner diagnostic section filtering.",
+                    },
+                    "diagnosticLimit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5000,
+                        "default": 200,
+                    },
+                    "compactDiagnostics": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Return compact indexer/scanner diagnostic items with routing fields only.",
+                    },
                     "includeDebug": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Include optional file-index debug sections when built with --emit-debug-file-indexes.",
+                        "description": "Compatibility alias for includeIndexerDiagnostics. Prefer includeIndexerDiagnostics.",
                     },
                     "debugKinds": {
                         "type": "array",
@@ -879,28 +1046,29 @@ def tool_definitions() -> list[dict[str, Any]]:
                                 "functionBodyRanges",
                             ],
                         },
-                        "description": "Optional debug section filters.",
+                        "description": "Compatibility alias for diagnosticKinds. Prefer diagnosticKinds.",
                     },
                     "debugStartLine": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Optional start line for debug section filtering.",
+                        "description": "Compatibility alias for diagnosticStartLine. Prefer diagnosticStartLine.",
                     },
                     "debugEndLine": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Optional end line for debug section filtering.",
+                        "description": "Compatibility alias for diagnosticEndLine. Prefer diagnosticEndLine.",
                     },
                     "debugLimit": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 5000,
                         "default": 200,
+                        "description": "Compatibility alias for diagnosticLimit. Prefer diagnosticLimit.",
                     },
                     "compactDebug": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Return compact debug items with routing fields only.",
+                        "description": "Compatibility alias for compactDiagnostics. Prefer compactDiagnostics.",
                     },
                 },
                 "required": ["file"],
@@ -971,6 +1139,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         },
     ]
+    add_response_packing_options(tools)
+    return tools
 
 
 def _trim_tree(node: dict[str, Any], *, max_depth: int, depth: int = 0) -> dict[str, Any]:
@@ -1005,12 +1175,14 @@ class ServerIndexWatcher:
         debounce: float,
         jobs: int,
         module_map: bool,
+        emit_debug_file_indexes: bool,
     ) -> None:
         self.tools = tools
         self.poll_interval = max(0.1, poll_interval)
         self.debounce = max(0.1, debounce)
         self.jobs = jobs
         self.module_map = module_map
+        self.emit_debug_file_indexes = emit_debug_file_indexes
         self.indexer_root = Path(__file__).resolve().parent
         self.thread = threading.Thread(
             target=self._run,
@@ -1023,7 +1195,8 @@ class ServerIndexWatcher:
             (
                 "[mcp-cpp-project-indexer] starting index watcher "
                 f"poll={self.poll_interval:.2f}s debounce={self.debounce:.2f}s "
-                f"jobs={normalize_jobs(self.jobs)} module_map={self.module_map}"
+                f"jobs={normalize_jobs(self.jobs)} module_map={self.module_map} "
+                f"diagnostics={self.emit_debug_file_indexes}"
             ),
             file=sys.stderr,
             flush=True,
@@ -1078,6 +1251,9 @@ class ServerIndexWatcher:
                     relative = path
 
                 update_args.extend(["--changed-file", relative.as_posix()])
+
+        if self.emit_debug_file_indexes:
+            update_args.append("--emit-diagnostic-file-indexes")
 
         print(
             "[mcp-cpp-project-indexer] watcher update: "
@@ -1231,6 +1407,19 @@ class CodeIndexTools:
 
         self._load_module_map()
 
+    def json_result(
+        self,
+        arguments: dict[str, Any],
+        data: Any,
+        *,
+        is_error: bool = False,
+    ) -> dict[str, Any]:
+        return make_json_text_result(
+            data,
+            is_error=is_error,
+            **json_response_options(arguments),
+        )
+
     def start_index_watcher(
         self,
         *,
@@ -1238,6 +1427,7 @@ class CodeIndexTools:
         debounce: float,
         jobs: int,
         module_map: bool,
+        emit_debug_file_indexes: bool,
     ) -> None:
         if self.watcher is not None:
             return
@@ -1248,6 +1438,7 @@ class CodeIndexTools:
             debounce=debounce,
             jobs=jobs,
             module_map=module_map,
+            emit_debug_file_indexes=emit_debug_file_indexes,
         )
         self.watcher.start()
 
@@ -1273,7 +1464,8 @@ class CodeIndexTools:
 
     def get_project_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         counts = self.index.manifest.get("counts", {})
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "schema": self.index.manifest.get("schema"),
                 "projectRoot": self.project_root.as_posix(),
@@ -1342,7 +1534,8 @@ class CodeIndexTools:
         file_pattern = optional_string(arguments, "filePattern")
         compact = optional_bool(arguments, "compact", True)
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             self.require_change_tracker().list_changed_files(
                 scope=scope,
                 include_untracked=include_untracked,
@@ -1355,7 +1548,8 @@ class CodeIndexTools:
     def list_recent_revisions(self, arguments: dict[str, Any]) -> dict[str, Any]:
         limit = clamp_int(arguments.get("limit", 10), minimum=1, maximum=100)
         compact = optional_bool(arguments, "compact", True)
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             self.require_change_tracker().list_recent_revisions(
                 limit=limit,
                 compact=compact,
@@ -1369,7 +1563,8 @@ class CodeIndexTools:
         include_files = optional_bool(arguments, "includeFiles", True)
         file_pattern = optional_string(arguments, "filePattern")
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=1000)
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             self.require_change_tracker().get_revision_summary(
                 revision=revision,
                 compact=compact,
@@ -1426,7 +1621,8 @@ class CodeIndexTools:
         )
         max_hunks = clamp_int(arguments.get("maxHunks", 20), minimum=1, maximum=200)
         max_lines = clamp_int(arguments.get("maxLines", 500), minimum=1, maximum=5000)
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             self.require_change_tracker().get_file_change_hunks(
                 file=file,
                 scope=scope,
@@ -1468,7 +1664,7 @@ class CodeIndexTools:
             hide_namespaces=hide_namespaces,
             compact=compact,
         )
-        return make_json_text_result(results)
+        return self.json_result(arguments, results)
 
     def find_declaration(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = require_query(arguments)
@@ -1505,7 +1701,7 @@ class CodeIndexTools:
                 int(item.get("startLine") or 0),
             )
         )
-        return make_json_text_result(candidates[:limit])
+        return self.json_result(arguments, candidates[:limit])
 
     def read_symbol(self, arguments: dict[str, Any]) -> dict[str, Any]:
         symbol_id = require_string(arguments, "symbolId")
@@ -1656,7 +1852,7 @@ class CodeIndexTools:
             hide_namespaces=hide_namespaces,
             compact=compact,
         )
-        return make_json_text_result(results)
+        return self.json_result(arguments, results)
 
     def get_nearest_symbol_for_line(self, arguments: dict[str, Any]) -> dict[str, Any]:
         file = require_string(arguments, "file")
@@ -1755,7 +1951,8 @@ class CodeIndexTools:
             )
         )
 
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "schema": "cpp.nearest_symbol_for_line.v1",
                 "fileId": file_id,
@@ -1772,7 +1969,8 @@ class CodeIndexTools:
         module_name = require_string(arguments, "moduleName")
 
         if "::" in module_name:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "error": "namespace_passed_to_module_lookup",
                     "message": (
@@ -1786,7 +1984,7 @@ class CodeIndexTools:
                 is_error=False,
             )
 
-        return make_json_text_result(self.index.find_module(module_name))
+        return self.json_result(arguments, self.index.find_module(module_name))
 
     def list_module_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self.find_module(arguments)
@@ -1794,18 +1992,19 @@ class CodeIndexTools:
     def find_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         pattern = require_string(arguments, "pattern")
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
-        return make_json_text_result(self.index.find_files(pattern, limit=limit))
+        return self.json_result(arguments, self.index.find_files(pattern, limit=limit))
 
     def find_symbols_glob(self, arguments: dict[str, Any]) -> dict[str, Any]:
         pattern = require_string(arguments, "pattern")
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
-        return make_json_text_result(self.index.find_symbols_glob(pattern, limit=limit))
+        return self.json_result(arguments, self.index.find_symbols_glob(pattern, limit=limit))
 
     def search_modules(self, arguments: dict[str, Any]) -> dict[str, Any]:
         pattern = require_string(arguments, "pattern")
 
         if "::" in pattern:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "error": "namespace_passed_to_module_glob",
                     "message": (
@@ -1818,12 +2017,13 @@ class CodeIndexTools:
             )
 
         limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
-        return make_json_text_result(self.index.search_modules(pattern, limit=limit))
+        return self.json_result(arguments, self.index.search_modules(pattern, limit=limit))
 
     def get_module_map_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_map = self.require_module_map()
 
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "schema": module_map.get("schema"),
                 "projectRoot": module_map.get("projectRoot"),
@@ -1836,7 +2036,8 @@ class CodeIndexTools:
         module_name = require_string(arguments, "moduleName")
 
         if "::" in module_name:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "error": "namespace_passed_to_module_lookup",
                     "message": (
@@ -1853,14 +2054,15 @@ class CodeIndexTools:
         result = modules.get(module_name)
 
         if result is None:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "query": module_name,
                     "result": None,
                 }
             )
 
-        return make_json_text_result(result)
+        return self.json_result(arguments, result)
 
     def list_module_imports(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
@@ -1868,7 +2070,8 @@ class CodeIndexTools:
         entry = module_map.get("modules", {}).get(module_name)
 
         if entry is None:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "query": module_name,
                     "imports": [],
@@ -1876,7 +2079,8 @@ class CodeIndexTools:
                 }
             )
 
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "moduleName": module_name,
                 "imports": entry.get("imports", []),
@@ -1890,7 +2094,8 @@ class CodeIndexTools:
         entry = module_map.get("modules", {}).get(module_name)
 
         if entry is None:
-            return make_json_text_result(
+            return self.json_result(
+                arguments,
                 {
                     "query": module_name,
                     "importedBy": [],
@@ -1898,7 +2103,8 @@ class CodeIndexTools:
                 }
             )
 
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "moduleName": module_name,
                 "importedBy": entry.get("importedBy", []),
@@ -1911,7 +2117,8 @@ class CodeIndexTools:
         max_depth = clamp_int(arguments.get("maxDepth", 4), minimum=1, maximum=20)
         module_map = self.require_module_map()
 
-        return make_json_text_result(
+        return self.json_result(
+            arguments,
             {
                 "maxDepth": max_depth,
                 "tree": _trim_tree(
@@ -1930,14 +2137,14 @@ class CodeIndexTools:
 
         limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=500)
         results = self.index.find_data(query, container=container, limit=limit)
-        return make_json_text_result(results)
+        return self.json_result(arguments, results)
 
 
     def list_type_members(self, arguments: dict[str, Any]) -> dict[str, Any]:
         container = require_string(arguments, "container")
         limit = clamp_int(arguments.get("limit", 500), minimum=1, maximum=1000)
         results = self.index.list_type_members(container, limit=limit)
-        return make_json_text_result(results)
+        return self.json_result(arguments, results)
 
 
     def read_data(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -2061,12 +2268,51 @@ class CodeIndexTools:
         include_data = optional_bool(arguments, "includeData", True)
         include_diagnostics = optional_bool(arguments, "includeDiagnostics", True)
         hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
-        include_debug = optional_bool(arguments, "includeDebug", False)
-        debug_kinds = optional_string_set(arguments, "debugKinds")
-        debug_start_line = optional_int(arguments, "debugStartLine")
-        debug_end_line = optional_int(arguments, "debugEndLine")
-        debug_limit = clamp_int(arguments.get("debugLimit", 200), minimum=1, maximum=5000)
-        compact_debug = optional_bool(arguments, "compactDebug", True)
+        include_debug, used_legacy_include_debug = optional_bool_alias(
+            arguments,
+            "includeIndexerDiagnostics",
+            "includeDebug",
+            False,
+        )
+        debug_kinds, used_legacy_debug_kinds = optional_string_set_alias(
+            arguments,
+            "diagnosticKinds",
+            "debugKinds",
+        )
+        debug_start_line, used_legacy_debug_start = optional_int_alias(
+            arguments,
+            "diagnosticStartLine",
+            "debugStartLine",
+        )
+        debug_end_line, used_legacy_debug_end = optional_int_alias(
+            arguments,
+            "diagnosticEndLine",
+            "debugEndLine",
+        )
+        debug_limit, used_legacy_debug_limit = clamp_int_alias(
+            arguments,
+            "diagnosticLimit",
+            "debugLimit",
+            default=200,
+            minimum=1,
+            maximum=5000,
+        )
+        compact_debug, used_legacy_compact_debug = optional_bool_alias(
+            arguments,
+            "compactDiagnostics",
+            "compactDebug",
+            True,
+        )
+        used_legacy_debug_arguments = any(
+            [
+                used_legacy_include_debug,
+                used_legacy_debug_kinds,
+                used_legacy_debug_start,
+                used_legacy_debug_end,
+                used_legacy_debug_limit,
+                used_legacy_compact_debug,
+            ]
+        )
 
         allowed_debug_kinds = {
             "diagnostics",
@@ -2077,10 +2323,10 @@ class CodeIndexTools:
 
         if debug_kinds is not None and not debug_kinds <= allowed_debug_kinds:
             invalid = sorted(debug_kinds - allowed_debug_kinds)
-            raise McpError(-32602, f"Invalid debugKinds: {', '.join(invalid)}")
+            raise McpError(-32602, f"Invalid diagnosticKinds: {', '.join(invalid)}")
 
         if debug_start_line is not None and debug_end_line is not None and debug_end_line < debug_start_line:
-            raise McpError(-32602, "debugEndLine must be >= debugStartLine")
+            raise McpError(-32602, "diagnosticEndLine must be >= diagnosticStartLine")
 
         result = self.index.get_file_structure(
             file,
@@ -2103,7 +2349,23 @@ class CodeIndexTools:
         if result is None:
             return make_text_result(f"File not found: {file}", is_error=True)
 
-        return make_json_text_result(result)
+        if include_debug and "debug" in result and not used_legacy_debug_arguments:
+            result["indexerDiagnostics"] = result.pop("debug")
+
+            filters = result.get("filters")
+
+            if isinstance(filters, dict):
+                filters["includeIndexerDiagnostics"] = filters.pop("includeDebug", include_debug)
+                filters["diagnosticKinds"] = filters.pop(
+                    "debugKinds",
+                    sorted(debug_kinds) if debug_kinds else None,
+                )
+                filters["diagnosticStartLine"] = filters.pop("debugStartLine", debug_start_line)
+                filters["diagnosticEndLine"] = filters.pop("debugEndLine", debug_end_line)
+                filters["diagnosticLimit"] = filters.pop("debugLimit", debug_limit)
+                filters["compactDiagnostics"] = filters.pop("compactDebug", compact_debug)
+
+        return self.json_result(arguments, result)
 
     def search_source(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = require_string(arguments, "query")
@@ -2233,6 +2495,21 @@ def optional_bool(arguments: dict[str, Any], key: str, default: bool) -> bool:
     return value
 
 
+def optional_bool_alias(
+    arguments: dict[str, Any],
+    key: str,
+    legacy_key: str,
+    default: bool,
+) -> tuple[bool, bool]:
+    if key in arguments:
+        return optional_bool(arguments, key, default), False
+
+    if legacy_key in arguments:
+        return optional_bool(arguments, legacy_key, default), True
+
+    return default, False
+
+
 def optional_string(arguments: dict[str, Any], key: str) -> str | None:
     value = arguments.get(key)
 
@@ -2278,6 +2555,65 @@ def optional_string_set(arguments: dict[str, Any], key: str) -> set[str] | None:
         result.add(item)
 
     return result
+
+
+def optional_string_set_alias(
+    arguments: dict[str, Any],
+    key: str,
+    legacy_key: str,
+) -> tuple[set[str] | None, bool]:
+    if key in arguments:
+        return optional_string_set(arguments, key), False
+
+    if legacy_key in arguments:
+        return optional_string_set(arguments, legacy_key), True
+
+    return None, False
+
+
+def optional_int_alias(
+    arguments: dict[str, Any],
+    key: str,
+    legacy_key: str,
+) -> tuple[int | None, bool]:
+    if key in arguments:
+        return optional_int(arguments, key), False
+
+    if legacy_key in arguments:
+        return optional_int(arguments, legacy_key), True
+
+    return None, False
+
+
+def clamp_int_alias(
+    arguments: dict[str, Any],
+    key: str,
+    legacy_key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> tuple[int, bool]:
+    if key in arguments:
+        return clamp_int(arguments.get(key, default), minimum=minimum, maximum=maximum), False
+
+    if legacy_key in arguments:
+        return clamp_int(arguments.get(legacy_key, default), minimum=minimum, maximum=maximum), True
+
+    return default, False
+
+
+def json_response_options(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "response_format": optional_enum(
+            arguments,
+            "responseFormat",
+            {"pretty", "minified"},
+            "pretty",
+        ),
+        "omit_nulls": optional_bool(arguments, "omitNulls", False),
+        "omit_empty": optional_bool(arguments, "omitEmpty", False),
+    }
 
 # ---------------------------------------------------------------------------
 # MCP dispatcher
@@ -2403,6 +2739,7 @@ class McpServer:
             if self.tools.change_tracker is not None:
                 tools.extend(change_tracking_tool_definitions())
 
+            add_response_packing_options(tools)
             return {
                 "tools": tools,
             }
@@ -2497,6 +2834,14 @@ def main() -> None:
         default=True,
         help="Rebuild module_map.json after watcher-triggered index updates.",
     )
+    parser.add_argument(
+        "--watch-emit-diagnostic-file-indexes",
+        "--watch-emit-debug-file-indexes",
+        dest="watch_emit_debug_file_indexes",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Pass diagnostic emission to watcher-triggered index updates.",
+    )
     args = parser.parse_args()
 
     if not args.project_root.exists():
@@ -2519,6 +2864,7 @@ def main() -> None:
             debounce=args.watch_debounce,
             jobs=args.watch_jobs,
             module_map=args.watch_module_map,
+            emit_debug_file_indexes=args.watch_emit_debug_file_indexes,
         )
 
     server = McpServer(tools)

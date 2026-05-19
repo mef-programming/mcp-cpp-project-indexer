@@ -1505,10 +1505,12 @@ def main() -> int:
         help="Blank comments before scanning changed files.",
     )
     parser.add_argument(
+        "--emit-diagnostic-file-indexes",
         "--emit-debug-file-indexes",
+        dest="emit_debug_file_indexes",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Emit debug scanner data inside updated per-file indexes.",
+        help="Emit indexer/scanner diagnostic data inside updated per-file indexes.",
     )
     parser.add_argument(
         "--dry-run",
