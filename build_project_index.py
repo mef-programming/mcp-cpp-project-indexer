@@ -214,6 +214,12 @@ def main() -> None:
             "based on a conservative first-lines heuristic."
         ),
     )
+    parser.add_argument(
+        "--git-ignore",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter discovered files through git check-ignore when available. Default: true.",
+    )
 
     parser.add_argument(
         "--exclude-dir",
@@ -324,6 +330,7 @@ def main() -> None:
                 extensions=extensions,
                 excluded_dir_names=excluded_dirs,
                 include_extensionless_headers=args.include_extensionless_headers,
+                use_git_ignore=args.git_ignore,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 case_insensitive_paths=args.case_insensitive_paths,
                 blank_comments=args.blank_comments,

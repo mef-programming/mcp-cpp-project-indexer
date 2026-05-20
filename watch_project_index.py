@@ -115,6 +115,7 @@ def snapshot_source_files(
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
     include_extensionless_headers: bool,
+    use_git_ignore: bool,
     case_insensitive_paths: bool,
 ) -> dict[str, SnapshotEntry]:
     result: dict[str, SnapshotEntry] = {}
@@ -123,6 +124,7 @@ def snapshot_source_files(
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
         include_extensionless_headers=include_extensionless_headers,
+        use_git_ignore=use_git_ignore,
     )
 
     for path in source_files:
@@ -208,6 +210,7 @@ def run_update(
     indexer_root: Path,
     emit_debug_file_indexes: bool,
     include_extensionless_headers: bool,
+    use_git_ignore: bool,
 ) -> int:
     update_args = [
         str(sys.executable),
@@ -238,6 +241,9 @@ def run_update(
 
     if include_extensionless_headers:
         update_args.append("--include-extensionless-headers")
+
+    if not use_git_ignore:
+        update_args.append("--no-git-ignore")
 
     print()
     print("Command:")
@@ -310,6 +316,12 @@ def main() -> int:
             "Also discover extensionless files that look like C/C++ headers "
             "based on a conservative first-lines heuristic."
         ),
+    )
+    parser.add_argument(
+        "--git-ignore",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter discovered files through git check-ignore when available. Default: true.",
     )
     parser.add_argument(
         "--exclude-dir",
@@ -395,6 +407,7 @@ def main() -> int:
             extensions=extensions,
             excluded_dir_names=excluded_dir_names,
             include_extensionless_headers=args.include_extensionless_headers,
+            use_git_ignore=args.git_ignore,
             case_insensitive_paths=args.case_insensitive_paths,
         )
         print("Initial source files:", len(snapshot))
@@ -411,6 +424,7 @@ def main() -> int:
                 extensions=extensions,
                 excluded_dir_names=excluded_dir_names,
                 include_extensionless_headers=args.include_extensionless_headers,
+                use_git_ignore=args.git_ignore,
                 case_insensitive_paths=args.case_insensitive_paths,
             )
             diff = diff_snapshots(snapshot, current, root=root)
@@ -429,6 +443,7 @@ def main() -> int:
                     extensions=extensions,
                     excluded_dir_names=excluded_dir_names,
                     include_extensionless_headers=args.include_extensionless_headers,
+                    use_git_ignore=args.git_ignore,
                     case_insensitive_paths=args.case_insensitive_paths,
                 )
                 next_diff = diff_snapshots(pending_snapshot, current, root=root)
@@ -455,6 +470,7 @@ def main() -> int:
                 indexer_root=indexer_root,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 include_extensionless_headers=args.include_extensionless_headers,
+                use_git_ignore=args.git_ignore,
             )
 
             if result == 0:

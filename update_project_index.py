@@ -338,6 +338,7 @@ def make_update_plan(
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
     include_extensionless_headers: bool,
+    use_git_ignore: bool,
     case_insensitive_paths: bool,
     force: bool,
     known_files_only: bool,
@@ -381,6 +382,7 @@ def make_update_plan(
             extensions=extensions,
             excluded_dir_names=excluded_dir_names,
             include_extensionless_headers=include_extensionless_headers,
+            use_git_ignore=use_git_ignore,
             progress_callback=progress.discovered if progress is not None else None,
         )
 
@@ -1044,6 +1046,7 @@ def run_update(
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
     include_extensionless_headers: bool,
+    use_git_ignore: bool,
     emit_debug_file_indexes: bool,
     case_insensitive_paths: bool,
     blank_comments: bool,
@@ -1072,6 +1075,7 @@ def run_update(
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
         include_extensionless_headers=include_extensionless_headers,
+        use_git_ignore=use_git_ignore,
         case_insensitive_paths=case_insensitive_paths,
         force=force,
         known_files_only=known_files_only,
@@ -1501,6 +1505,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--git-ignore",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter discovered files through git check-ignore when available. Default: true.",
+    )
+    parser.add_argument(
         "--exclude-dir",
         action="append",
         default=None,
@@ -1600,6 +1610,7 @@ def main() -> int:
                 extensions=parse_extensions(args.extensions),
                 excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
                 include_extensionless_headers=args.include_extensionless_headers,
+                use_git_ignore=args.git_ignore,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 case_insensitive_paths=args.case_insensitive_paths,
                 blank_comments=args.blank_comments,
@@ -1618,6 +1629,7 @@ def main() -> int:
                     extensions=parse_extensions(args.extensions),
                     excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
                     include_extensionless_headers=args.include_extensionless_headers,
+                    use_git_ignore=args.git_ignore,
                     emit_debug_file_indexes=args.emit_debug_file_indexes,
                     case_insensitive_paths=args.case_insensitive_paths,
                     blank_comments=args.blank_comments,

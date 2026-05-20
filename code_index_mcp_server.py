@@ -1360,6 +1360,7 @@ class ServerIndexWatcher:
         module_map: bool,
         emit_debug_file_indexes: bool,
         include_extensionless_headers: bool,
+        use_git_ignore: bool,
     ) -> None:
         self.tools = tools
         self.poll_interval = max(0.1, poll_interval)
@@ -1368,6 +1369,7 @@ class ServerIndexWatcher:
         self.module_map = module_map
         self.emit_debug_file_indexes = emit_debug_file_indexes
         self.include_extensionless_headers = include_extensionless_headers
+        self.use_git_ignore = use_git_ignore
         self.indexer_root = Path(__file__).resolve().parent
         self.watcher_lock: IndexFileLock | None = None
         self.status_lock = threading.Lock()
@@ -1455,6 +1457,7 @@ class ServerIndexWatcher:
                 "moduleMap": self.module_map,
                 "diagnosticFileIndexes": self.emit_debug_file_indexes,
                 "includeExtensionlessHeaders": self.include_extensionless_headers,
+                "useGitIgnore": self.use_git_ignore,
                 "lastScanAt": self.last_scan_at,
                 "lastChangeAt": self.last_change_at,
                 "lastUpdateAt": self.last_update_at,
@@ -1471,6 +1474,7 @@ class ServerIndexWatcher:
             extensions=None,
             excluded_dir_names=None,
             include_extensionless_headers=self.include_extensionless_headers,
+            use_git_ignore=self.use_git_ignore,
             case_insensitive_paths=True,
         )
 
@@ -1520,6 +1524,9 @@ class ServerIndexWatcher:
 
         if self.include_extensionless_headers:
             update_args.append("--include-extensionless-headers")
+
+        if not self.use_git_ignore:
+            update_args.append("--no-git-ignore")
 
         print(
             "[mcp-cpp-project-indexer] watcher update: "
@@ -1725,6 +1732,7 @@ class CodeIndexTools:
         module_map: bool,
         emit_debug_file_indexes: bool,
         include_extensionless_headers: bool,
+        use_git_ignore: bool,
     ) -> None:
         if self.watcher is not None:
             return
@@ -1737,6 +1745,7 @@ class CodeIndexTools:
             module_map=module_map,
             emit_debug_file_indexes=emit_debug_file_indexes,
             include_extensionless_headers=include_extensionless_headers,
+            use_git_ignore=use_git_ignore,
         )
         self.watcher.start()
 
@@ -3571,6 +3580,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--watch-git-ignore",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter watcher discovery through git check-ignore when available. Default: true.",
+    )
+    parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
         default="stdio",
@@ -3611,6 +3626,7 @@ def main() -> None:
             module_map=args.watch_module_map,
             emit_debug_file_indexes=args.watch_emit_debug_file_indexes,
             include_extensionless_headers=args.watch_include_extensionless_headers,
+            use_git_ignore=args.watch_git_ignore,
         )
 
     server = McpServer(tools)

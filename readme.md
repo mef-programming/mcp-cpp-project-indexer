@@ -387,7 +387,8 @@ Example:
 {
   "addExtensions": [".mm"],
   "addExcludeDirs": ["generated", "third_party"],
-  "includeExtensionlessHeaders": true
+  "includeExtensionlessHeaders": true,
+  "useGitIgnore": false
 }
 ```
 
@@ -401,7 +402,8 @@ Supported fields:
   "excludeDirs": ["out", "build"],
   "addExcludeDirs": ["generated"],
   "removeExcludeDirs": ["third_party"],
-  "includeExtensionlessHeaders": true
+  "includeExtensionlessHeaders": true,
+  "useGitIgnore": false
 }
 ```
 
@@ -409,6 +411,9 @@ Supported fields:
 `add*` and `remove*` fields modify the inherited values. Extensionless header
 discovery is conservative and opt-in; it only accepts extensionless files whose
 first lines look like C/C++ headers.
+`useGitIgnore:false` disables the final `git check-ignore --stdin` pass for
+very large repositories where Git ignore filtering is more expensive than an
+explicit indexer config.
 
 ## Incremental update
 
@@ -980,6 +985,8 @@ Build the full project index.
                                Also discover extensionless files that look like
                                C/C++ headers. Uses a conservative first-lines
                                heuristic. Default: false.
+--git-ignore / --no-git-ignore Filter discovered files through git check-ignore
+                               when available. Default: true.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative paths before hashing. Default: true.
@@ -1007,6 +1014,8 @@ Incrementally update an existing project index.
                                Also discover extensionless files that look like
                                C/C++ headers. Uses a conservative first-lines
                                heuristic. Default: false.
+--git-ignore / --no-git-ignore Filter discovered files through git check-ignore
+                               when available. Default: true.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative path keys. Default: true.
@@ -1040,6 +1049,8 @@ Poll source files and run incremental updates after changes settle.
                                Also discover extensionless files that look like
                                C/C++ headers. Uses a conservative first-lines
                                heuristic. Default: false.
+--git-ignore / --no-git-ignore Filter discovered files through git check-ignore
+                               when available. Default: true.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative path keys. Default: true.
@@ -1096,6 +1107,9 @@ Run the MCP stdio server.
 --watch-include-extensionless-headers / --no-watch-include-extensionless-headers
                                Let the server watcher discover extensionless files
                                that look like C/C++ headers. Default: false.
+--watch-git-ignore / --no-watch-git-ignore
+                               Filter watcher discovery through git check-ignore
+                               when available. Default: true.
 --transport stdio|http         Transport mode. Default: stdio.
 --http-host HOST               HTTP bind host for --transport http. Default: 127.0.0.1.
 --http-port PORT               HTTP bind port for --transport http. Default: 8765.

@@ -63,6 +63,7 @@ class DiscoveryConfig:
     extensions: frozenset[str]
     excluded_dir_names: frozenset[str]
     include_extensionless_headers: bool
+    use_git_ignore: bool
 
 
 def normalize_extension_item(value: Any) -> str | None:
@@ -545,10 +546,16 @@ def load_discovery_config(directory: Path, parent: DiscoveryConfig) -> Discovery
     if isinstance(include_extensionless_value, bool):
         include_extensionless_headers = include_extensionless_value
 
+    use_git_ignore = parent.use_git_ignore
+    use_git_ignore_value = raw.get("useGitIgnore")
+    if isinstance(use_git_ignore_value, bool):
+        use_git_ignore = use_git_ignore_value
+
     return DiscoveryConfig(
         extensions=frozenset(extensions),
         excluded_dir_names=frozenset(excluded_dir_names),
         include_extensionless_headers=include_extensionless_headers,
+        use_git_ignore=use_git_ignore,
     )
 
 
@@ -558,6 +565,7 @@ def discover_source_files(
     extensions: set[str] | None = None,
     excluded_dir_names: set[str] | None = None,
     include_extensionless_headers: bool = False,
+    use_git_ignore: bool = True,
     progress_callback: Callable[[int, Path], None] | None = None,
 ) -> list[Path]:
     base_config = DiscoveryConfig(
@@ -570,14 +578,17 @@ def discover_source_files(
             for item in (excluded_dir_names or DEFAULT_EXCLUDED_DIR_NAMES)
         ),
         include_extensionless_headers=include_extensionless_headers,
+        use_git_ignore=use_git_ignore,
     )
 
     files: list[Path] = []
+    git_ignore_enabled = False
     visited = 0
 
     def walk(directory: Path, inherited_config: DiscoveryConfig) -> None:
-        nonlocal visited
+        nonlocal visited, git_ignore_enabled
         config = load_discovery_config(directory, inherited_config)
+        git_ignore_enabled = git_ignore_enabled or config.use_git_ignore
 
         try:
             entries = list(os.scandir(directory))
@@ -617,7 +628,7 @@ def discover_source_files(
 
     walk(root, base_config)
 
-    ignored_files = git_ignored_source_files(root, files)
+    ignored_files = git_ignored_source_files(root, files) if git_ignore_enabled else set()
 
     if ignored_files:
         ignored_resolved = {
@@ -1151,6 +1162,7 @@ def build_project_index(
     extensions: set[str] | None = None,
     excluded_dir_names: set[str] | None = None,
     include_extensionless_headers: bool = False,
+    use_git_ignore: bool = True,
     emit_debug_file_indexes: bool = False,
     case_insensitive_paths: bool = True,
     blank_comments: bool = True,
@@ -1168,6 +1180,7 @@ def build_project_index(
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
         include_extensionless_headers=include_extensionless_headers,
+        use_git_ignore=use_git_ignore,
         progress_callback=discovery_progress_callback,
     )
 
