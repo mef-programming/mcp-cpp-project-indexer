@@ -10,11 +10,17 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, AbstractSet
+from typing import Any, Callable, AbstractSet, Iterable
 from fnmatch import fnmatchcase
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from cpp_file_index import build_file_index
+from cpp_index_sqlite import (
+    ThreadLocalIndexConnections,
+    build_sqlite_index,
+    row_json,
+    sqlite_index_path,
+)
 from cpp_index_utils import save_json
 from cpp_lexer import find_matching_token, tokenize_lines, token_values
 from cpp_structural_scan import extract_function_name
@@ -1310,26 +1316,9 @@ def build_project_index(
                     data_names[alias].append(ref["dataId"])
     finish_phase("aggregate file indexes", phase_started)
 
-    phase_started = start_phase("sort aggregate indexes")
-    symbols.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["shortName"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
+    phase_started = start_phase("sort manifest files")
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
-
-    data_items.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["name"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
-    finish_phase("sort aggregate indexes", phase_started)
+    finish_phase("sort manifest files", phase_started)
 
     phase_started = start_phase("write manifest and maps")
     manifest = {
@@ -1350,8 +1339,6 @@ def build_project_index(
     }
 
     save_json(output_root / "manifest.json", manifest)
-    save_json(output_root / "names.json", dict(sorted(names.items(), key=lambda item: item[0].casefold())))
-    save_json(output_root / "data_names.json", dict(sorted(data_names.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "modules.json", dict(sorted(modules.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "diagnostics.json", diagnostics)
     save_update_state_from_file_indexes(
@@ -1362,17 +1349,21 @@ def build_project_index(
     )
     finish_phase("write manifest and maps", phase_started)
 
-    phase_started = start_phase("write symbols jsonl")
-    with (output_root / "symbols.jsonl").open("w", encoding="utf-8") as handle:
-        for symbol in symbols:
-            handle.write(json.dumps(symbol, ensure_ascii=False) + "\n")
-    finish_phase("write symbols jsonl", phase_started)
+    phase_started = start_phase("write sqlite lookup index")
+    build_sqlite_index(
+        index_root=output_root,
+        symbols=symbols,
+        names=names,
+        data_items=data_items,
+        data_names=data_names,
+        counts=manifest["counts"],
+    )
+    for legacy_name in ("symbols.jsonl", "names.json", "data.jsonl", "data_names.json"):
+        legacy_path = output_root / legacy_name
 
-    phase_started = start_phase("write data jsonl")
-    with (output_root / "data.jsonl").open("w", encoding="utf-8") as handle:
-        for data_item in data_items:
-            handle.write(json.dumps(data_item, ensure_ascii=False) + "\n")
-    finish_phase("write data jsonl", phase_started)
+        if legacy_path.exists():
+            legacy_path.unlink()
+    finish_phase("write sqlite lookup index", phase_started)
 
     return ProjectIndexBuildResult(
         root=root,
@@ -1403,20 +1394,57 @@ def normalize_glob_pattern(pattern: str) -> str:
 # Runtime loader/query helpers used by the server
 # ---------------------------------------------------------------------------
 
+class SqliteItemLookup:
+    def __init__(self, index: LoadedProjectIndex, table: str, id_column: str) -> None:
+        self.index = index
+        self.table = table
+        self.id_column = id_column
+
+    def get(self, item_id: str, default: Any = None) -> dict[str, Any] | Any:
+        item = self.index.sqlite_get_json(self.table, self.id_column, item_id)
+        return default if item is None else item
+
+
 class LoadedProjectIndex:
     def __init__(self, index_root: Path) -> None:
         self.index_root = index_root
         self.files_dir = index_root / "files"
         self.manifest = json.loads((index_root / "manifest.json").read_text(encoding="utf-8"))
-        self.names: dict[str, list[str]] = json.loads((index_root / "names.json").read_text(encoding="utf-8"))
         self.modules: dict[str, list[str]] = json.loads((index_root / "modules.json").read_text(encoding="utf-8"))
-        self.symbols = self._load_symbols(index_root / "symbols.jsonl")
-        self.symbol_by_id = {symbol["symbolId"]: symbol for symbol in self.symbols}
         self.file_by_id = {item["fileId"]: item for item in self.manifest["files"]}
         self.file_id_by_relative_path = {item["relativePath"]: item["fileId"] for item in self.manifest["files"]}
-        self.data = self._load_jsonl_if_exists(index_root / "data.jsonl")
-        self.data_names: dict[str, list[str]] = self._load_json_if_exists(index_root / "data_names.json", {})
-        self.data_by_id = {item["dataId"]: item for item in self.data}
+        self.sqlite_path = sqlite_index_path(index_root)
+        self.sqlite_connections = (
+            ThreadLocalIndexConnections(self.sqlite_path)
+            if self.sqlite_path.exists()
+            else None
+        )
+        self.uses_sqlite = self.sqlite_connections is not None
+
+        if self.uses_sqlite:
+            self.names: dict[str, list[str]] = {}
+            self.symbols: list[dict[str, Any]] = []
+            self.symbol_by_id = SqliteItemLookup(self, "symbols", "symbolId")
+            self.data: list[dict[str, Any]] = []
+            self.data_names: dict[str, list[str]] = {}
+            self.data_by_id = SqliteItemLookup(self, "data", "dataId")
+        else:
+            self.names = json.loads((index_root / "names.json").read_text(encoding="utf-8"))
+            self.symbols = self._load_symbols(index_root / "symbols.jsonl")
+            self.symbol_by_id = {symbol["symbolId"]: symbol for symbol in self.symbols}
+            self.data = self._load_jsonl_if_exists(index_root / "data.jsonl")
+            self.data_names = self._load_json_if_exists(index_root / "data_names.json", {})
+            self.data_by_id = {item["dataId"]: item for item in self.data}
+
+    def close(self) -> None:
+        if self.sqlite_connections is not None:
+            self.sqlite_connections.close()
+
+    def sqlite_connection(self):
+        if self.sqlite_connections is None:
+            return None
+
+        return self.sqlite_connections.get()
 
     @staticmethod
     def _load_symbols(path: Path) -> list[dict[str, Any]]:
@@ -1459,6 +1487,105 @@ class LoadedProjectIndex:
 
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def sqlite_get_json(self, table: str, id_column: str, item_id: str) -> dict[str, Any] | None:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return None
+
+        if table not in {"symbols", "data"} or id_column not in {"symbolId", "dataId"}:
+            raise ValueError("Invalid SQLite lookup table.")
+
+        row = connection.execute(
+            f"SELECT * FROM {table} WHERE {id_column} = ?",
+            (item_id,),
+        ).fetchone()
+        return row_json(row)
+
+    def sqlite_symbol_ids_for_name(self, query: str) -> list[str]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return []
+
+        rows = connection.execute(
+            "SELECT symbolId FROM symbol_names WHERE name = ? ORDER BY ordinal",
+            (query,),
+        ).fetchall()
+        return [str(row["symbolId"]) for row in rows]
+
+    def sqlite_data_ids_for_name(self, query: str) -> list[str]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return []
+
+        rows = connection.execute(
+            "SELECT dataId FROM data_names WHERE name = ? ORDER BY ordinal",
+            (query,),
+        ).fetchall()
+        return [str(row["dataId"]) for row in rows]
+
+    def sqlite_iter_symbols(self) -> Iterable[dict[str, Any]]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return iter(())
+
+        rows = connection.execute(
+            """
+            SELECT * FROM symbols
+            ORDER BY COALESCE(qualifiedName, shortName, ''), relativePath, startLine, endLine
+            """
+        )
+        return (item for row in rows if (item := row_json(row)) is not None)
+
+    def sqlite_iter_data(self) -> Iterable[dict[str, Any]]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return iter(())
+
+        rows = connection.execute(
+            """
+            SELECT * FROM data
+            ORDER BY COALESCE(qualifiedName, name, ''), relativePath, startLine, endLine
+            """
+        )
+        return (item for row in rows if (item := row_json(row)) is not None)
+
+    def sqlite_symbols_for_file(self, file_id: str) -> list[dict[str, Any]]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return []
+
+        rows = connection.execute(
+            """
+            SELECT * FROM symbols
+            WHERE fileId = ?
+            ORDER BY startLine, endLine, COALESCE(qualifiedName, shortName, '')
+            """,
+            (file_id,),
+        ).fetchall()
+        return [item for row in rows if (item := row_json(row)) is not None]
+
+    def sqlite_data_for_file(self, file_id: str) -> list[dict[str, Any]]:
+        connection = self.sqlite_connection()
+
+        if connection is None:
+            return []
+
+        rows = connection.execute(
+            """
+            SELECT * FROM data
+            WHERE fileId = ?
+            ORDER BY startLine, endLine, COALESCE(qualifiedName, name, '')
+            """,
+            (file_id,),
+        ).fetchall()
+        return [item for row in rows if (item := row_json(row)) is not None]
+
     def load_file_index(self, file_id: str) -> dict[str, Any]:
         path = self.files_dir / f"{file_id}.json"
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1487,7 +1614,7 @@ class LoadedProjectIndex:
             file_id_filter = str(file_item["fileId"])
 
         normalized_file_pattern = normalize_glob_pattern(file_pattern).casefold() if file_pattern else None
-        direct_ids = self.names.get(query, [])
+        direct_ids = self.sqlite_symbol_ids_for_name(query) if self.uses_sqlite else self.names.get(query, [])
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
 
@@ -1539,7 +1666,9 @@ class LoadedProjectIndex:
         if len(results) < limit:
             query_folded = query.casefold()
 
-            for symbol in self.symbols:
+            symbol_iter = self.sqlite_iter_symbols() if self.uses_sqlite else iter(self.symbols)
+
+            for symbol in symbol_iter:
                 symbol_id = symbol["symbolId"]
 
                 if symbol_id in seen:
@@ -1606,7 +1735,9 @@ class LoadedProjectIndex:
 
         results: list[dict[str, Any]] = []
 
-        for symbol in self.symbols:
+        file_symbols = self.sqlite_symbols_for_file(file_id) if self.uses_sqlite else self.symbols
+
+        for symbol in file_symbols:
             if symbol.get("fileId") != file_id:
                 continue
 
@@ -1702,7 +1833,9 @@ class LoadedProjectIndex:
         pattern = normalize_glob_pattern(pattern).casefold()
         results: list[dict[str, Any]] = []
 
-        for symbol in self.symbols:
+        symbol_iter = self.sqlite_iter_symbols() if self.uses_sqlite else iter(self.symbols)
+
+        for symbol in symbol_iter:
             haystacks = [
                 str(symbol.get("shortName") or ""),
                 str(symbol.get("qualifiedName") or ""),
@@ -1758,7 +1891,7 @@ class LoadedProjectIndex:
         container: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        direct_ids = self.data_names.get(query, [])
+        direct_ids = self.sqlite_data_ids_for_name(query) if self.uses_sqlite else self.data_names.get(query, [])
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
 
@@ -1793,7 +1926,9 @@ class LoadedProjectIndex:
 
         query_folded = query.casefold()
 
-        for item in self.data:
+        data_iter = self.sqlite_iter_data() if self.uses_sqlite else iter(self.data)
+
+        for item in data_iter:
             data_id = item["dataId"]
 
             if data_id in seen:
@@ -1824,7 +1959,9 @@ class LoadedProjectIndex:
         container_folded = container.casefold()
         results: list[dict[str, Any]] = []
 
-        for item in self.data:
+        data_iter = self.sqlite_iter_data() if self.uses_sqlite else iter(self.data)
+
+        for item in data_iter:
             item_container = str(item.get("container") or "")
 
             if (
@@ -2028,16 +2165,20 @@ class LoadedProjectIndex:
         outline_limit = max(1, outline_limit)
         debug_limit = max(1, debug_limit)
 
-        all_file_symbols = [
-            symbol
-            for symbol in self.symbols
-            if symbol.get("fileId") == file_id
-        ]
-        all_file_data = [
-            item
-            for item in self.data
-            if item.get("fileId") == file_id
-        ]
+        if self.uses_sqlite:
+            all_file_symbols = self.sqlite_symbols_for_file(file_id)
+            all_file_data = self.sqlite_data_for_file(file_id)
+        else:
+            all_file_symbols = [
+                symbol
+                for symbol in self.symbols
+                if symbol.get("fileId") == file_id
+            ]
+            all_file_data = [
+                item
+                for item in self.data
+                if item.get("fileId") == file_id
+            ]
 
         file_symbols = [
             symbol

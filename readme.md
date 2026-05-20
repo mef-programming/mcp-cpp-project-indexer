@@ -276,10 +276,7 @@ Generated files:
   manifest.json
   files/
     f_<pathHash>.json
-  symbols.jsonl
-  data.jsonl
-  names.json
-  data_names.json
+  index.sqlite
   modules.json
   diagnostics.json
   update_state.json      # written by build/update; used for fast incremental updates
@@ -287,6 +284,17 @@ Generated files:
   .watch_update_summary.json  # temporary watcher/update summary
   .update.lock           # process lock for index writers
   .watcher.lock          # process lock for one active watcher
+```
+
+Global symbol and data routing indexes are stored in `index.sqlite`. The
+per-file JSON indexes remain the source of truth for exact source ranges and
+incremental rebuilds.
+
+Optional JSONL export:
+
+```powershell
+python <indexer-root>\export_index_jsonl.py --index-root <project-root>\.mcp-cpp-project-indexer --kind symbols --output symbols.jsonl
+python <indexer-root>\export_index_jsonl.py --index-root <project-root>\.mcp-cpp-project-indexer --kind data --output data.jsonl
 ```
 
 Scanner diagnostic file-index fields are emitted only with
@@ -361,6 +369,7 @@ Modules: 3774
 Diagnostics: 7
 Total code lines: 1750000
 Total tokens: 14200000
+SQLite index: <project-root>/.mcp-cpp-project-indexer/index.sqlite
 ```
 
 `Total tokens` is the indexer's lexer token count over the indexed source after
@@ -1577,7 +1586,7 @@ Runtime index stores routing facts. Scanner diagnostic data is opt-in with
 ### Keep search and browsing separate
 
 ```text
-symbols.jsonl / names.json -> symbol search
+index.sqlite               -> symbol/data search
 module_map.json            -> module browsing
 manifest.json              -> file browsing
 ```

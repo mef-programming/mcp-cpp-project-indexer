@@ -1849,7 +1849,9 @@ class CodeIndexTools:
             )
             before_module_map_loaded = self.module_map is not None
 
+            old_index = self.index
             self.index = LoadedProjectIndex(self.index_root)
+            old_index.close()
             self._load_module_map()
 
             if self.change_tracker is not None:
@@ -3527,7 +3529,7 @@ def main() -> None:
         "--index-root",
         type=Path,
         default=DEFAULT_INDEX_ROOT,
-        help="Directory containing manifest.json, names.json, modules.json, symbols.jsonl and files/.",
+        help="Directory containing manifest.json, index.sqlite, modules.json and files/.",
     )
     parser.add_argument(
         "--watch-index",

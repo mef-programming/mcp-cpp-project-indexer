@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -208,6 +209,7 @@ if TEXTUAL_AVAILABLE:
 
         BINDINGS = [
             ("b", "build", "Build"),
+            ("c", "clean_index", "Clean"),
             ("u", "update", "Update"),
             ("f", "fast_update", "Fast update"),
             ("m", "module_map", "Module map"),
@@ -243,6 +245,7 @@ if TEXTUAL_AVAILABLE:
             self.status: dict[str, Any] = {}
             self.runner = ProcessRunner(self)
             self.shutdown_done = False
+            self.clean_confirm_until = 0.0
             self.apply_theme_setting(self.initial_theme)
 
         def compose(self) -> ComposeResult:
@@ -252,6 +255,7 @@ if TEXTUAL_AVAILABLE:
                 with Vertical(id="actions"):
                     yield Static("Actions", classes="card")
                     yield Button("Build index", id="action-build", variant="primary")
+                    yield Button("Clean index", id="action-clean")
                     yield Button("Update index", id="action-update")
                     yield Button("Fast update", id="action-fast-update")
                     yield Button("Build module map", id="action-module-map")
@@ -287,6 +291,8 @@ if TEXTUAL_AVAILABLE:
 
             if button_id == "action-build":
                 self.action_build()
+            elif button_id == "action-clean":
+                self.action_clean_index()
             elif button_id == "action-update":
                 self.action_update()
             elif button_id == "action-fast-update":
@@ -382,11 +388,12 @@ if TEXTUAL_AVAILABLE:
                 f"{self.label('HTTP:')} {self.state_value('connected' if http_connected else 'offline', http_connected)}   "
                 f"{self.label('Watcher:')} {self.state_value('running' if watcher_running else 'stopped', watcher_running)}   "
                 f"{self.label('Diagnostics:')} {self.warn_value(fmt_count(counts.get('diagnostics')))}   "
+                f"{self.label('SQLite:')} {self.state_value('yes' if (self.index_root / 'index.sqlite').exists() else 'no', (self.index_root / 'index.sqlite').exists())}   "
                 f"{self.label('Jobs:')} {self.value(self.jobs)}"
             )
             running = "running" if self.runner.running else "idle"
             self.query_one("#statusbar", Static).update(
-                f" {self.label('F1')} Help | {self.label('B')} Build | {self.label('U')} Update | "
+                f" {self.label('F1')} Help | {self.label('B')} Build | {self.label('C')} Clean | {self.label('U')} Update | "
                 f"{self.label('H')} HTTP+Watcher | {self.label('X')} Stop | {self.label('Q')} Quit "
                 f"| {self.state_value(running, self.runner.running)} | "
                 f"{self.label('source=')}{self.value(self.status_source)}"
@@ -527,6 +534,72 @@ if TEXTUAL_AVAILABLE:
             ]
             self.append_diagnostic_flag(args)
             self.runner.start(args)
+
+        def action_clean_index(self) -> None:
+            if self.runner.running:
+                self.write_log("Stop the running command before cleaning the index.")
+                return
+
+            now = time.monotonic()
+            if now > self.clean_confirm_until:
+                self.clean_confirm_until = now + 8.0
+                self.write_log(
+                    "Clean index requested. Press Clean/C again within 8 seconds to delete index files."
+                )
+                return
+
+            self.clean_confirm_until = 0.0
+            removed = self.clean_index_directory()
+            self.write_log(f"Cleaned index directory: removed {removed} item(s).")
+            self.refresh_status()
+
+        def clean_index_directory(self) -> int:
+            index_root = self.index_root.resolve()
+            project_root = self.root.resolve()
+
+            if index_root == project_root:
+                self.write_log("Refusing to clean: index root equals project root.")
+                return 0
+
+            if not index_root.exists():
+                index_root.mkdir(parents=True, exist_ok=True)
+                return 0
+
+            marker_names = {
+                "manifest.json",
+                "index.sqlite",
+                "symbols.jsonl",
+                "names.json",
+                "data.jsonl",
+                "data_names.json",
+                "update_state.json",
+                "modules.json",
+                "diagnostics.json",
+            }
+            has_index_marker = any((index_root / name).exists() for name in marker_names) or (index_root / "files").exists()
+
+            if not has_index_marker:
+                self.write_log("Refusing to clean: index root does not look like an index directory.")
+                return 0
+
+            removed = 0
+            for child in index_root.iterdir():
+                child_path = child.resolve()
+
+                try:
+                    child_path.relative_to(index_root)
+                except ValueError:
+                    self.write_log(f"Skipping unexpected path outside index root: {child_path}")
+                    continue
+
+                if child.is_dir():
+                    shutil.rmtree(child_path)
+                else:
+                    child.unlink()
+
+                removed += 1
+
+            return removed
 
         def action_update(self) -> None:
             args = self.command_base("update_project_index.py") + [
@@ -681,7 +754,7 @@ if TEXTUAL_AVAILABLE:
             self.write_log("Theme: " + self.current_theme_name())
             self.write_log(
                 "Shortcuts: B build, U update, F fast update, M module map, "
-                "H HTTP+watcher, W watcher, S diagnostics, X stop, R refresh, Q quit."
+                "C clean index, H HTTP+watcher, W watcher, S diagnostics, X stop, R refresh, Q quit."
             )
 
 

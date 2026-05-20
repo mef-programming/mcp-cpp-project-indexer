@@ -369,8 +369,7 @@ def main() -> None:
         "totalTokens": result.total_tokens,
         "manifest": (result.output_root / "manifest.json").as_posix(),
         "updateState": (result.output_root / "update_state.json").as_posix(),
-        "symbolsJsonl": (result.output_root / "symbols.jsonl").as_posix(),
-        "namesJson": (result.output_root / "names.json").as_posix(),
+        "sqliteIndex": (result.output_root / "index.sqlite").as_posix(),
         "modulesJson": (result.output_root / "modules.json").as_posix(),
         "diagnosticsJson": (result.output_root / "diagnostics.json").as_posix(),
         "timings": result.timings,
@@ -393,12 +392,9 @@ def main() -> None:
     print("Manifest:", summary["manifest"])
     print("State:", summary["updateState"])
     print("Jobs:", normalize_jobs(args.jobs))
-    print("Symbols JSONL:", summary["symbolsJsonl"])
-    print("Names JSON:", summary["namesJson"])
+    print("SQLite index:", summary["sqliteIndex"])
     print("Data:", result.data_count)
     print("Data names:", result.data_names_count)
-    print("Data JSONL:", args.output_root / "data.jsonl")
-    print("Data names JSON:", args.output_root / "data_names.json")
     print("Modules JSON:", summary["modulesJson"])
     print("Diagnostics JSON:", summary["diagnosticsJson"])
     print("Timings:")

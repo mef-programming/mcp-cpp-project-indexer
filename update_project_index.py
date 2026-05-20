@@ -9,10 +9,11 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cpp_file_index import build_file_index
 from cpp_index_lock import IndexLockError, index_update_lock
+from cpp_index_sqlite import build_sqlite_index, replace_file_lookup_rows, sqlite_index_path
 from cpp_index_utils import save_json
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
@@ -522,65 +523,6 @@ def structurally_equal_file_indexes(
     return structural_file_index_view(left) == structural_file_index_view(right)
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-
-            if line:
-                result.append(json.loads(line))
-
-    return result
-
-
-def write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        for item in items:
-            handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-
-def jsonl_line_may_match_file_id(line: str, file_ids: set[str]) -> bool:
-    return any(
-        f'"fileId":"{file_id}"' in line or f'"fileId": "{file_id}"' in line
-        for file_id in file_ids
-    )
-
-
-def rewrite_jsonl_replacing_file_ids(
-    *,
-    path: Path,
-    changed_file_ids: set[str],
-    changed_items: list[dict[str, Any]],
-    id_key: str,
-) -> tuple[int, set[str]]:
-    temp_path = path.with_name(path.name + ".tmp")
-    removed_ids: set[str] = set()
-    kept_count = 0
-
-    with path.open("r", encoding="utf-8") as source, temp_path.open("w", encoding="utf-8") as target:
-        for line in source:
-            if not line.strip():
-                continue
-
-            if jsonl_line_may_match_file_id(line, changed_file_ids):
-                item = json.loads(line)
-
-                if item.get("fileId") in changed_file_ids:
-                    removed_ids.add(str(item.get(id_key)))
-                    continue
-
-            target.write(line if line.endswith("\n") else line + "\n")
-            kept_count += 1
-
-        for item in changed_items:
-            target.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-    temp_path.replace(path)
-    return kept_count + len(changed_items), removed_ids
-
-
 def save_index_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -636,41 +578,6 @@ def rebuild_modules(manifest_files: list[dict[str, Any]]) -> dict[str, list[str]
             modules[str(full_module_name)].append(file_item["fileId"])
 
     return dict(sorted(modules.items(), key=lambda item: item[0].casefold()))
-
-
-def update_alias_index(
-    *,
-    existing: dict[str, Any],
-    removed_ids: set[str],
-    changed_items: list[dict[str, Any]],
-    id_key: str,
-    aliases_for_item: Callable[[dict[str, Any]], list[str]],
-) -> dict[str, list[str]]:
-    updated: dict[str, list[str]] = {}
-
-    for alias, raw_ids in existing.items():
-        if not isinstance(raw_ids, list):
-            continue
-
-        ids = [
-            str(item_id)
-            for item_id in raw_ids
-            if isinstance(item_id, str) and item_id not in removed_ids
-        ]
-
-        if ids:
-            updated[str(alias)] = ids
-
-    for item in changed_items:
-        item_id = str(item[id_key])
-
-        for alias in aliases_for_item(item):
-            ids = updated.setdefault(alias, [])
-
-            if item_id not in ids:
-                ids.append(item_id)
-
-    return dict(sorted(updated.items(), key=lambda item: item[0].casefold()))
 
 
 def record_phase(
@@ -777,24 +684,7 @@ def aggregate_project_index(
                 if ref["dataId"] not in data_names[alias]:
                     data_names[alias].append(ref["dataId"])
 
-    symbols.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["shortName"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
-
-    data_items.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["name"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
 
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
@@ -814,19 +704,21 @@ def aggregate_project_index(
     }
 
     save_json(index_root / "manifest.json", manifest)
-    save_json(index_root / "names.json", dict(sorted(names.items(), key=lambda item: item[0].casefold())))
     save_json(index_root / "modules.json", dict(sorted(modules.items(), key=lambda item: item[0].casefold())))
     save_json(index_root / "diagnostics.json", diagnostics)
+    build_sqlite_index(
+        index_root=index_root,
+        symbols=symbols,
+        names=names,
+        data_items=data_items,
+        data_names=data_names,
+        counts=manifest["counts"],
+    )
+    for legacy_name in ("symbols.jsonl", "names.json", "data.jsonl", "data_names.json"):
+        legacy_path = index_root / legacy_name
 
-    with (index_root / "symbols.jsonl").open("w", encoding="utf-8") as handle:
-        for symbol in symbols:
-            handle.write(json.dumps(symbol, ensure_ascii=False) + "\n")
-
-    save_json(index_root / "data_names.json", dict(sorted(data_names.items(), key=lambda item: item[0].casefold())))
-
-    with (index_root / "data.jsonl").open("w", encoding="utf-8") as handle:
-        for data_item in data_items:
-            handle.write(json.dumps(data_item, ensure_ascii=False) + "\n")
+        if legacy_path.exists():
+            legacy_path.unlink()
 
     return manifest
 
@@ -914,65 +806,26 @@ def aggregate_project_index_incremental(
 
     phase_started = record_phase(timings, "merge changed file refs", phase_started)
 
-    changed_symbols.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["shortName"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
-    changed_data_items.sort(
-        key=lambda item: (
-            item["qualifiedName"] or item["name"] or "",
-            item["relativePath"],
-            item["startLine"],
-            item["endLine"],
-        )
-    )
-    phase_started = record_phase(timings, "sort changed refs", phase_started)
-
-    symbol_count, removed_symbol_ids = rewrite_jsonl_replacing_file_ids(
-        path=index_root / "symbols.jsonl",
-        changed_file_ids=changed_file_ids,
-        changed_items=changed_symbols,
-        id_key="symbolId",
-    )
-    phase_started = record_phase(timings, "rewrite symbols.jsonl", phase_started)
-
-    data_count, removed_data_ids = rewrite_jsonl_replacing_file_ids(
-        path=index_root / "data.jsonl",
-        changed_file_ids=changed_file_ids,
-        changed_items=changed_data_items,
-        id_key="dataId",
-    )
-    phase_started = record_phase(timings, "rewrite data.jsonl", phase_started)
+    phase_started = record_phase(timings, "sort manifest entries", phase_started)
 
     modules = rebuild_modules(manifest_files)
     phase_started = record_phase(timings, "rebuild modules", phase_started)
 
-    existing_names = load_json_or_none(index_root / "names.json") or {}
-    existing_data_names = load_json_or_none(index_root / "data_names.json") or {}
-    phase_started = record_phase(timings, "load alias indexes", phase_started)
+    if not sqlite_index_path(index_root).exists():
+        raise SystemExit("SQLite lookup index missing during incremental aggregation. Rebuild the index.")
 
-    names = update_alias_index(
-        existing=existing_names if isinstance(existing_names, dict) else {},
-        removed_ids=removed_symbol_ids,
-        changed_items=changed_symbols,
-        id_key="symbolId",
-        aliases_for_item=search_aliases_for_symbol,
+    changed_names = rebuild_names(changed_symbols)
+    changed_data_names = rebuild_data_names(changed_data_items)
+    lookup_counts = replace_file_lookup_rows(
+        index_root=index_root,
+        changed_file_ids=changed_file_ids,
+        symbols=changed_symbols,
+        names=changed_names,
+        data_items=changed_data_items,
+        data_names=changed_data_names,
     )
-    phase_started = record_phase(timings, "update names", phase_started)
-
-    data_names = update_alias_index(
-        existing=existing_data_names if isinstance(existing_data_names, dict) else {},
-        removed_ids=removed_data_ids,
-        changed_items=changed_data_items,
-        id_key="dataId",
-        aliases_for_item=search_aliases_for_data,
-    )
-    phase_started = record_phase(timings, "update data_names", phase_started)
+    phase_started = record_phase(timings, "update sqlite lookup index", phase_started)
 
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
@@ -982,10 +835,10 @@ def aggregate_project_index_incremental(
         "stats": project_stats_from_manifest_files(manifest_files),
         "counts": {
             "files": len(manifest_files),
-            "symbols": symbol_count,
-            "names": len(names),
-            "data": data_count,
-            "dataNames": len(data_names),
+            "symbols": lookup_counts["symbols"],
+            "names": lookup_counts["names"],
+            "data": lookup_counts["data"],
+            "dataNames": lookup_counts["dataNames"],
             "modules": len(modules),
             "diagnostics": len(diagnostics),
         },
@@ -995,17 +848,11 @@ def aggregate_project_index_incremental(
     save_index_json(index_root / "manifest.json", manifest)
     phase_started = record_phase(timings, "write manifest", phase_started)
 
-    save_index_json(index_root / "names.json", names)
-    phase_started = record_phase(timings, "write names", phase_started)
-
     save_index_json(index_root / "modules.json", modules)
     phase_started = record_phase(timings, "write modules", phase_started)
 
     save_index_json(index_root / "diagnostics.json", diagnostics)
-    phase_started = record_phase(timings, "write diagnostics", phase_started)
-
-    save_index_json(index_root / "data_names.json", data_names)
-    record_phase(timings, "write data_names", phase_started)
+    record_phase(timings, "write diagnostics", phase_started)
 
     return manifest
 
