@@ -368,6 +368,10 @@ python <indexer-root>\update_project_index.py `
 `--known-files-only` skips full discovery of new files. This is ideal for save/watch loops.
 `--changed-file` can be repeated and lets a watcher avoid hashing unchanged files.
 
+Index writes are protected by an exclusive `.update.lock` file in the index
+root. This prevents full builds, incremental updates, and module-map rebuilds
+from writing the same index files at the same time.
+
 ---
 
 ## Watch the project index
@@ -390,6 +394,9 @@ update_project_index.py --known-files-only --changed-file <path>
 
 This hashes only the changed candidate file. If the content hash did not change,
 the watcher skips module-map rebuild and MCP cache reload work.
+
+Only one watcher should own an index root. The watcher uses `.watcher.lock` and
+exits if another watcher is already active for the same index.
 
 Diagnostics are non-fatal. They indicate best-effort structural warnings for individual files.
 
@@ -485,6 +492,10 @@ The server watcher writes all progress to stderr so stdout remains valid MCP
 JSON-RPC. After a real index change, it reloads the server cache automatically.
 If a save only changes mtime and the content hash is unchanged, it skips module
 map rebuild and cache reload.
+
+If another watcher already owns the same index root, the MCP server continues
+read-only and does not start its own watcher. This avoids concurrent writer
+processes when multiple MCP clients start separate stdio server instances.
 
 ---
 

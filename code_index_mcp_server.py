@@ -17,6 +17,7 @@ from cpp_change_tracking import (
     change_tracking_tool_definitions,
     detect_change_tracking,
 )
+from cpp_index_lock import IndexFileLock, IndexLockError, index_watcher_lock
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
 from watch_project_index import (
     SnapshotEntry,
@@ -1322,6 +1323,7 @@ class ServerIndexWatcher:
         self.module_map = module_map
         self.emit_debug_file_indexes = emit_debug_file_indexes
         self.indexer_root = Path(__file__).resolve().parent
+        self.watcher_lock: IndexFileLock | None = None
         self.thread = threading.Thread(
             target=self._run,
             name="mcp-cpp-project-indexer-watch",
@@ -1329,6 +1331,22 @@ class ServerIndexWatcher:
         )
 
     def start(self) -> None:
+        try:
+            self.watcher_lock = index_watcher_lock(self.tools.index_root)
+            self.watcher_lock.acquire()
+        except IndexLockError as exc:
+            self.watcher_lock = None
+            print(
+                (
+                    "[mcp-cpp-project-indexer] index watcher not started: "
+                    f"{exc}. Another watcher is already active for this index root. "
+                    "This MCP server will continue read-only without watcher updates."
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
         print(
             (
                 "[mcp-cpp-project-indexer] starting index watcher "
@@ -1522,6 +1540,10 @@ class ServerIndexWatcher:
                 flush=True,
             )
             traceback.print_exc(file=sys.stderr)
+        finally:
+            if self.watcher_lock is not None:
+                self.watcher_lock.release()
+                self.watcher_lock = None
 
 
 class CodeIndexTools:

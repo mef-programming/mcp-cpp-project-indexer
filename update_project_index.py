@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from cpp_file_index import build_file_index
+from cpp_index_lock import IndexLockError, index_update_lock
 from cpp_index_utils import save_json
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
@@ -1578,21 +1579,42 @@ def main() -> int:
     if not root.exists():
         raise SystemExit(f"Project root not found: {root}")
 
-    result = run_update(
-        root=root,
-        index_root=index_root,
-        extensions=parse_extensions(args.extensions),
-        excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
-        emit_debug_file_indexes=args.emit_debug_file_indexes,
-        case_insensitive_paths=args.case_insensitive_paths,
-        blank_comments=args.blank_comments,
-        dry_run=args.dry_run,
-        force=args.force,
-        known_files_only=args.known_files_only,
-        changed_files=args.changed_file,
-        progress_enabled=args.progress and not args.print_summary_json,
-        jobs=args.jobs,
-    )
+    try:
+        if args.dry_run:
+            result = run_update(
+                root=root,
+                index_root=index_root,
+                extensions=parse_extensions(args.extensions),
+                excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
+                emit_debug_file_indexes=args.emit_debug_file_indexes,
+                case_insensitive_paths=args.case_insensitive_paths,
+                blank_comments=args.blank_comments,
+                dry_run=args.dry_run,
+                force=args.force,
+                known_files_only=args.known_files_only,
+                changed_files=args.changed_file,
+                progress_enabled=args.progress and not args.print_summary_json,
+                jobs=args.jobs,
+            )
+        else:
+            with index_update_lock(index_root):
+                result = run_update(
+                    root=root,
+                    index_root=index_root,
+                    extensions=parse_extensions(args.extensions),
+                    excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
+                    emit_debug_file_indexes=args.emit_debug_file_indexes,
+                    case_insensitive_paths=args.case_insensitive_paths,
+                    blank_comments=args.blank_comments,
+                    dry_run=args.dry_run,
+                    force=args.force,
+                    known_files_only=args.known_files_only,
+                    changed_files=args.changed_file,
+                    progress_enabled=args.progress and not args.print_summary_json,
+                    jobs=args.jobs,
+                )
+    except IndexLockError as exc:
+        raise SystemExit(str(exc)) from exc
 
     index_stats = {"totalCodeLines": 0, "totalTokens": 0}
 

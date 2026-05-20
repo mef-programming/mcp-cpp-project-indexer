@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cpp_index_lock import IndexLockError, index_watcher_lock
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -353,31 +354,39 @@ def main() -> int:
     if not (index_root / "manifest.json").exists():
         raise SystemExit("No existing project index found. Run build_project_index.py first.")
 
-    print("Watching project index")
-    print("======================")
-    print("Root:       ", root)
-    print("Index root: ", index_root)
-    print("Indexer:    ", indexer_root)
-    print("Jobs:       ", normalize_jobs(args.jobs))
-    print("Poll:       ", f"{args.poll_interval:.2f}s")
-    print("Debounce:   ", f"{args.debounce:.2f}s")
-    print("Module map: ", args.module_map)
-    print("Diagnostics:", args.emit_debug_file_indexes)
-    print("Stop with Ctrl+C.")
-
-    snapshot = snapshot_source_files(
-        root=root,
-        extensions=extensions,
-        excluded_dir_names=excluded_dir_names,
-        case_insensitive_paths=args.case_insensitive_paths,
-    )
-    print("Initial source files:", len(snapshot))
-
-    pending_since: float | None = None
-    pending_snapshot: dict[str, SnapshotEntry] | None = None
-    pending_diff: SnapshotDiff | None = None
+    try:
+        watcher_lock = index_watcher_lock(index_root)
+        watcher_lock.acquire()
+    except IndexLockError as exc:
+        raise SystemExit(
+            f"{exc}. Another watcher is already active for this index root."
+        ) from exc
 
     try:
+        print("Watching project index")
+        print("======================")
+        print("Root:       ", root)
+        print("Index root: ", index_root)
+        print("Indexer:    ", indexer_root)
+        print("Jobs:       ", normalize_jobs(args.jobs))
+        print("Poll:       ", f"{args.poll_interval:.2f}s")
+        print("Debounce:   ", f"{args.debounce:.2f}s")
+        print("Module map: ", args.module_map)
+        print("Diagnostics:", args.emit_debug_file_indexes)
+        print("Stop with Ctrl+C.")
+
+        snapshot = snapshot_source_files(
+            root=root,
+            extensions=extensions,
+            excluded_dir_names=excluded_dir_names,
+            case_insensitive_paths=args.case_insensitive_paths,
+        )
+        print("Initial source files:", len(snapshot))
+
+        pending_since: float | None = None
+        pending_snapshot: dict[str, SnapshotEntry] | None = None
+        pending_diff: SnapshotDiff | None = None
+
         while True:
             time.sleep(max(0.1, args.poll_interval))
 
@@ -445,6 +454,8 @@ def main() -> int:
         print()
         print("Watcher stopped.")
         return 0
+    finally:
+        watcher_lock.release()
 
 
 if __name__ == "__main__":

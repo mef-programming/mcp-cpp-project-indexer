@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from cpp_index_lock import IndexLockError, index_update_lock
+
 
 MODULE_MAP_SCHEMA = "cpp.module_map.v1"
 
@@ -347,8 +349,12 @@ def main() -> None:
     args = parser.parse_args()
     output = args.output or (args.index_root / "module_map.json")
 
-    module_map = build_module_map(args.index_root)
-    save_json(output, module_map)
+    try:
+        with index_update_lock(args.index_root):
+            module_map = build_module_map(args.index_root)
+            save_json(output, module_map)
+    except IndexLockError as exc:
+        raise SystemExit(str(exc)) from exc
 
     summary = {
         "schema": module_map["schema"],

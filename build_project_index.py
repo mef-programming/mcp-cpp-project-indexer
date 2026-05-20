@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from cpp_index_lock import IndexLockError, index_update_lock
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -306,19 +307,23 @@ def main() -> None:
         discovery_progress = DiscoveryProgress(root=args.root)
         discovery_progress_callback = discovery_progress
 
-    result = build_project_index(
-        root=root,
-        output_root=output_root,
-        extensions=extensions,
-        excluded_dir_names=excluded_dirs,
-        emit_debug_file_indexes=args.emit_debug_file_indexes,
-        case_insensitive_paths=args.case_insensitive_paths,
-        blank_comments=args.blank_comments,
-        progress_callback=progress_callback,
-        discovery_progress_callback=discovery_progress_callback,
-        discovery_complete_callback=discovery_progress.finish if discovery_progress is not None else None,
-        jobs=args.jobs,
-    )
+    try:
+        with index_update_lock(output_root):
+            result = build_project_index(
+                root=root,
+                output_root=output_root,
+                extensions=extensions,
+                excluded_dir_names=excluded_dirs,
+                emit_debug_file_indexes=args.emit_debug_file_indexes,
+                case_insensitive_paths=args.case_insensitive_paths,
+                blank_comments=args.blank_comments,
+                progress_callback=progress_callback,
+                discovery_progress_callback=discovery_progress_callback,
+                discovery_complete_callback=discovery_progress.finish if discovery_progress is not None else None,
+                jobs=args.jobs,
+            )
+    except IndexLockError as exc:
+        raise SystemExit(str(exc)) from exc
 
     summary = {
         "root": result.root.resolve().as_posix(),
