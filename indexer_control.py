@@ -13,8 +13,15 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+try:
+    import psutil  # type: ignore[import-not-found]
+except ImportError:
+    psutil = None
 
 
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
@@ -112,6 +119,163 @@ def fmt_count(value: Any) -> str:
         return f"{int(value):,}"
     except (TypeError, ValueError):
         return "-"
+
+
+def fmt_bytes(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+
+    units = ["B", "KiB", "MiB", "GiB"]
+    for unit in units:
+        if abs(number) < 1024 or unit == units[-1]:
+            return f"{number:.1f} {unit}" if unit != "B" else f"{int(number)} B"
+        number /= 1024
+
+    return "-"
+
+
+def fmt_duration(seconds: Any) -> str:
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return "-"
+
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def iso_age_seconds(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+
+    try:
+        started = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+    now = datetime.now(started.tzinfo) if started.tzinfo is not None else datetime.now()
+    return max(0.0, (now - started).total_seconds())
+
+
+def process_stats(pid: int | None = None) -> dict[str, Any]:
+    pid = pid or os.getpid()
+
+    if psutil is not None:
+        try:
+            process = psutil.Process(pid)
+            memory = process.memory_info()
+            cpu_times = process.cpu_times()
+            return {
+                "pid": pid,
+                "rssBytes": memory.rss,
+                "vmsBytes": memory.vms,
+                "cpuUserSeconds": cpu_times.user,
+                "cpuSystemSeconds": cpu_times.system,
+                "threads": process.num_threads(),
+                "createTime": process.create_time(),
+            }
+        except Exception:
+            pass
+
+    stats: dict[str, Any] = {"pid": pid}
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            process_query_information = 0x0400
+            process_query_limited_information = 0x1000
+            process_vm_read = 0x0010
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            handle = kernel32.OpenProcess(
+                process_query_limited_information
+                | process_query_information
+                | process_vm_read,
+                False,
+                int(pid),
+            )
+            if handle:
+                try:
+                    counters = ProcessMemoryCounters()
+                    counters.cb = ctypes.sizeof(ProcessMemoryCounters)
+                    if psapi.GetProcessMemoryInfo(
+                        handle,
+                        ctypes.byref(counters),
+                        counters.cb,
+                    ):
+                        stats["rssBytes"] = int(counters.WorkingSetSize)
+                        stats["vmsBytes"] = int(counters.PagefileUsage)
+                finally:
+                    kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class ThreadEntry32(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ThreadID", wintypes.DWORD),
+                    ("th32OwnerProcessID", wintypes.DWORD),
+                    ("tpBasePri", wintypes.LONG),
+                    ("tpDeltaPri", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            th32cs_snapthread = 0x00000004
+            invalid_handle_value = ctypes.c_void_p(-1).value
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapthread, 0)
+            if snapshot and snapshot != invalid_handle_value:
+                try:
+                    entry = ThreadEntry32()
+                    entry.dwSize = ctypes.sizeof(ThreadEntry32)
+                    count = 0
+                    if kernel32.Thread32First(snapshot, ctypes.byref(entry)):
+                        while True:
+                            if int(entry.th32OwnerProcessID) == int(pid):
+                                count += 1
+                            if not kernel32.Thread32Next(snapshot, ctypes.byref(entry)):
+                                break
+                    stats["threads"] = count
+                finally:
+                    kernel32.CloseHandle(snapshot)
+        except Exception:
+            pass
+
+    if pid == os.getpid():
+        times = os.times()
+        stats.update(
+            {
+                "cpuUserSeconds": times.user,
+                "cpuSystemSeconds": times.system,
+                "threads": threading.active_count(),
+            }
+        )
+
+    return stats
 
 
 def load_json(path: Path) -> Any | None:
@@ -369,6 +533,7 @@ class ControlCenter:
         stats = index.get("stats", {})
         watcher = status.get("watcher", {})
         server = status.get("server", {})
+        server_process = server.get("process", {})
         locks = status.get("locks", {})
 
         print("mcp-cpp-project-indexer control center")
@@ -378,7 +543,9 @@ class ControlCenter:
         print(
             "Server:  "
             f"{server.get('transport', self.status_source)} "
-            f"{self.http_url if self.status_source == 'http' else '(not connected)'}"
+            f"{self.http_url if self.status_source == 'http' else '(not connected)'} "
+            f"pid={server.get('pid', '-')} "
+            f"rss={fmt_bytes(server_process.get('rssBytes'))}"
         )
         print(
             "Watcher: "

@@ -5,17 +5,22 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from indexer_control import (
     DEFAULT_INDEX_ROOT,
     DEFAULT_PROJECT_ROOT,
+    fmt_bytes,
     fmt_count,
+    fmt_duration,
+    iso_age_seconds,
     kill_process_tree,
     load_ui_settings,
     manifest_status,
     parse_http_url,
+    process_stats,
     read_http_status,
     request_process_exit,
     save_ui_settings,
@@ -40,6 +45,7 @@ class ProcessRunner:
         self.last_exit_code: int | None = None
         self.last_command = ""
         self.output_queue: queue.Queue[str] = queue.Queue()
+        self.stopping = False
 
     @property
     def running(self) -> bool:
@@ -50,6 +56,7 @@ class ProcessRunner:
             self.app.write_log("A command is already running.")
             return
 
+        self.stopping = False
         self.last_command = " ".join(args)
         self.last_exit_code = None
         self.app.write_log("> " + self.last_command)
@@ -75,14 +82,47 @@ class ProcessRunner:
             self.app.write_log("Terminate requested for running command.")
             return
 
+        if self.stopping:
+            return
+
+        self.stopping = True
         request_process_exit(process)
-        self.app.write_log("Graceful process shutdown requested.")
+        self.output_queue.put("Graceful process shutdown requested.")
 
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             kill_process_tree(process)
-            self.app.write_log("Running command did not exit; kill requested.")
+            self.output_queue.put("Running command did not exit; kill requested.")
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def stop_async(self) -> None:
+        if not self.running:
+            self.app.write_log("No running command to stop.")
+            return
+
+        threading.Thread(
+            target=self.stop,
+            kwargs={"wait": True},
+            daemon=True,
+        ).start()
+
+    def shutdown(self) -> None:
+        if self.process is None or self.process.poll() is not None:
+            return
+
+        process = self.process
+        if not self.stopping:
+            self.stopping = True
+            request_process_exit(process)
+
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(process)
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -98,8 +138,12 @@ class ProcessRunner:
         exit_code = self.process.wait()
         self.last_exit_code = exit_code
         self.process = None
+        self.stopping = False
         self.output_queue.put(f"Process exited with code {exit_code}.")
-        self.app.call_from_thread(self.app.refresh_status)
+        try:
+            self.app.call_from_thread(self.app.refresh_status)
+        except RuntimeError:
+            pass
 
 
 if TEXTUAL_AVAILABLE:
@@ -197,6 +241,7 @@ if TEXTUAL_AVAILABLE:
             self.status_source = "disk"
             self.status: dict[str, Any] = {}
             self.runner = ProcessRunner(self)
+            self.shutdown_done = False
             self.apply_theme_setting(self.initial_theme)
 
         def compose(self) -> ComposeResult:
@@ -232,6 +277,9 @@ if TEXTUAL_AVAILABLE:
             self.refresh_status()
             self.set_interval(1.0, self.refresh_status)
             self.set_interval(0.1, self.flush_process_log)
+
+        def on_unmount(self) -> None:
+            self.shutdown_processes()
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             button_id = event.button.id
@@ -271,60 +319,76 @@ if TEXTUAL_AVAILABLE:
             project = self.status.get("project", {})
             index = self.status.get("index", {})
             server = self.status.get("server", {})
+            server_process = self.resolve_process_stats(server.get("process", {}))
             watcher = self.status.get("watcher", {})
             locks = self.status.get("locks", {})
             counts = index.get("counts", {})
             stats = index.get("stats", {})
 
+            http_connected = self.status_source == "http"
+            watcher_running = bool(watcher.get("running"))
+            lock_held = bool(watcher.get("lockHeld"))
+            update_lock_file = bool(locks.get("updateLockFileExists"))
+            watcher_lock_file = bool(locks.get("watcherLockFileExists"))
+            diagnostics_enabled = bool(self.emit_diagnostic_file_indexes)
+
             self.query_one("#project", Static).update(
-                f"Project  {project.get('root') or self.root.as_posix()}\n"
-                f"Index    {project.get('indexRoot') or self.index_root.as_posix()}"
+                f"{self.label('Project')} {self.value(project.get('root') or self.root.as_posix())}\n"
+                f"{self.label('Index')}   {self.value(project.get('indexRoot') or self.index_root.as_posix())}"
             )
             self.query_one("#server", Static).update(
-                f"Server   {server.get('transport', self.status_source)}   "
-                f"{self.http_url if self.status_source == 'http' else 'not connected'}   "
-                f"pid {server.get('pid', '-')}"
+                f"{self.label('Server')}  "
+                f"{self.state_value(self.http_url if http_connected else 'not connected', http_connected)}   "
+                f"{self.label('PID')} {self.value(server.get('pid') or server_process.get('pid') or '-')}   "
+                f"{self.label('RAM')} {self.value(fmt_bytes(server_process.get('rssBytes')))}   "
+                f"{self.label('CPU')} {self.value(self.process_cpu_percent_text(server_process))}   "
+                f"{self.label('Uptime')} {self.value(self.server_uptime_text(server))}"
             )
             self.query_one("#watcher", Static).update(
-                f"Watcher  {'running' if watcher.get('running') else 'stopped'}   "
-                f"lock {'held' if watcher.get('lockHeld') else 'not-held'}   "
-                f"last {watcher.get('lastUpdateResult') or '-'}"
+                f"{self.label('Watcher')} "
+                f"{self.state_value('running' if watcher_running else 'stopped', watcher_running)}   "
+                f"{self.label('lock')} {self.state_value('held' if lock_held else 'not-held', lock_held)}   "
+                f"{self.label('last')} {self.value(watcher.get('lastUpdateResult') or '-')}"
             )
             self.query_one("#counts", Static).update(
-                "Index    "
-                f"files {fmt_count(counts.get('files'))}   "
-                f"symbols {fmt_count(counts.get('symbols'))}   "
-                f"data {fmt_count(counts.get('data'))}   "
-                f"modules {fmt_count(counts.get('modules'))}   "
-                f"diagnostics {fmt_count(counts.get('diagnostics'))}"
+                f"{self.label('Index')}   "
+                f"{self.label('files')} {self.value(fmt_count(counts.get('files')))}   "
+                f"{self.label('symbols')} {self.value(fmt_count(counts.get('symbols')))}   "
+                f"{self.label('data')} {self.value(fmt_count(counts.get('data')))}   "
+                f"{self.label('modules')} {self.value(fmt_count(counts.get('modules')))}   "
+                f"{self.label('diagnostics')} {self.warn_value(fmt_count(counts.get('diagnostics')))}"
             )
             self.query_one("#stats", Static).update(
-                "Stats    "
-                f"code lines {fmt_count(stats.get('totalCodeLines'))}   "
-                f"tokens {fmt_count(stats.get('totalTokens'))}"
+                f"{self.label('Stats')}   "
+                f"{self.label('code lines')} {self.value(fmt_count(stats.get('totalCodeLines')))}   "
+                f"{self.label('tokens')} {self.value(fmt_count(stats.get('totalTokens')))}   "
+                f"{self.label('cpu time')} {self.value(self.process_cpu_time_text(server_process))}   "
+                f"{self.label('threads')} {self.value(fmt_count(server_process.get('threads')))}"
             )
             self.query_one("#locks", Static).update(
-                "Locks    "
-                f"updateFile={bool(locks.get('updateLockFileExists'))}   "
-                f"watcherFile={bool(locks.get('watcherLockFileExists'))}"
+                f"{self.label('Locks')}   "
+                f"{self.label('updateFile')} {self.state_value(str(update_lock_file), update_lock_file)}   "
+                f"{self.label('watcherFile')} {self.state_value(str(watcher_lock_file), watcher_lock_file)}"
             )
             self.query_one("#mode", Static).update(
-                "Mode     "
-                f"diagnostic file sections {'ON' if self.emit_diagnostic_file_indexes else 'OFF'}   "
-                f"jobs {self.jobs}   "
-                f"theme {self.current_theme_name()}"
+                f"{self.label('Mode')}    "
+                f"{self.label('diagnostic file sections')} {self.state_value('ON' if diagnostics_enabled else 'OFF', diagnostics_enabled)}   "
+                f"{self.label('jobs')} {self.value(self.jobs)}   "
+                f"{self.label('theme')} {self.value(self.current_theme_name())}"
             )
             self.query_one("#topbar", Static).update(
-                "mcp-cpp-project-indexer   "
-                f"HTTP: {'connected' if self.status_source == 'http' else 'offline'}   "
-                f"Watcher: {'running' if watcher.get('running') else 'stopped'}   "
-                f"Diagnostics: {fmt_count(counts.get('diagnostics'))}   "
-                f"Jobs: {self.jobs}"
+                f"{self.value('mcp-cpp-project-indexer')}   "
+                f"{self.label('HTTP:')} {self.state_value('connected' if http_connected else 'offline', http_connected)}   "
+                f"{self.label('Watcher:')} {self.state_value('running' if watcher_running else 'stopped', watcher_running)}   "
+                f"{self.label('Diagnostics:')} {self.warn_value(fmt_count(counts.get('diagnostics')))}   "
+                f"{self.label('Jobs:')} {self.value(self.jobs)}"
             )
             running = "running" if self.runner.running else "idle"
             self.query_one("#statusbar", Static).update(
-                f" F1 Help | B Build | U Update | H HTTP+Watcher | X Stop | Q Quit "
-                f"| {running} | source={self.status_source}"
+                f" {self.label('F1')} Help | {self.label('B')} Build | {self.label('U')} Update | "
+                f"{self.label('H')} HTTP+Watcher | {self.label('X')} Stop | {self.label('Q')} Quit "
+                f"| {self.state_value(running, self.runner.running)} | "
+                f"{self.label('source=')}{self.value(self.status_source)}"
             )
 
         def write_log(self, text: str) -> None:
@@ -332,6 +396,107 @@ if TEXTUAL_AVAILABLE:
                 self.query_one("#log", RichLog).write(text)
             except Exception:
                 pass
+
+        @staticmethod
+        def label(text: Any) -> str:
+            return f"[dim]{text}[/dim]"
+
+        @staticmethod
+        def value(text: Any) -> str:
+            return f"[bold cyan]{text}[/bold cyan]"
+
+        @staticmethod
+        def warn_value(text: Any) -> str:
+            try:
+                number = int(str(text).replace(",", ""))
+            except ValueError:
+                number = 0
+            style = "yellow" if number else "green"
+            return f"[bold {style}]{text}[/bold {style}]"
+
+        @staticmethod
+        def state_value(text: Any, active: bool) -> str:
+            style = "green" if active else "dim"
+            return f"[bold {style}]{text}[/bold {style}]"
+
+        def local_process_stats(self) -> dict[str, Any]:
+            if self.runner.process is None or self.runner.process.poll() is not None:
+                return {}
+
+            return process_stats(self.runner.process.pid)
+
+        def resolve_process_stats(self, stats: Any) -> dict[str, Any]:
+            resolved = dict(stats) if isinstance(stats, dict) else {}
+            local = self.local_process_stats()
+
+            if local and (
+                not resolved
+                or resolved.get("pid") in {None, local.get("pid")}
+            ):
+                for key, value in local.items():
+                    if resolved.get(key) in {None, "", "-"}:
+                        resolved[key] = value
+
+            pid = resolved.get("pid")
+            if pid is not None and (
+                resolved.get("rssBytes") is None
+                or resolved.get("threads") is None
+            ):
+                extra = process_stats(pid)
+                for key, value in extra.items():
+                    if resolved.get(key) in {None, "", "-"}:
+                        resolved[key] = value
+
+            return resolved
+
+        def process_cpu_time_text(self, stats: dict[str, Any]) -> str:
+            user = stats.get("cpuUserSeconds")
+            system = stats.get("cpuSystemSeconds")
+            try:
+                return f"{float(user) + float(system):.1f}s"
+            except (TypeError, ValueError):
+                if self.runner.process is not None:
+                    local_stats = self.local_process_stats()
+                    local_user = local_stats.get("cpuUserSeconds")
+                    local_system = local_stats.get("cpuSystemSeconds")
+                    try:
+                        return f"{float(local_user) + float(local_system):.1f}s"
+                    except (TypeError, ValueError):
+                        return "-"
+
+                return "-"
+
+        def process_cpu_percent_text(self, stats: dict[str, Any]) -> str:
+            uptime = self.server_uptime_seconds()
+            if uptime is None or uptime <= 0:
+                return "-"
+
+            user = stats.get("cpuUserSeconds")
+            system = stats.get("cpuSystemSeconds")
+            try:
+                percent = ((float(user) + float(system)) / uptime) * 100.0
+            except (TypeError, ValueError):
+                return "-"
+
+            return f"{percent:.1f}%"
+
+        def server_uptime_seconds(self) -> float | None:
+            server = self.status.get("server", {})
+            uptime = iso_age_seconds(server.get("startedAt"))
+            if uptime is not None:
+                return uptime
+
+            process = self.resolve_process_stats(server.get("process", {}))
+            create_time = process.get("createTime")
+            try:
+                return max(0.0, time.time() - float(create_time))
+            except (TypeError, ValueError):
+                pass
+
+            return None
+
+        def server_uptime_text(self, server: dict[str, Any]) -> str:
+            return fmt_duration(self.server_uptime_seconds())
 
         def flush_process_log(self) -> None:
             for _ in range(200):
@@ -445,10 +610,18 @@ if TEXTUAL_AVAILABLE:
             self.update_dashboard()
 
         def action_stop_process(self) -> None:
-            self.runner.stop()
+            self.runner.stop_async()
 
-        def on_exit(self) -> None:
-            self.runner.stop(wait=True)
+        def action_quit(self) -> None:
+            self.shutdown_processes()
+            self.exit()
+
+        def shutdown_processes(self) -> None:
+            if self.shutdown_done:
+                return
+
+            self.shutdown_done = True
+            self.runner.shutdown()
             self.save_settings()
 
         def apply_theme_setting(self, theme: str) -> None:
@@ -589,7 +762,7 @@ def main() -> int:
     try:
         app.run()
     finally:
-        app.save_settings()
+        app.shutdown_processes()
     return 0
 
 
