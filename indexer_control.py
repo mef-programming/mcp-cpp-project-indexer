@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -16,6 +17,85 @@ from typing import Any
 
 
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
+DEFAULT_PROJECT_ROOT = Path(
+    os.environ.get("MCP_CPP_PROJECT_ROOT", Path.cwd())
+)
+DEFAULT_INDEX_ROOT = Path(
+    os.environ.get(
+        "MCP_CPP_INDEX_ROOT",
+        str(DEFAULT_PROJECT_ROOT / DEFAULT_INDEX_DIR_NAME),
+    )
+)
+UI_SETTINGS_SCHEMA = "mcp-cpp-project-indexer.ui_settings.v1"
+
+
+def ui_settings_key(*, root: Path, index_root: Path) -> str:
+    raw = f"{root.resolve().as_posix()}\n{index_root.resolve().as_posix()}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    project_name = root.resolve().name or "project"
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_"
+        for ch in project_name
+    ).strip("_") or "project"
+    return f"{safe_name}-{digest}"
+
+
+def ui_settings_path(*, indexer_root: Path, root: Path, index_root: Path) -> Path:
+    return indexer_root.resolve() / ".ui-settings" / f"{ui_settings_key(root=root, index_root=index_root)}.json"
+
+
+def load_ui_settings(*, indexer_root: Path, root: Path, index_root: Path) -> dict[str, Any]:
+    data = load_json(
+        ui_settings_path(
+            indexer_root=indexer_root,
+            root=root,
+            index_root=index_root,
+        )
+    )
+
+    if not isinstance(data, dict):
+        return {}
+
+    return data
+
+
+def save_ui_settings(
+    *,
+    indexer_root: Path,
+    root: Path,
+    index_root: Path,
+    http_url: str,
+    jobs: int,
+    emit_diagnostic_file_indexes: bool,
+    theme: str | None = None,
+) -> None:
+    path = ui_settings_path(
+        indexer_root=indexer_root,
+        root=root,
+        index_root=index_root,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_json(path)
+    if not isinstance(existing, dict):
+        existing = {}
+    saved_theme = theme or str(existing.get("theme") or "textual-dark")
+    path.write_text(
+        json.dumps(
+            {
+                "schema": UI_SETTINGS_SCHEMA,
+                "theme": saved_theme,
+                "httpUrl": http_url,
+                "jobs": jobs,
+                "emitDiagnosticFileIndexes": emit_diagnostic_file_indexes,
+                "lastProjectRoot": root.as_posix(),
+                "lastIndexRoot": index_root.as_posix(),
+                "settingsKey": ui_settings_key(root=root, index_root=index_root),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def clear_screen() -> None:
@@ -338,6 +418,12 @@ class ControlCenter:
         self.runner.start(args)
 
     def start_module_map(self) -> None:
+        if not (self.index_root / "manifest.json").exists():
+            self.runner.lines.append(
+                f"Cannot build module map: manifest not found at {self.index_root / 'manifest.json'}"
+            )
+            return
+
         args = self.command_base("build_module_map.py") + [
             "--index-root",
             str(self.index_root),
@@ -387,6 +473,17 @@ class ControlCenter:
             "Diagnostic file sections "
             + ("enabled." if self.emit_diagnostic_file_indexes else "disabled.")
         )
+        self.save_settings()
+
+    def save_settings(self) -> None:
+        save_ui_settings(
+            indexer_root=self.indexer_root,
+            root=self.root,
+            index_root=self.index_root,
+            http_url=self.http_url,
+            jobs=self.jobs,
+            emit_diagnostic_file_indexes=self.emit_diagnostic_file_indexes,
+        )
 
 
 def parse_http_url(url: str) -> tuple[str, int]:
@@ -407,14 +504,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path.cwd(),
-        help="C++ project root. Defaults to current working directory.",
+        default=DEFAULT_PROJECT_ROOT,
+        help="C++ project root. Defaults to MCP_CPP_PROJECT_ROOT or current directory.",
     )
     parser.add_argument(
         "--index-root",
         type=Path,
-        default=None,
-        help="Index root. Defaults to <root>/.mcp-cpp-project-indexer.",
+        default=DEFAULT_INDEX_ROOT,
+        help="Index root. Defaults to MCP_CPP_INDEX_ROOT or <root>/.mcp-cpp-project-indexer.",
     )
     parser.add_argument(
         "--indexer-root",
@@ -445,16 +542,32 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    index_root = (args.index_root or (root / DEFAULT_INDEX_DIR_NAME)).resolve()
+    index_root = args.index_root.resolve()
+    indexer_root = args.indexer_root.resolve()
+    settings = load_ui_settings(
+        indexer_root=indexer_root,
+        root=root,
+        index_root=index_root,
+    )
+    http_url = str(settings.get("httpUrl") or args.http_url)
+    jobs = int(settings.get("jobs") or args.jobs)
+    emit_diagnostic_file_indexes = bool(
+        settings.get("emitDiagnosticFileIndexes")
+        if "emitDiagnosticFileIndexes" in settings
+        else args.emit_diagnostic_file_indexes
+    )
     control = ControlCenter(
         root=root,
         index_root=index_root,
-        indexer_root=args.indexer_root.resolve(),
-        jobs=args.jobs,
-        http_url=args.http_url,
-        emit_diagnostic_file_indexes=args.emit_diagnostic_file_indexes,
+        indexer_root=indexer_root,
+        jobs=jobs,
+        http_url=http_url,
+        emit_diagnostic_file_indexes=emit_diagnostic_file_indexes,
     )
-    return control.run()
+    try:
+        return control.run()
+    finally:
+        control.save_settings()
 
 
 if __name__ == "__main__":

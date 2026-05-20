@@ -1,0 +1,5 @@
+.mcp-cpp-project-indexer/
+.ui-settings/
+.vs/
+__pycache__/
+*.pyc

@@ -442,9 +442,45 @@ It is metadata only. It does not analyze implementation behavior.
 
 ## Control Center
 
-`indexer_control.py` is a terminal control center for day-to-day operation. It
-shows project/index status, live HTTP server status when available, watcher and
-lock state, recent command output, and shortcuts for common actions.
+The core indexer has no third-party runtime dependencies. For day-to-day
+operation there are two optional terminal control surfaces:
+
+- `indexer_tui.py`: a polished mouse-capable Textual UI
+- `indexer_control.py`: a dependency-free command-line fallback
+
+Install the optional UI dependency:
+
+```powershell
+pip install -r <indexer-root>\requirements-ui.txt
+```
+
+Start the Textual UI:
+
+```powershell
+python <indexer-root>\indexer_tui.py `
+  --root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --jobs 20 `
+  --http-url http://127.0.0.1:8765
+```
+
+The Textual UI provides a real terminal interface with buttons, mouse support,
+status cards, live HTTP `/status` polling, activity logs, and process control
+for build/update/watch/server actions.
+
+![Textual UI control center](docs/assets/tui-control-center.svg)
+
+Mouse input depends on the terminal emulator. On Windows, use Windows Terminal
+or another modern terminal that forwards mouse events to terminal applications.
+Keyboard shortcuts work everywhere Textual can run.
+
+UI settings are saved under `<indexer-root>/.ui-settings/` on exit and when
+diagnostic file sections are toggled. Each settings file is keyed by project
+name plus a path hash, so UI preferences do not write into the project root or
+generated index directory. Stored preferences include the HTTP URL, jobs value,
+diagnostic-section toggle, active Textual theme, and project/index paths.
+
+Fallback control center:
 
 ```powershell
 python <indexer-root>\indexer_control.py `
@@ -469,9 +505,9 @@ R  refresh
 Q  quit
 ```
 
-When the HTTP server is running, the control center polls `/status` for live
-server, watcher, lock, and index stats. If the HTTP server is not reachable, it
-falls back to reading `manifest.json` and `module_map.json` from disk.
+When the HTTP server is running, both control centers poll `/status` for live
+server, watcher, lock, and index stats. If the HTTP server is not reachable,
+they fall back to reading `manifest.json` and `module_map.json` from disk.
 
 ---
 
@@ -981,6 +1017,22 @@ Run the MCP stdio server.
 ### `indexer_control.py`
 
 Terminal control center for build/update/watch/server workflows.
+
+```text
+--root PATH                    C++ project root. Default: current directory.
+--index-root PATH              Index root. Default: <root>/.mcp-cpp-project-indexer.
+--indexer-root PATH            Directory containing indexer scripts.
+--jobs N                       Worker process count for launched commands.
+--http-url URL                 HTTP server base URL for live status.
+                               Default: http://127.0.0.1:8765.
+--emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
+                               Initial diagnostic file section setting.
+```
+
+### `indexer_tui.py`
+
+Optional Textual terminal UI with mouse support and live status panels. Requires
+`pip install -r requirements-ui.txt`.
 
 ```text
 --root PATH                    C++ project root. Default: current directory.
