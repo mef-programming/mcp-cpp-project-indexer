@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import subprocess
 import sys
@@ -478,7 +479,8 @@ if TEXTUAL_AVAILABLE:
             except (TypeError, ValueError):
                 return "-"
 
-            return f"{percent:.1f}%"
+            cpu_count = os.cpu_count() or 1
+            return f"{percent / 100.0:.2f}c / {percent / cpu_count:.1f}%"
 
         def server_uptime_seconds(self) -> float | None:
             server = self.status.get("server", {})
