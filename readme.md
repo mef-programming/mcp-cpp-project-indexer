@@ -1204,6 +1204,17 @@ Do not ask for a precomputed call graph.
 Do not treat module metadata as implementation behavior.
 ```
 
+### Tool exposure note
+
+Large MCP tool sets work best when the client keeps the active tools relevant to
+the current task. If every tool is exposed for every request, some models may
+over-explore, repeat similar queries, or choose broader tools than necessary.
+This is normal behavior for general-purpose models and does not indicate a
+problem with the index data.
+
+In typical use, start with compact metadata queries and read source ranges only
+when implementation evidence is needed.
+
 Correct calls:
 
 ```text
