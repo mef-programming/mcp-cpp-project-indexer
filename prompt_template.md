@@ -457,6 +457,12 @@ Use:
 - `exactOnly:true` when the user gives a precise name and substring matches would be noisy
 - `hideNamespaces:true` to avoid namespace reopening noise in navigation queries
 
+Use `container` only for the actual lexical/index container where the symbol is
+declared. Do not use a class container for helper free functions merely because
+that class calls them. If a `find_symbol` query with `container` returns no
+result, retry the exact symbol name without `container` before falling back to
+`search_source`.
+
 Do not combine `file` and `filePattern`. These are metadata filters, not
 semantic overload resolution.
 
@@ -660,7 +666,7 @@ list_file_symbols({
 })
 ```
 
-The `container` filter is a locator filter only. It does not resolve inheritance, virtual dispatch, overloads, or type semantics.
+The `container` filter is a locator filter only. It does not resolve inheritance, virtual dispatch, overloads, or type semantics. Use it only when the symbol is actually declared inside that class/struct/namespace. If the relevant file is known and helper functions or anonymous-namespace functions may matter, prefer `list_file_symbols(file, compact:true, hideNamespaces:true)` before guessing a container.
 
 Prefer `list_file_symbols` over broad `find_symbol` when the relevant file is already known.
 

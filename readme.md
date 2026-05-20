@@ -1275,6 +1275,12 @@ Optional routing controls:
 - `exactOnly`: return only exact short-name or qualified-name matches, including case-insensitive exact matches
 - `hideNamespaces`: hide namespace reopening symbols from navigation results
 
+Use `container` only for the actual lexical/index container where the symbol is
+declared. Do not use a class container for helper free functions just because
+that class calls them. If a `find_symbol` query with `container` returns no
+result, retry the exact symbol name without `container` before falling back to
+`search_source`.
+
 Each returned item includes `matchKind` to describe why it matched. Strong
 matches such as `exact_qualified_name` and `exact_short_name` are usually best
 for routing. Substring, signature, and metadata matches are weaker candidates
@@ -1295,6 +1301,12 @@ tools keep their line-numbered source output unchanged.
 - `limit`: bound the result size
 
 This is a locator filter only. It does not resolve inheritance, overloads, or type semantics.
+
+When a file is already known and both class members and local helper functions
+may matter, prefer `list_file_symbols(file, compact:true, hideNamespaces:true)`
+before guessing a `container` filter. Anonymous-namespace helpers are still
+normal indexed functions; they may have the surrounding named namespace as their
+container, not the class that calls them.
 
 `search_source` accepts `symbolId` to search only inside one indexed symbol
 range. This is the preferred way to do a lexical check inside an already-located
