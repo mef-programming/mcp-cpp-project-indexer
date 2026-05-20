@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -48,6 +49,38 @@ def configure_stdio_encoding() -> None:
 
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def path_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def read_lock_owner(path: Path) -> dict[str, str] | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+
+    text = raw[1:].decode("utf-8", errors="replace")
+    result: dict[str, str] = {}
+
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+
+        if key:
+            result[key] = value
+
+    return result or None
 
 # ---------------------------------------------------------------------------
 # Small MCP/JSON-RPC stdio server
@@ -1326,6 +1359,18 @@ class ServerIndexWatcher:
         self.emit_debug_file_indexes = emit_debug_file_indexes
         self.indexer_root = Path(__file__).resolve().parent
         self.watcher_lock: IndexFileLock | None = None
+        self.status_lock = threading.Lock()
+        self.started_at: str | None = None
+        self.running = False
+        self.lock_held = False
+        self.last_scan_at: str | None = None
+        self.last_change_at: str | None = None
+        self.last_update_at: str | None = None
+        self.last_update_result: str | None = None
+        self.last_error: str | None = None
+        self.last_added = 0
+        self.last_modified = 0
+        self.last_deleted = 0
         self.thread = threading.Thread(
             target=self._run,
             name="mcp-cpp-project-indexer-watch",
@@ -1336,8 +1381,15 @@ class ServerIndexWatcher:
         try:
             self.watcher_lock = index_watcher_lock(self.tools.index_root)
             self.watcher_lock.acquire()
+            with self.status_lock:
+                self.lock_held = True
         except IndexLockError as exc:
             self.watcher_lock = None
+            with self.status_lock:
+                self.running = False
+                self.lock_held = False
+                self.last_update_result = "watcher_lock_unavailable"
+                self.last_error = str(exc)
             print(
                 (
                     "[mcp-cpp-project-indexer] index watcher not started: "
@@ -1359,7 +1411,34 @@ class ServerIndexWatcher:
             file=sys.stderr,
             flush=True,
         )
+        with self.status_lock:
+            self.started_at = now_iso()
+            self.running = True
+            self.last_update_result = "watching"
+            self.last_error = None
         self.thread.start()
+
+    def status(self) -> dict[str, Any]:
+        with self.status_lock:
+            return {
+                "configured": True,
+                "running": self.running and self.thread.is_alive(),
+                "lockHeld": self.lock_held,
+                "startedAt": self.started_at,
+                "pollIntervalSeconds": self.poll_interval,
+                "debounceSeconds": self.debounce,
+                "jobs": normalize_jobs(self.jobs),
+                "moduleMap": self.module_map,
+                "diagnosticFileIndexes": self.emit_debug_file_indexes,
+                "lastScanAt": self.last_scan_at,
+                "lastChangeAt": self.last_change_at,
+                "lastUpdateAt": self.last_update_at,
+                "lastUpdateResult": self.last_update_result,
+                "lastError": self.last_error,
+                "lastAdded": self.last_added,
+                "lastModified": self.last_modified,
+                "lastDeleted": self.last_deleted,
+            }
 
     def _snapshot(self) -> dict[str, SnapshotEntry]:
         return snapshot_source_files(
@@ -1472,6 +1551,8 @@ class ServerIndexWatcher:
             while True:
                 time.sleep(self.poll_interval)
                 current = self._snapshot()
+                with self.status_lock:
+                    self.last_scan_at = now_iso()
                 diff = diff_snapshots(snapshot, current, root=self.tools.project_root)
 
                 if not diff.changed:
@@ -1512,12 +1593,22 @@ class ServerIndexWatcher:
                     file=sys.stderr,
                     flush=True,
                 )
+                with self.status_lock:
+                    self.last_change_at = now_iso()
+                    self.last_added = len(pending_diff.added)
+                    self.last_modified = len(pending_diff.modified)
+                    self.last_deleted = len(pending_diff.deleted)
+                    self.last_update_result = "updating"
                 result, index_changed = self._run_update(
                     known_files_only=not pending_diff.requires_full_discovery_update,
                     changed_files=pending_diff.modified,
                 )
 
                 if result != 0:
+                    with self.status_lock:
+                        self.last_update_at = now_iso()
+                        self.last_update_result = "failed"
+                        self.last_error = f"update exit code {result}"
                     print(
                         f"[mcp-cpp-project-indexer] watcher update failed: {result}",
                         file=sys.stderr,
@@ -1526,6 +1617,12 @@ class ServerIndexWatcher:
                     continue
 
                 snapshot = pending_snapshot
+                with self.status_lock:
+                    self.last_update_at = now_iso()
+                    self.last_update_result = (
+                        "updated" if index_changed else "no_index_changes"
+                    )
+                    self.last_error = None
                 if index_changed:
                     self.tools.reload_index_cache_from_disk(
                         reason="Server index watcher updated the index on disk."
@@ -1536,6 +1633,10 @@ class ServerIndexWatcher:
                         flush=True,
                     )
         except Exception:  # noqa: BLE001 - watcher must not take down MCP server.
+            with self.status_lock:
+                self.running = False
+                self.last_update_result = "exception"
+                self.last_error = traceback.format_exc()
             print(
                 "[mcp-cpp-project-indexer] watcher stopped after exception:",
                 file=sys.stderr,
@@ -1546,6 +1647,9 @@ class ServerIndexWatcher:
             if self.watcher_lock is not None:
                 self.watcher_lock.release()
                 self.watcher_lock = None
+            with self.status_lock:
+                self.running = False
+                self.lock_held = False
 
 
 class CodeIndexTools:
@@ -1635,6 +1739,54 @@ class CodeIndexTools:
                 "counts": counts,
             }
         )
+
+    def status_snapshot(self) -> dict[str, Any]:
+        manifest_path = self.index_root / "manifest.json"
+        module_map_path = self.index_root / "module_map.json"
+        diagnostics_path = self.index_root / "diagnostics.json"
+        update_lock_path = self.index_root / ".update.lock"
+        watcher_lock_path = self.index_root / ".watcher.lock"
+
+        with self.index_lock:
+            manifest = self.index.manifest
+            counts = dict(manifest.get("counts", {}))
+            stats = dict(manifest.get("stats", {}))
+            watcher_status = (
+                self.watcher.status()
+                if self.watcher is not None
+                else {"configured": False, "running": False, "lockHeld": False}
+            )
+
+        return {
+            "project": {
+                "root": self.project_root.as_posix(),
+                "indexRoot": self.index_root.as_posix(),
+            },
+            "index": {
+                "schema": manifest.get("schema"),
+                "root": manifest.get("root"),
+                "counts": counts,
+                "stats": stats,
+                "manifestMtime": path_mtime(manifest_path),
+                "moduleMapMtime": path_mtime(module_map_path),
+                "diagnosticsMtime": path_mtime(diagnostics_path),
+            },
+            "watcher": watcher_status,
+            "locks": {
+                "updateLockFileExists": update_lock_path.exists(),
+                "updateLockOwner": read_lock_owner(update_lock_path),
+                "watcherLockFileExists": watcher_lock_path.exists(),
+                "watcherLockOwner": read_lock_owner(watcher_lock_path),
+            },
+            "changeTracking": {
+                "available": self.change_tracking_availability.available,
+                "reason": self.change_tracking_availability.reason,
+            },
+            "moduleMap": {
+                "loaded": self.module_map is not None,
+                "path": module_map_path.as_posix(),
+            },
+        }
 
     def reload_index_cache_from_disk(self, *, reason: str) -> dict[str, Any]:
         manifest_path = self.index_root / "manifest.json"
@@ -2816,6 +2968,8 @@ def json_response_options(arguments: dict[str, Any]) -> dict[str, Any]:
 class McpServer:
     def __init__(self, tools: CodeIndexTools) -> None:
         self.tools = tools
+        self.started_at = now_iso()
+        self.transport = "stdio"
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             # Project/cache tools
             "get_project_summary": self.tools.get_project_summary,
@@ -2867,6 +3021,18 @@ class McpServer:
                     "get_file_change_hunks": self.tools.get_file_change_hunks,
                 }
             )
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return {
+            "server": {
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "transport": self.transport,
+                "startedAt": self.started_at,
+                "pid": os.getpid(),
+            },
+            **self.tools.status_snapshot(),
+        }
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
@@ -2974,7 +3140,9 @@ class McpHttpHandler(BaseHTTPRequestHandler):
     server_version = "McpCppProjectIndexerHTTP/0.1"
 
     def do_GET(self) -> None:
-        if self.path.rstrip("/") in {"", "/health"}:
+        path = self.path.split("?", 1)[0].rstrip("/")
+
+        if path in {"", "/health"}:
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -2983,6 +3151,11 @@ class McpHttpHandler(BaseHTTPRequestHandler):
                     "version": SERVER_VERSION,
                 },
             )
+            return
+
+        if path == "/status":
+            mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+            self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -3077,6 +3250,7 @@ def run_http_server(
     host: str,
     port: int,
 ) -> None:
+    server.transport = "http"
     httpd = ThreadingHTTPServer((host, port), McpHttpHandler)
     httpd.mcp_server = server  # type: ignore[attr-defined]
     print(
