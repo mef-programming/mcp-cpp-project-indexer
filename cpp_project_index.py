@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, AbstractSet
 from fnmatch import fnmatchcase
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from cpp_file_index import build_file_index
 from cpp_index_utils import save_json
@@ -986,6 +986,33 @@ def compile_source_search_pattern(
         escaped = rf"(?<!{_IDENTIFIER_CHAR_PATTERN}){escaped}(?!{_IDENTIFIER_CHAR_PATTERN})"
 
     return re.compile(escaped, flags)
+
+
+def source_search_worker_count(file_count: int) -> int:
+    if file_count <= 1:
+        return 1
+
+    cpu_count = os.cpu_count() or 4
+    return max(1, min(32, cpu_count, file_count))
+
+
+def chunked_items(
+    items: list[tuple[int, dict[str, Any]]],
+    chunk_size: int,
+) -> list[list[tuple[int, dict[str, Any]]]]:
+    return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def strip_internal_search_order(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+
+    for match in matches:
+        item = dict(match)
+        item.pop("_fileOrder", None)
+        result.append(item)
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Project index build
@@ -2409,23 +2436,24 @@ class LoadedProjectIndex:
         )
         matches: list[dict[str, Any]] = []
         searched_files = 0
+        search_files = list(enumerate(self.iter_search_files(file=file, file_pattern=file_pattern)))
 
-        for file_item in self.iter_search_files(file=file, file_pattern=file_pattern):
+        def scan_file(file_order: int, file_item: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
             relative_path = str(file_item.get("relativePath") or "")
             path = project_root / relative_path
 
             try:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
-                continue
+                return 0, []
 
-            searched_files += 1
             search_start = max(1, start_line or 1)
             search_end = min(len(lines), end_line or len(lines))
 
             if search_end < search_start:
-                continue
+                return 1, []
 
+            file_matches: list[dict[str, Any]] = []
             for index in range(search_start - 1, search_end):
                 line = lines[index]
                 if pattern.search(line) is None:
@@ -2445,22 +2473,70 @@ class LoadedProjectIndex:
                         "contextStartLine": context_start,
                         "contextEndLine": context_end,
                         "context": context_source,
+                        "_fileOrder": file_order,
                     }
                 )
 
+                if len(file_matches) >= limit:
+                    break
+
+            return 1, file_matches
+
+        def scan_chunk(chunk: list[tuple[int, dict[str, Any]]]) -> tuple[int, list[dict[str, Any]]]:
+            chunk_searched_files = 0
+            chunk_matches: list[dict[str, Any]] = []
+
+            for file_order, file_item in chunk:
+                file_searched_files, file_matches = scan_file(file_order, file_item)
+                chunk_searched_files += file_searched_files
+                chunk_matches.extend(file_matches)
+
+                if len(chunk_matches) >= limit:
+                    break
+
+            return chunk_searched_files, chunk_matches
+
+        use_parallel = (
+            file is None
+            and start_line is None
+            and end_line is None
+            and len(search_files) > 64
+        )
+        truncated = False
+
+        if use_parallel:
+            workers = source_search_worker_count(len(search_files))
+            chunk_size = max(1, len(search_files) // (workers * 8))
+            chunks = chunked_items(search_files, chunk_size)
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(scan_chunk, chunk) for chunk in chunks]
+
+                for future in futures:
+                    chunk_searched_files, chunk_matches = future.result()
+                    searched_files += chunk_searched_files
+                    matches.extend(chunk_matches)
+
+                    if len(matches) >= limit:
+                        truncated = True
+                        for pending in futures:
+                            pending.cancel()
+                        break
+        else:
+            for file_item in search_files:
+                file_searched_files, file_matches = scan_file(*file_item)
+                searched_files += file_searched_files
+                matches.extend(file_matches)
+
                 if len(matches) >= limit:
-                    return {
-                        "query": query,
-                        "caseSensitive": case_sensitive,
-                        "wholeWord": whole_word,
-                        "useRegex": use_regex,
-                        "file": file,
-                        "filePattern": file_pattern,
-                        "searchedFiles": searched_files,
-                        "returnedMatches": len(matches),
-                        "truncated": True,
-                        "matches": matches,
-                    }
+                    truncated = True
+                    break
+
+        matches.sort(key=lambda item: (item.get("_fileOrder", 0), item["line"]))
+        returned_matches = strip_internal_search_order(matches[:limit])
+
+        if len(matches) > limit:
+            truncated = True
 
         return {
             "query": query,
@@ -2470,7 +2546,8 @@ class LoadedProjectIndex:
             "file": file,
             "filePattern": file_pattern,
             "searchedFiles": searched_files,
-            "returnedMatches": len(matches),
-            "truncated": False,
-            "matches": matches,
+            "returnedMatches": len(returned_matches),
+            "truncated": truncated,
+            "parallel": use_parallel,
+            "matches": returned_matches,
         }
