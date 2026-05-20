@@ -3212,7 +3212,9 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             body = self._read_request_body()
             self._request_body_bytes = len(body)
             payload = json.loads(body.decode("utf-8"))
+            self._mcp_request_detail = self._describe_mcp_payload(payload)
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._mcp_request_detail = "parse_error"
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -3267,10 +3269,12 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
         request_bytes = getattr(self, "_request_body_bytes", 0)
         response_bytes = getattr(self, "_response_body_bytes", 0)
+        mcp_detail = getattr(self, "_mcp_request_detail", "-")
         print(
             (
                 "[mcp-cpp-project-indexer-http] "
                 + format % args
+                + f" mcp={mcp_detail}"
                 + f" requestBytes={request_bytes} responseBytes={response_bytes}"
             ),
             file=sys.stderr,
@@ -3307,6 +3311,44 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return b"".join(chunks)
 
         raise ValueError("Missing Content-Length")
+
+    def _describe_mcp_payload(self, payload: Any) -> str:
+        if isinstance(payload, list):
+            items = [
+                self._describe_mcp_request(item)
+                for item in payload
+                if isinstance(item, dict)
+            ]
+            if not items:
+                return "batch(empty)"
+            preview = ",".join(items[:5])
+            suffix = f",+{len(items) - 5}" if len(items) > 5 else ""
+            return f"batch[{len(items)}]({preview}{suffix})"
+
+        if isinstance(payload, dict):
+            return self._describe_mcp_request(payload)
+
+        return type(payload).__name__
+
+    @staticmethod
+    def _describe_mcp_request(request: dict[str, Any]) -> str:
+        method = request.get("method")
+        if not isinstance(method, str):
+            return "invalid"
+
+        params = request.get("params")
+        if method == "tools/call" and isinstance(params, dict):
+            tool_name = params.get("name")
+            arguments = params.get("arguments")
+            argument_keys = []
+            if isinstance(arguments, dict):
+                argument_keys = sorted(str(key) for key in arguments.keys())
+            keys_text = ",".join(argument_keys[:6])
+            if len(argument_keys) > 6:
+                keys_text += ",..."
+            return f"tools/call:{tool_name or '?'}({keys_text})"
+
+        return method
 
     def _write_empty(self, status: HTTPStatus) -> None:
         self._response_body_bytes = 0
