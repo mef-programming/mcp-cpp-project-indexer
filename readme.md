@@ -110,10 +110,12 @@ feedback to argue about scope, constraints, and workflow friction.
    The codebase was implemented incrementally with an AI coding agent, with
    each functional change tested against real C++20 module-heavy projects.
 
-3. **Live workflow testing and review**
-   During production use inside a 7,000-file codebase, separate AI-assisted
-   review sessions, including DeepSeek feedback, evaluated output size, ranking
-   quality, navigation friction, and context hygiene.
+3. **Workflow structure analysis and review**
+   DeepSeek was used as a dedicated workflow-analysis partner during production
+   use inside a 7,000-file codebase. It evaluated tool-call sequences,
+   parameter choices, output size, ranking quality, navigation friction, and
+   context hygiene, then fed back concrete changes to reduce calls and improve
+   token efficiency.
 
 4. **Iterative refinement**
    Feedback from those sessions drove focused improvements: compact outputs,
