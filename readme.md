@@ -18,6 +18,7 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 ## Contents
 
 - [Production Scale & Performance](#-production-scale--performance)
+- [TUI Control Center](#tui-control-center)
 - [Development Backstory](#-development-backstory)
 - [Why This Tool?](#-why-this-tool)
 - [Before / After](#-before--after)
@@ -58,6 +59,38 @@ evidence from tools such as IDA Pro.
 
 In one measured workflow, exact source-range routing reduced source text read
 from roughly 2,000 lines to 283 lines, an **86% reduction**.
+
+---
+
+## TUI Control Center
+
+For daily use, the indexer includes an optional mouse-capable TUI. It turns the
+project index into a small local control center:
+
+- start the HTTP MCP server and watcher from one place
+- run full builds, incremental updates, fast updates, and module-map rebuilds
+- watch live server, watcher, lock, process, token, and index stats
+- inspect build/update logs without switching tools
+- toggle diagnostic file sections for deeper parser evidence when needed
+
+![TUI control center](docs/assets/tui-control-center.svg)
+
+Install the optional UI dependency and start the control center with explicit
+project/index paths:
+
+```powershell
+pip install -r <indexer-root>\requirements-ui.txt
+
+python <indexer-root>\indexer_tui.py `
+  --root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --jobs 20 `
+  --http-url http://127.0.0.1:8765
+```
+
+The UI is optional; the core indexer remains dependency-light and can still be
+driven entirely from scripts or MCP clients. For setup and keyboard shortcuts,
+see [Control Center](#control-center).
 
 ---
 
@@ -467,8 +500,6 @@ python <indexer-root>\indexer_tui.py `
 The Textual UI provides a real terminal interface with buttons, mouse support,
 status cards, live HTTP `/status` polling, activity logs, and process control
 for build/update/watch/server actions.
-
-![Textual UI control center](docs/assets/tui-control-center.svg)
 
 Mouse input depends on the terminal emulator. On Windows, use Windows Terminal
 or another modern terminal that forwards mouse events to terminal applications.
