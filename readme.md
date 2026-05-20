@@ -43,16 +43,24 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 
 ## 🚀 Production Scale & Performance
 
-This project is used on real C++ codebases, not only toy examples. A recent
-production run indexed:
+This project is used on real C++ codebases, not only toy examples. Two recent
+scale runs show the intended range:
 
-- 📂 **7,046** source files
-- 📝 **979,658** source lines
-- 🏎️ **4,682,882** indexer lexer tokens
-- 🏷️ **97,924** indexed symbols
-- 🗃️ **36,551** indexed data declarations
-- 📦 **3,754** C++20 modules / module partitions
-- ⏱️ full index build in **19.5 seconds**
+| Project | Files | Source lines | Lexer tokens | Symbols | Data declarations | C++20 modules | Full build |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Anonymized commercial C++20 project | 7,046 | 979,658 | 4,682,882 | 97,924 | 36,551 | 3,754 | 19.5s |
+| Chromium checkout | 137,622 | 30,792,607 | 137,365,399 | 2,327,255 | 771,659 | 0 | ~12m 36s |
+
+These numbers are machine-dependent. The Chromium run used `--jobs 60` on a
+high-core workstation with an Intel Xeon Silver 4316 system, 128 GB RAM, and
+enterprise NVMe SSD storage. It is a useful public stress test because it
+exercises a very large classic include-based C++ codebase, while the anonymized
+commercial project exercises dense C++20 module and partition metadata.
+
+The SQLite-backed lookup index keeps server startup practical even at Chromium
+scale: the MCP server can start immediately and stay around **200 MB RAM** after
+startup instead of loading millions of symbol/data/name entries into Python
+objects.
 
 It is designed for workflows that combine the Codex desktop app or other MCP
 clients with Visual Studio navigation and, when needed, binary/decompiler
