@@ -120,6 +120,24 @@ def blank_comments_preserve_lines(lines: list[str]) -> list[str]:
     in_block_comment = False
     raw_terminator: str | None = None
 
+    def preserve_trailing_continuation_backslashes(original: str, blanked: str) -> str:
+        stripped = original.rstrip()
+
+        if not stripped.endswith("\\"):
+            return blanked
+
+        chars = list(blanked)
+        index = len(stripped) - 1
+
+        while index >= 0 and original[index] == "\\":
+            if index >= len(chars):
+                chars.extend(" " for _ in range(index - len(chars) + 1))
+
+            chars[index] = "\\"
+            index -= 1
+
+        return "".join(chars)
+
     for line in lines:
         out: list[str] = []
         index = 0
@@ -226,7 +244,7 @@ def blank_comments_preserve_lines(lines: list[str]) -> list[str]:
             out.append(ch)
             index += 1
 
-        result.append("".join(out))
+        result.append(preserve_trailing_continuation_backslashes(line, "".join(out)))
 
     return result
 

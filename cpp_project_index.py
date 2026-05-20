@@ -427,6 +427,10 @@ class ProjectIndexBuildResult:
     diagnostics_count: int
     total_code_lines: int
     total_tokens: int
+    timings: list[dict[str, Any]]
+
+
+BuildPhaseCallback = Callable[[str, str, float | None], None]
 
 
 # ---------------------------------------------------------------------------
@@ -1169,12 +1173,27 @@ def build_project_index(
     progress_callback: Callable[[int, int, Path], None] | None = None,
     discovery_progress_callback: Callable[[int, Path], None] | None = None,
     discovery_complete_callback: Callable[[int], None] | None = None,
+    phase_callback: BuildPhaseCallback | None = None,
     jobs: int = 1,
 ) -> ProjectIndexBuildResult:
+    timings: list[dict[str, Any]] = []
+
+    def start_phase(name: str) -> float:
+        if phase_callback is not None:
+            phase_callback("start", name, None)
+        return time.perf_counter()
+
+    def finish_phase(name: str, started_at: float) -> None:
+        seconds = time.perf_counter() - started_at
+        timings.append({"phase": name, "seconds": round(seconds, 3)})
+        if phase_callback is not None:
+            phase_callback("complete", name, seconds)
+
     output_root.mkdir(parents=True, exist_ok=True)
     files_dir = output_root / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
 
+    phase_started = start_phase("discover files")
     source_files = discover_source_files(
         root,
         extensions=extensions,
@@ -1183,10 +1202,11 @@ def build_project_index(
         use_git_ignore=use_git_ignore,
         progress_callback=discovery_progress_callback,
     )
-
     if discovery_complete_callback is not None:
         discovery_complete_callback(len(source_files))
+    finish_phase("discover files", phase_started)
 
+    phase_started = start_phase("index source files")
     file_indexes, file_index_failed_diagnostics = build_file_indexes_for_project(
         source_files=source_files,
         root=root,
@@ -1197,7 +1217,9 @@ def build_project_index(
         jobs=jobs,
         progress_callback=progress_callback,
     )
+    finish_phase("index source files", phase_started)
 
+    phase_started = start_phase("aggregate file indexes")
     manifest_files: list[dict[str, Any]] = []
     symbols: list[dict[str, Any]] = []
     names: dict[str, list[str]] = defaultdict(list)
@@ -1208,7 +1230,6 @@ def build_project_index(
 
     for file_index in file_indexes:
         file_id = file_index["fileId"]
-        save_json(file_index_output_path(files_dir, file_id), file_index)
 
         manifest_files.append(
             {
@@ -1260,7 +1281,9 @@ def build_project_index(
             for alias in search_aliases_for_data(data_item):
                 if ref["dataId"] not in data_names[alias]:
                     data_names[alias].append(ref["dataId"])
+    finish_phase("aggregate file indexes", phase_started)
 
+    phase_started = start_phase("sort aggregate indexes")
     symbols.sort(
         key=lambda item: (
             item["qualifiedName"] or item["shortName"] or "",
@@ -1279,7 +1302,9 @@ def build_project_index(
             item["endLine"],
         )
     )
+    finish_phase("sort aggregate indexes", phase_started)
 
+    phase_started = start_phase("write manifest and maps")
     manifest = {
         "schema": PROJECT_INDEX_SCHEMA,
         "root": root.resolve().as_posix(),
@@ -1308,14 +1333,19 @@ def build_project_index(
         file_indexes=file_indexes,
         case_insensitive_paths=case_insensitive_paths,
     )
+    finish_phase("write manifest and maps", phase_started)
 
+    phase_started = start_phase("write symbols jsonl")
     with (output_root / "symbols.jsonl").open("w", encoding="utf-8") as handle:
         for symbol in symbols:
             handle.write(json.dumps(symbol, ensure_ascii=False) + "\n")
+    finish_phase("write symbols jsonl", phase_started)
 
+    phase_started = start_phase("write data jsonl")
     with (output_root / "data.jsonl").open("w", encoding="utf-8") as handle:
         for data_item in data_items:
             handle.write(json.dumps(data_item, ensure_ascii=False) + "\n")
+    finish_phase("write data jsonl", phase_started)
 
     return ProjectIndexBuildResult(
         root=root,
@@ -1329,6 +1359,7 @@ def build_project_index(
         diagnostics_count=len(diagnostics),
         total_code_lines=manifest["stats"]["totalCodeLines"],
         total_tokens=manifest["stats"]["totalTokens"],
+        timings=timings,
     )
 
 

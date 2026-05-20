@@ -134,6 +134,18 @@ class DiscoveryProgress:
         finish_progress_line()
 
 
+class BuildPhaseProgress:
+    def __call__(self, event: str, phase: str, seconds: float | None) -> None:
+        clear_progress_line()
+
+        if event == "start":
+            sys.stderr.write(f"> {phase}...\n")
+        elif event == "complete" and seconds is not None:
+            sys.stderr.write(f"< {phase} complete: {seconds:6.1f}s\n")
+
+        sys.stderr.flush()
+
+
 DEFAULT_INDEX_DIR_NAME = ".mcp-cpp-project-indexer"
 
 
@@ -316,11 +328,13 @@ def main() -> None:
     progress_callback = None
     discovery_progress_callback = None
     discovery_progress = None
+    phase_callback = None
 
     if args.progress and not args.print_summary_json:
         progress_callback = ProgressSpinner(root=args.root)
         discovery_progress = DiscoveryProgress(root=args.root)
         discovery_progress_callback = discovery_progress
+        phase_callback = BuildPhaseProgress()
 
     try:
         with index_update_lock(output_root):
@@ -337,6 +351,7 @@ def main() -> None:
                 progress_callback=progress_callback,
                 discovery_progress_callback=discovery_progress_callback,
                 discovery_complete_callback=discovery_progress.finish if discovery_progress is not None else None,
+                phase_callback=phase_callback,
                 jobs=args.jobs,
             )
     except IndexLockError as exc:
@@ -358,6 +373,7 @@ def main() -> None:
         "namesJson": (result.output_root / "names.json").as_posix(),
         "modulesJson": (result.output_root / "modules.json").as_posix(),
         "diagnosticsJson": (result.output_root / "diagnostics.json").as_posix(),
+        "timings": result.timings,
     }
 
     if args.print_summary_json:
@@ -385,6 +401,9 @@ def main() -> None:
     print("Data names JSON:", args.output_root / "data_names.json")
     print("Modules JSON:", summary["modulesJson"])
     print("Diagnostics JSON:", summary["diagnosticsJson"])
+    print("Timings:")
+    for timing in result.timings:
+        print(f"  {timing['phase']}: {timing['seconds']:.1f}s")
 
 
 if __name__ == "__main__":

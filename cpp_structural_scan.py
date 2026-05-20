@@ -37,6 +37,14 @@ class StructuralScanResult:
     token_count: int
 
 
+@dataclass(slots=True)
+class ConditionalParseFrame:
+    brace_stack: list[BraceRecord]
+    scope_stack: list[ScopeFrame]
+    statement_start: int
+    branch_states: list[tuple[list[BraceRecord], list[ScopeFrame], int]]
+
+
 # ---------------------------------------------------------------------------
 # Qualification / scope helpers
 # ---------------------------------------------------------------------------
@@ -257,6 +265,20 @@ def split_nested_namespace_from_tokens(tokens: list[Token]) -> list[str]:
         return ["<anonymous namespace>"]
 
     return names
+
+
+def preprocessor_directive(line: str) -> str | None:
+    stripped = line.lstrip()
+
+    if not stripped.startswith("#"):
+        return None
+
+    text = stripped[1:].lstrip()
+
+    if not text:
+        return ""
+
+    return text.split(None, 1)[0]
 
 
 def classify_namespace_open(segment: list[Token]) -> tuple[bool, list[str], bool, bool]:
@@ -833,11 +855,60 @@ def scan_structure(
 
     scope_stack: list[ScopeFrame] = []
     brace_stack: list[BraceRecord] = []
+    conditional_stack: list[ConditionalParseFrame] = []
 
     statement_start = 0
     order = 0
+    processed_directive_line = 1
+
+    def capture_branch_state() -> tuple[list[BraceRecord], list[ScopeFrame], int]:
+        return list(brace_stack), list(scope_stack), statement_start
+
+    def restore_branch_state(state: tuple[list[BraceRecord], list[ScopeFrame], int]) -> None:
+        nonlocal brace_stack
+        nonlocal scope_stack
+        nonlocal statement_start
+
+        brace_stack, scope_stack, statement_start = state
+
+    def branch_state_score(state: tuple[list[BraceRecord], list[ScopeFrame], int]) -> tuple[int, int]:
+        state_brace_stack, state_scope_stack, _ = state
+        return len(state_brace_stack), len(state_scope_stack)
+
+    def process_preprocessor_directives_until(line_no: int) -> None:
+        nonlocal brace_stack
+        nonlocal scope_stack
+        nonlocal statement_start
+        nonlocal processed_directive_line
+
+        while processed_directive_line < line_no:
+            directive = preprocessor_directive(lines[processed_directive_line - 1])
+
+            if directive in {"if", "ifdef", "ifndef"}:
+                conditional_stack.append(
+                    ConditionalParseFrame(
+                        brace_stack=list(brace_stack),
+                        scope_stack=list(scope_stack),
+                        statement_start=statement_start,
+                        branch_states=[],
+                    )
+                )
+            elif directive in {"else", "elif"} and conditional_stack:
+                frame = conditional_stack[-1]
+                frame.branch_states.append(capture_branch_state())
+                restore_branch_state(
+                    (list(frame.brace_stack), list(frame.scope_stack), frame.statement_start)
+                )
+            elif directive == "endif" and conditional_stack:
+                frame = conditional_stack.pop()
+                frame.branch_states.append(capture_branch_state())
+                restore_branch_state(max(frame.branch_states, key=branch_state_score))
+
+            processed_directive_line += 1
 
     for index, token in enumerate(tokens):
+        process_preprocessor_directives_until(token.line)
+
         if token.value == ":":
             segment = tokens[statement_start:index]
             if is_access_specifier_label(segment):
@@ -897,7 +968,7 @@ def scan_structure(
                     )
 
                 scope_stack = running_stack
-                brace_stack.append(BraceRecord(kind="scope", events=new_events))
+                brace_stack.append(BraceRecord(kind="scope", events=new_events, open_line=token.line))
                 statement_start = index + 1
                 continue
 
@@ -945,7 +1016,7 @@ def scan_structure(
                     )
                 )
 
-                brace_stack.append(BraceRecord(kind="scope", events=new_events))
+                brace_stack.append(BraceRecord(kind="scope", events=new_events, open_line=token.line))
                 statement_start = index + 1
                 continue
 
@@ -979,7 +1050,7 @@ def scan_structure(
                 )
                 order += 1
                 events.append(event)
-                brace_stack.append(BraceRecord(kind="enum", events=[event]))
+                brace_stack.append(BraceRecord(kind="enum", events=[event], open_line=token.line))
                 statement_start = index + 1
                 continue
 
@@ -1027,11 +1098,11 @@ def scan_structure(
                 )
                 order += 1
                 events.append(event)
-                brace_stack.append(BraceRecord(kind="function", events=[event]))
+                brace_stack.append(BraceRecord(kind="function", events=[event], open_line=token.line))
                 statement_start = index + 1
                 continue
 
-            brace_stack.append(BraceRecord(kind="block", events=[]))
+            brace_stack.append(BraceRecord(kind="block", events=[], open_line=token.line))
             statement_start = index + 1
             continue
 
@@ -1187,6 +1258,8 @@ def scan_structure(
                         severity="warning",
                         code="unmatched_brace",
                         message=f"Unmatched opening brace record: recordKind={record.kind}",
+                        start_line=record.open_line,
+                        end_line=record.open_line,
                     )
                 )
 

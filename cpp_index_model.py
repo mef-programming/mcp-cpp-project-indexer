@@ -284,6 +284,7 @@ class ScopeFrame:
 class BraceRecord:
     kind: str
     events: list[StructuralEvent]
+    open_line: int | None = None
 
 
 @dataclass(slots=True)
