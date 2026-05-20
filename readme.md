@@ -936,7 +936,11 @@ Build the full project index.
 ```text
 --root PATH                    Project/source root. Default: current directory.
 --output-root PATH             Index output root. Default: <root>/.mcp-cpp-project-indexer.
---extensions EXT [EXT ...]     Source extensions, e.g. .cpp .h .ixx or cpp,h,ixx.
+--extensions EXT [EXT ...]     Source extensions, e.g. .cpp .cc .mm .h .ixx or cpp,h,ixx.
+--include-extensionless-headers / --no-include-extensionless-headers
+                               Also discover extensionless files that look like
+                               C/C++ headers. Uses a conservative first-lines
+                               heuristic. Default: false.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative paths before hashing. Default: true.
@@ -960,6 +964,10 @@ Incrementally update an existing project index.
 --root PATH                    Project/source root. Default: current directory.
 --index-root PATH              Index root. Default: <root>/.mcp-cpp-project-indexer.
 --extensions EXT [EXT ...]     Source extensions for discovery.
+--include-extensionless-headers / --no-include-extensionless-headers
+                               Also discover extensionless files that look like
+                               C/C++ headers. Uses a conservative first-lines
+                               heuristic. Default: false.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative path keys. Default: true.
@@ -989,6 +997,10 @@ Poll source files and run incremental updates after changes settle.
 --index-root PATH              Index root. Default: <root>/.mcp-cpp-project-indexer.
 --indexer-root PATH            Directory containing the indexer scripts.
 --extensions EXT [EXT ...]     Source extensions for snapshot scanning.
+--include-extensionless-headers / --no-include-extensionless-headers
+                               Also discover extensionless files that look like
+                               C/C++ headers. Uses a conservative first-lines
+                               heuristic. Default: false.
 --exclude-dir NAME             Extra excluded directory name. Repeatable or comma-separated.
 --case-insensitive-paths / --no-case-insensitive-paths
                                Case-fold relative path keys. Default: true.
@@ -1042,6 +1054,9 @@ Run the MCP stdio server.
                                Pass diagnostic emission to server watcher updates.
                                Compatibility alias: --watch-emit-debug-file-indexes.
                                Default: false.
+--watch-include-extensionless-headers / --no-watch-include-extensionless-headers
+                               Let the server watcher discover extensionless files
+                               that look like C/C++ headers. Default: false.
 --transport stdio|http         Transport mode. Default: stdio.
 --http-host HOST               HTTP bind host for --transport http. Default: 127.0.0.1.
 --http-port PORT               HTTP bind port for --transport http. Default: 8765.

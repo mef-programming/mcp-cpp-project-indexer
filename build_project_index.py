@@ -205,6 +205,15 @@ def main() -> None:
             "or comma-separated cpp,h,ixx. Defaults to the built-in C/C++ set."
         ),
     )
+    parser.add_argument(
+        "--include-extensionless-headers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Also discover extensionless files that look like C/C++ headers "
+            "based on a conservative first-lines heuristic."
+        ),
+    )
 
     parser.add_argument(
         "--exclude-dir",
@@ -314,6 +323,7 @@ def main() -> None:
                 output_root=output_root,
                 extensions=extensions,
                 excluded_dir_names=excluded_dirs,
+                include_extensionless_headers=args.include_extensionless_headers,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 case_insensitive_paths=args.case_insensitive_paths,
                 blank_comments=args.blank_comments,

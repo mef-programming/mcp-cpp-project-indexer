@@ -337,6 +337,7 @@ def make_update_plan(
     index_root: Path,
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
+    include_extensionless_headers: bool,
     case_insensitive_paths: bool,
     force: bool,
     known_files_only: bool,
@@ -379,6 +380,7 @@ def make_update_plan(
             root,
             extensions=extensions,
             excluded_dir_names=excluded_dir_names,
+            include_extensionless_headers=include_extensionless_headers,
             progress_callback=progress.discovered if progress is not None else None,
         )
 
@@ -1041,6 +1043,7 @@ def run_update(
     index_root: Path,
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
+    include_extensionless_headers: bool,
     emit_debug_file_indexes: bool,
     case_insensitive_paths: bool,
     blank_comments: bool,
@@ -1068,6 +1071,7 @@ def run_update(
         index_root=index_root,
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
+        include_extensionless_headers=include_extensionless_headers,
         case_insensitive_paths=case_insensitive_paths,
         force=force,
         known_files_only=known_files_only,
@@ -1488,6 +1492,15 @@ def main() -> int:
         help="Optional source extensions to scan.",
     )
     parser.add_argument(
+        "--include-extensionless-headers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Also discover extensionless files that look like C/C++ headers "
+            "based on a conservative first-lines heuristic."
+        ),
+    )
+    parser.add_argument(
         "--exclude-dir",
         action="append",
         default=None,
@@ -1586,6 +1599,7 @@ def main() -> int:
                 index_root=index_root,
                 extensions=parse_extensions(args.extensions),
                 excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
+                include_extensionless_headers=args.include_extensionless_headers,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 case_insensitive_paths=args.case_insensitive_paths,
                 blank_comments=args.blank_comments,
@@ -1603,6 +1617,7 @@ def main() -> int:
                     index_root=index_root,
                     extensions=parse_extensions(args.extensions),
                     excluded_dir_names=parse_excluded_dirs(args.exclude_dir),
+                    include_extensionless_headers=args.include_extensionless_headers,
                     emit_debug_file_indexes=args.emit_debug_file_indexes,
                     case_insensitive_paths=args.case_insensitive_paths,
                     blank_comments=args.blank_comments,

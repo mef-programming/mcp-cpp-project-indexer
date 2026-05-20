@@ -114,6 +114,7 @@ def snapshot_source_files(
     root: Path,
     extensions: set[str] | None,
     excluded_dir_names: set[str] | None,
+    include_extensionless_headers: bool,
     case_insensitive_paths: bool,
 ) -> dict[str, SnapshotEntry]:
     result: dict[str, SnapshotEntry] = {}
@@ -121,6 +122,7 @@ def snapshot_source_files(
         root,
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
+        include_extensionless_headers=include_extensionless_headers,
     )
 
     for path in source_files:
@@ -205,6 +207,7 @@ def run_update(
     build_module_map: bool,
     indexer_root: Path,
     emit_debug_file_indexes: bool,
+    include_extensionless_headers: bool,
 ) -> int:
     update_args = [
         str(sys.executable),
@@ -232,6 +235,9 @@ def run_update(
 
     if emit_debug_file_indexes:
         update_args.append("--emit-diagnostic-file-indexes")
+
+    if include_extensionless_headers:
+        update_args.append("--include-extensionless-headers")
 
     print()
     print("Command:")
@@ -295,6 +301,15 @@ def main() -> int:
         nargs="*",
         default=None,
         help="Optional source extensions to scan.",
+    )
+    parser.add_argument(
+        "--include-extensionless-headers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Also discover extensionless files that look like C/C++ headers "
+            "based on a conservative first-lines heuristic."
+        ),
     )
     parser.add_argument(
         "--exclude-dir",
@@ -379,6 +394,7 @@ def main() -> int:
             root=root,
             extensions=extensions,
             excluded_dir_names=excluded_dir_names,
+            include_extensionless_headers=args.include_extensionless_headers,
             case_insensitive_paths=args.case_insensitive_paths,
         )
         print("Initial source files:", len(snapshot))
@@ -394,6 +410,7 @@ def main() -> int:
                 root=root,
                 extensions=extensions,
                 excluded_dir_names=excluded_dir_names,
+                include_extensionless_headers=args.include_extensionless_headers,
                 case_insensitive_paths=args.case_insensitive_paths,
             )
             diff = diff_snapshots(snapshot, current, root=root)
@@ -411,6 +428,7 @@ def main() -> int:
                     root=root,
                     extensions=extensions,
                     excluded_dir_names=excluded_dir_names,
+                    include_extensionless_headers=args.include_extensionless_headers,
                     case_insensitive_paths=args.case_insensitive_paths,
                 )
                 next_diff = diff_snapshots(pending_snapshot, current, root=root)
@@ -436,6 +454,7 @@ def main() -> int:
                 build_module_map=args.module_map,
                 indexer_root=indexer_root,
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
+                include_extensionless_headers=args.include_extensionless_headers,
             )
 
             if result == 0:

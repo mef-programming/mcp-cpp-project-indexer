@@ -1359,6 +1359,7 @@ class ServerIndexWatcher:
         jobs: int,
         module_map: bool,
         emit_debug_file_indexes: bool,
+        include_extensionless_headers: bool,
     ) -> None:
         self.tools = tools
         self.poll_interval = max(0.1, poll_interval)
@@ -1366,6 +1367,7 @@ class ServerIndexWatcher:
         self.jobs = jobs
         self.module_map = module_map
         self.emit_debug_file_indexes = emit_debug_file_indexes
+        self.include_extensionless_headers = include_extensionless_headers
         self.indexer_root = Path(__file__).resolve().parent
         self.watcher_lock: IndexFileLock | None = None
         self.status_lock = threading.Lock()
@@ -1452,6 +1454,7 @@ class ServerIndexWatcher:
                 "jobs": normalize_jobs(self.jobs),
                 "moduleMap": self.module_map,
                 "diagnosticFileIndexes": self.emit_debug_file_indexes,
+                "includeExtensionlessHeaders": self.include_extensionless_headers,
                 "lastScanAt": self.last_scan_at,
                 "lastChangeAt": self.last_change_at,
                 "lastUpdateAt": self.last_update_at,
@@ -1467,6 +1470,7 @@ class ServerIndexWatcher:
             root=self.tools.project_root,
             extensions=None,
             excluded_dir_names=None,
+            include_extensionless_headers=self.include_extensionless_headers,
             case_insensitive_paths=True,
         )
 
@@ -1513,6 +1517,9 @@ class ServerIndexWatcher:
 
         if self.emit_debug_file_indexes:
             update_args.append("--emit-diagnostic-file-indexes")
+
+        if self.include_extensionless_headers:
+            update_args.append("--include-extensionless-headers")
 
         print(
             "[mcp-cpp-project-indexer] watcher update: "
@@ -1717,6 +1724,7 @@ class CodeIndexTools:
         jobs: int,
         module_map: bool,
         emit_debug_file_indexes: bool,
+        include_extensionless_headers: bool,
     ) -> None:
         if self.watcher is not None:
             return
@@ -1728,6 +1736,7 @@ class CodeIndexTools:
             jobs=jobs,
             module_map=module_map,
             emit_debug_file_indexes=emit_debug_file_indexes,
+            include_extensionless_headers=include_extensionless_headers,
         )
         self.watcher.start()
 
@@ -3553,6 +3562,15 @@ def main() -> None:
         help="Pass diagnostic emission to watcher-triggered index updates.",
     )
     parser.add_argument(
+        "--watch-include-extensionless-headers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Let the built-in watcher discover extensionless files that look "
+            "like C/C++ headers."
+        ),
+    )
+    parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
         default="stdio",
@@ -3592,6 +3610,7 @@ def main() -> None:
             jobs=args.watch_jobs,
             module_map=args.watch_module_map,
             emit_debug_file_indexes=args.watch_emit_debug_file_indexes,
+            include_extensionless_headers=args.watch_include_extensionless_headers,
         )
 
     server = McpServer(tools)

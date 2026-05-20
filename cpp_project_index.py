@@ -33,6 +33,7 @@ DEFAULT_SOURCE_EXTENSIONS = {
     ".hxx",
     ".ixx",
     ".cppm",
+    ".mm",
 }
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -434,6 +435,7 @@ def discover_source_files(
     *,
     extensions: set[str] | None = None,
     excluded_dir_names: set[str] | None = None,
+    include_extensionless_headers: bool = False,
     progress_callback: Callable[[int, Path], None] | None = None,
 ) -> list[Path]:
     extensions = {
@@ -473,9 +475,14 @@ def discover_source_files(
             suffix = os.path.splitext(entry.name)[1].casefold()
 
             if suffix not in extensions:
-                continue
+                if suffix or not include_extensionless_headers:
+                    continue
 
-            path = Path(entry.path)
+                path = Path(entry.path)
+                if not looks_like_extensionless_cpp_header(path):
+                    continue
+            else:
+                path = Path(entry.path)
 
             if progress_callback is not None:
                 progress_callback(visited, path)
@@ -499,6 +506,70 @@ def discover_source_files(
 
     files.sort(key=lambda item: item.as_posix().casefold())
     return files
+
+
+def looks_like_extensionless_cpp_header(path: Path) -> bool:
+    try:
+        data = path.read_bytes()[:32768]
+    except OSError:
+        return False
+
+    if b"\0" in data:
+        return False
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = data.decode("latin-1")
+        except UnicodeDecodeError:
+            return False
+
+    lines = text.splitlines()[:80]
+    if not lines:
+        return False
+
+    joined = "\n".join(lines)
+    stripped_lines = [
+        line.strip()
+        for line in lines
+        if line.strip() and not line.strip().startswith(("//", "/*", "*"))
+    ]
+    if not stripped_lines:
+        return False
+
+    positive_patterns = [
+        r"^\s*#\s*pragma\s+once\b",
+        r"^\s*#\s*ifndef\s+\w+",
+        r"^\s*#\s*define\s+\w+",
+        r"^\s*#\s*include\s+[<\"]",
+        r"^\s*(export\s+)?module\s+[\w.:]+",
+        r"^\s*(export\s+)?import\s+[\w.:<\"]",
+        r"^\s*namespace\s+[\w:]+",
+        r"^\s*(template\s*<|class\s+\w+|struct\s+\w+|enum\s+(class\s+)?\w+)",
+        r"^\s*(using|typedef)\s+.+[;=]",
+    ]
+    negative_patterns = [
+        r"^\s*#!",
+        r"^\s*<\?xml\b",
+        r"^\s*[{[]",
+        r"^\s*(FROM|SELECT|INSERT|UPDATE|DELETE)\b",
+    ]
+
+    for pattern in negative_patterns:
+        if re.search(pattern, joined, re.IGNORECASE | re.MULTILINE):
+            return False
+
+    score = 0
+    for pattern in positive_patterns:
+        if re.search(pattern, joined, re.MULTILINE):
+            score += 1
+
+    first_code_line = stripped_lines[0]
+    if first_code_line.startswith("#") and score >= 1:
+        return True
+
+    return score >= 2
 
 
 def update_state_path(index_root: Path) -> Path:
@@ -953,6 +1024,7 @@ def build_project_index(
     output_root: Path,
     extensions: set[str] | None = None,
     excluded_dir_names: set[str] | None = None,
+    include_extensionless_headers: bool = False,
     emit_debug_file_indexes: bool = False,
     case_insensitive_paths: bool = True,
     blank_comments: bool = True,
@@ -969,6 +1041,7 @@ def build_project_index(
         root,
         extensions=extensions,
         excluded_dir_names=excluded_dir_names,
+        include_extensionless_headers=include_extensionless_headers,
         progress_callback=discovery_progress_callback,
     )
 
