@@ -10,7 +10,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any,Callable
+from typing import Any, Callable, AbstractSet
 from fnmatch import fnmatchcase
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -55,6 +55,78 @@ DEFAULT_EXCLUDED_DIR_NAMES = {
     "node_modules",
     "__pycache__",
 }
+INDEXER_CONFIG_FILE_NAME = "indexer_config.json"
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryConfig:
+    extensions: frozenset[str]
+    excluded_dir_names: frozenset[str]
+    include_extensionless_headers: bool
+
+
+def normalize_extension_item(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    item = value.strip()
+    if not item:
+        return None
+
+    if not item.startswith("."):
+        item = "." + item
+
+    return item.casefold()
+
+
+def normalize_extension_values(value: Any) -> set[str] | None:
+    if value is None:
+        return None
+
+    raw_items: list[Any]
+    if isinstance(value, str):
+        raw_items = [
+            part
+            for part in value.split(",")
+        ]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return None
+
+    result: set[str] = set()
+    for item in raw_items:
+        normalized = normalize_extension_item(item)
+        if normalized is not None:
+            result.add(normalized)
+
+    return result
+
+
+def normalize_name_values(value: Any) -> set[str] | None:
+    if value is None:
+        return None
+
+    raw_items: list[Any]
+    if isinstance(value, str):
+        raw_items = [
+            part
+            for part in value.split(",")
+        ]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return None
+
+    result: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip().casefold()
+        if normalized:
+            result.add(normalized)
+
+    return result
 
 PROJECT_INDEX_SCHEMA = "cpp.project_index.v1"
 UPDATE_STATE_SCHEMA = "cpp.project_index.update_state.v1"
@@ -360,12 +432,12 @@ class ProjectIndexBuildResult:
 # File discovery
 # ---------------------------------------------------------------------------
 
-def should_skip_dir(path: Path, excluded_dir_names: set[str]) -> bool:
+def should_skip_dir(path: Path, excluded_dir_names: AbstractSet[str]) -> bool:
     return any(part in excluded_dir_names for part in path.parts)
 
 
-def _is_excluded_dir_name(name: str, excluded_dir_names: set[str]) -> bool:
-    return name.casefold() in excluded_dir_names
+def _is_excluded_dir_name(name: str, excluded_dir_names: AbstractSet[str]) -> bool:
+    return name.startswith(".") or name.casefold() in excluded_dir_names
 
 
 def git_ignored_source_files(root: Path, files: list[Path]) -> set[Path]:
@@ -430,6 +502,56 @@ def git_ignored_source_files(root: Path, files: list[Path]) -> set[Path]:
     }
 
 
+def load_discovery_config(directory: Path, parent: DiscoveryConfig) -> DiscoveryConfig:
+    config_path = directory / INDEXER_CONFIG_FILE_NAME
+
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return parent
+
+    if not isinstance(raw, dict):
+        return parent
+
+    extensions = set(parent.extensions)
+    excluded_dir_names = set(parent.excluded_dir_names)
+    include_extensionless_headers = parent.include_extensionless_headers
+
+    replacement_extensions = normalize_extension_values(raw.get("extensions"))
+    if replacement_extensions is not None:
+        extensions = replacement_extensions
+
+    add_extensions = normalize_extension_values(raw.get("addExtensions"))
+    if add_extensions is not None:
+        extensions.update(add_extensions)
+
+    remove_extensions = normalize_extension_values(raw.get("removeExtensions"))
+    if remove_extensions is not None:
+        extensions.difference_update(remove_extensions)
+
+    replacement_excluded_dirs = normalize_name_values(raw.get("excludeDirs"))
+    if replacement_excluded_dirs is not None:
+        excluded_dir_names = replacement_excluded_dirs
+
+    add_excluded_dirs = normalize_name_values(raw.get("addExcludeDirs"))
+    if add_excluded_dirs is not None:
+        excluded_dir_names.update(add_excluded_dirs)
+
+    remove_excluded_dirs = normalize_name_values(raw.get("removeExcludeDirs"))
+    if remove_excluded_dirs is not None:
+        excluded_dir_names.difference_update(remove_excluded_dirs)
+
+    include_extensionless_value = raw.get("includeExtensionlessHeaders")
+    if isinstance(include_extensionless_value, bool):
+        include_extensionless_headers = include_extensionless_value
+
+    return DiscoveryConfig(
+        extensions=frozenset(extensions),
+        excluded_dir_names=frozenset(excluded_dir_names),
+        include_extensionless_headers=include_extensionless_headers,
+    )
+
+
 def discover_source_files(
     root: Path,
     *,
@@ -438,20 +560,24 @@ def discover_source_files(
     include_extensionless_headers: bool = False,
     progress_callback: Callable[[int, Path], None] | None = None,
 ) -> list[Path]:
-    extensions = {
-        item.casefold()
-        for item in (extensions or DEFAULT_SOURCE_EXTENSIONS)
-    }
-    excluded_dir_names = {
-        item.casefold()
-        for item in (excluded_dir_names or DEFAULT_EXCLUDED_DIR_NAMES)
-    }
+    base_config = DiscoveryConfig(
+        extensions=frozenset(
+            item.casefold()
+            for item in (extensions or DEFAULT_SOURCE_EXTENSIONS)
+        ),
+        excluded_dir_names=frozenset(
+            item.casefold()
+            for item in (excluded_dir_names or DEFAULT_EXCLUDED_DIR_NAMES)
+        ),
+        include_extensionless_headers=include_extensionless_headers,
+    )
 
     files: list[Path] = []
     visited = 0
 
-    def walk(directory: Path) -> None:
+    def walk(directory: Path, inherited_config: DiscoveryConfig) -> None:
         nonlocal visited
+        config = load_discovery_config(directory, inherited_config)
 
         try:
             entries = list(os.scandir(directory))
@@ -461,8 +587,8 @@ def discover_source_files(
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    if not _is_excluded_dir_name(entry.name, excluded_dir_names):
-                        walk(Path(entry.path))
+                    if not _is_excluded_dir_name(entry.name, config.excluded_dir_names):
+                        walk(Path(entry.path), config)
 
                     continue
 
@@ -474,8 +600,8 @@ def discover_source_files(
             visited += 1
             suffix = os.path.splitext(entry.name)[1].casefold()
 
-            if suffix not in extensions:
-                if suffix or not include_extensionless_headers:
+            if suffix not in config.extensions:
+                if suffix or not config.include_extensionless_headers:
                     continue
 
                 path = Path(entry.path)
@@ -489,7 +615,7 @@ def discover_source_files(
 
             files.append(path)
 
-    walk(root)
+    walk(root, base_config)
 
     ignored_files = git_ignored_source_files(root, files)
 

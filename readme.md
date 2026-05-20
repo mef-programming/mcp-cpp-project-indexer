@@ -26,6 +26,7 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 - [Core Workflow](#core-workflow)
 - [What It Does](#what-it-does)
 - [Build And Update](#build-a-project-index)
+- [Project Discovery Config](#project-discovery-config)
 - [Control Center](#control-center)
 - [Start The MCP Server](#start-the-mcp-server)
 - [Client Configuration](#lm-studio-mcp-configuration)
@@ -370,6 +371,44 @@ discovery respects Git ignore rules by filtering candidates through
 `git check-ignore --stdin`. This excludes paths matched by `.gitignore`,
 `.git/info/exclude`, or the user's global Git ignore file. Non-Git projects, or
 systems without Git, fall back to the built-in excluded directory list.
+Dot-directories such as `.git`, `.vs`, `.cache`, `.idea`, or `.folder` are
+excluded by default.
+
+### Project discovery config
+
+For large projects with mixed source layouts, place `indexer_config.json` in
+the project root or in any subdirectory. Config files are applied while walking
+the tree: the root config becomes the base, and subdirectory configs can
+override or extend it for that subtree.
+
+Example:
+
+```json
+{
+  "addExtensions": [".mm"],
+  "addExcludeDirs": ["generated", "third_party"],
+  "includeExtensionlessHeaders": true
+}
+```
+
+Supported fields:
+
+```json
+{
+  "extensions": [".cpp", ".cc", ".h"],
+  "addExtensions": [".mm"],
+  "removeExtensions": [".c"],
+  "excludeDirs": ["out", "build"],
+  "addExcludeDirs": ["generated"],
+  "removeExcludeDirs": ["third_party"],
+  "includeExtensionlessHeaders": true
+}
+```
+
+`extensions` and `excludeDirs` replace the inherited values for that subtree.
+`add*` and `remove*` fields modify the inherited values. Extensionless header
+discovery is conservative and opt-in; it only accepts extensionless files whose
+first lines look like C/C++ headers.
 
 ## Incremental update
 
