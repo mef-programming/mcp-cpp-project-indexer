@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -120,6 +121,43 @@ def load_json(path: Path) -> Any | None:
         return None
 
 
+def subprocess_creation_flags() -> int:
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        return subprocess.CREATE_NEW_PROCESS_GROUP
+
+    return 0
+
+
+def kill_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+
+    process.kill()
+
+
+def request_process_exit(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+            return
+        except OSError:
+            pass
+
+    process.terminate()
+
+
 def read_http_status(base_url: str, timeout: float = 0.5) -> dict[str, Any] | None:
     try:
         with urllib.request.urlopen(f"{base_url.rstrip('/')}/status", timeout=timeout) as response:
@@ -201,6 +239,7 @@ class CommandRunner:
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=subprocess_creation_flags(),
         )
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
@@ -220,13 +259,29 @@ class CommandRunner:
             self.lines.append(f"Process exited with code {self.last_exit_code}.")
             self.process = None
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = False) -> None:
         if not self.running or self.process is None:
             self.lines.append("No running command to stop.")
             return
 
-        self.process.terminate()
-        self.lines.append("Terminate requested for running command.")
+        process = self.process
+        if not wait:
+            process.terminate()
+            self.lines.append("Terminate requested for running command.")
+            return
+
+        request_process_exit(process)
+        self.lines.append("Graceful process shutdown requested.")
+
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(process)
+            self.lines.append("Running command did not exit; kill requested.")
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _read_output(self) -> None:
         assert self.process is not None
@@ -485,6 +540,10 @@ class ControlCenter:
             emit_diagnostic_file_indexes=self.emit_diagnostic_file_indexes,
         )
 
+    def shutdown(self) -> None:
+        self.runner.stop(wait=True)
+        self.save_settings()
+
 
 def parse_http_url(url: str) -> tuple[str, int]:
     text = url.replace("http://", "").replace("https://", "")
@@ -567,7 +626,7 @@ def main() -> int:
     try:
         return control.run()
     finally:
-        control.save_settings()
+        control.shutdown()
 
 
 if __name__ == "__main__":

@@ -7,8 +7,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import sys
 import traceback
+import urllib.parse
+import uuid
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -20,7 +23,12 @@ from cpp_change_tracking import (
     change_tracking_tool_definitions,
     detect_change_tracking,
 )
-from cpp_index_lock import IndexFileLock, IndexLockError, index_watcher_lock
+from cpp_index_lock import (
+    IndexFileLock,
+    IndexLockError,
+    index_http_server_lock,
+    index_watcher_lock,
+)
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
 from watch_project_index import (
     SnapshotEntry,
@@ -3138,9 +3146,10 @@ class McpServer:
 
 class McpHttpHandler(BaseHTTPRequestHandler):
     server_version = "McpCppProjectIndexerHTTP/0.1"
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0].rstrip("/")
+        path = self._request_path()
 
         if path in {"", "/health"}:
             self._write_json(
@@ -3158,21 +3167,24 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
 
+        if path in {"/mcp", "/sse"}:
+            self._write_sse_endpoint()
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self._write_common_headers(content_length=0)
+        self.end_headers()
+
     def do_POST(self) -> None:
-        if self.path.rstrip("/") not in {"", "/mcp", "/rpc"}:
+        if self._request_path() not in {"", "/mcp", "/rpc", "/messages"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
 
-        content_length = self.headers.get("Content-Length")
-
-        if content_length is None:
-            self.send_error(HTTPStatus.LENGTH_REQUIRED, "Missing Content-Length")
-            return
-
         try:
-            body = self.rfile.read(int(content_length))
+            body = self._read_request_body()
             payload = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._write_json(
@@ -3224,24 +3236,149 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self._write_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
+        if self._request_path() == "/status":
+            return
+
         print(
             "[mcp-cpp-project-indexer-http] " + format % args,
             file=sys.stderr,
             flush=True,
         )
 
+    def _request_path(self) -> str:
+        return urllib.parse.urlparse(self.path).path.rstrip("/")
+
+    def _read_request_body(self) -> bytes:
+        content_length = self.headers.get("Content-Length")
+
+        if content_length is not None:
+            return self.rfile.read(int(content_length))
+
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            chunks: list[bytes] = []
+
+            while True:
+                size_line = self.rfile.readline().split(b";", 1)[0].strip()
+                if not size_line:
+                    raise ValueError("Missing chunk size")
+
+                size = int(size_line, 16)
+
+                if size == 0:
+                    while self.rfile.readline().strip():
+                        pass
+                    break
+
+                chunks.append(self.rfile.read(size))
+                self.rfile.read(2)
+
+            return b"".join(chunks)
+
+        raise ValueError("Missing Content-Length")
+
     def _write_empty(self, status: HTTPStatus) -> None:
         self.send_response(status)
-        self.send_header("Content-Length", "0")
+        self._write_common_headers(content_length=0)
         self.end_headers()
 
     def _write_json(self, status: HTTPStatus, data: Any) -> None:
         body = json_dumps(data).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        self._write_common_headers(
+            content_length=len(body),
+            content_type="application/json; charset=utf-8",
+        )
         self.end_headers()
         self.wfile.write(body)
+
+    def _write_sse_endpoint(self) -> None:
+        session_id = self.server.mcp_session_id  # type: ignore[attr-defined]
+        self.send_response(HTTPStatus.OK)
+        self._write_sse_headers()
+        self.end_headers()
+        self.wfile.write(
+            (
+                "event: endpoint\r\n"
+                f"data: /messages?sessionId={session_id}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        self.wfile.flush()
+
+        while True:
+            try:
+                time.sleep(15)
+                self.wfile.write(b": keepalive\r\n\r\n")
+                self.wfile.flush()
+            except (ConnectionError, OSError):
+                return
+
+    def _write_sse_headers(self) -> None:
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        self.send_header(
+            "Mcp-Session-Id",
+            self.server.mcp_session_id,  # type: ignore[attr-defined]
+        )
+
+    def _write_common_headers(
+        self,
+        *,
+        content_length: int,
+        content_type: str | None = None,
+    ) -> None:
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Accept, Authorization, x-api-key, "
+            "Mcp-Session-Id, Last-Event-ID, MCP-Protocol-Version",
+        )
+        self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        self.send_header(
+            "Mcp-Session-Id",
+            self.server.mcp_session_id,  # type: ignore[attr-defined]
+        )
+        self.send_header("Content-Length", str(content_length))
+
+
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(self.socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_EXCLUSIVEADDRUSE,  # type: ignore[attr-defined]
+                1,
+            )
+
+        super().server_bind()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        exc = sys.exc_info()[1]
+
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            print(
+                f"[mcp-cpp-project-indexer-http] client disconnected: {client_address}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
+        if isinstance(exc, OSError) and getattr(exc, "winerror", None) in {10053, 10054}:
+            print(
+                f"[mcp-cpp-project-indexer-http] client disconnected: {client_address}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
+        super().handle_error(request, client_address)
 
 
 def run_http_server(
@@ -3251,14 +3388,16 @@ def run_http_server(
     port: int,
 ) -> None:
     server.transport = "http"
-    httpd = ThreadingHTTPServer((host, port), McpHttpHandler)
-    httpd.mcp_server = server  # type: ignore[attr-defined]
-    print(
-        f"[mcp-cpp-project-indexer] HTTP JSON-RPC listening on http://{host}:{port}/mcp",
-        file=sys.stderr,
-        flush=True,
-    )
-    httpd.serve_forever()
+    with index_http_server_lock(server.tools.index_root, host=host, port=port):
+        httpd = ExclusiveThreadingHTTPServer((host, port), McpHttpHandler)
+        httpd.mcp_server = server  # type: ignore[attr-defined]
+        httpd.mcp_session_id = uuid.uuid4().hex  # type: ignore[attr-defined]
+        print(
+            f"[mcp-cpp-project-indexer] HTTP JSON-RPC listening on http://{host}:{port}/mcp",
+            file=sys.stderr,
+            flush=True,
+        )
+        httpd.serve_forever()
 
 
 # ---------------------------------------------------------------------------

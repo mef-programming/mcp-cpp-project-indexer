@@ -25,11 +25,13 @@ class IndexFileLock:
         label: str,
         timeout: float = 0.0,
         poll_interval: float = 0.1,
+        remove_on_release: bool = False,
     ) -> None:
         self.path = path
         self.label = label
         self.timeout = max(0.0, timeout)
         self.poll_interval = max(0.05, poll_interval)
+        self.remove_on_release = remove_on_release
         self._handle = None
         self.acquired = False
 
@@ -76,6 +78,14 @@ class IndexFileLock:
                 self.acquired = False
 
         self._close_handle()
+
+        if self.remove_on_release:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
     def _close_handle(self) -> None:
         if self._handle is not None:
@@ -140,3 +150,21 @@ def index_watcher_lock(index_root: Path, *, timeout: float = 0.0) -> IndexFileLo
         timeout=timeout,
     )
 
+
+def index_http_server_lock(
+    index_root: Path,
+    *,
+    host: str,
+    port: int,
+    timeout: float = 0.0,
+) -> IndexFileLock:
+    safe_host = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_"
+        for ch in host
+    ).strip("_") or "host"
+    return IndexFileLock(
+        index_root / f".http-{safe_host}-{port}.lock",
+        label=f"HTTP MCP server {host}:{port}",
+        timeout=timeout,
+        remove_on_release=True,
+    )

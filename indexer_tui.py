@@ -12,11 +12,14 @@ from indexer_control import (
     DEFAULT_INDEX_ROOT,
     DEFAULT_PROJECT_ROOT,
     fmt_count,
+    kill_process_tree,
     load_ui_settings,
     manifest_status,
     parse_http_url,
     read_http_status,
+    request_process_exit,
     save_ui_settings,
+    subprocess_creation_flags,
 )
 
 
@@ -57,16 +60,33 @@ class ProcessRunner:
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=subprocess_creation_flags(),
         )
         threading.Thread(target=self._read_output, daemon=True).start()
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = False) -> None:
         if not self.running or self.process is None:
             self.app.write_log("No running command to stop.")
             return
 
-        self.process.terminate()
-        self.app.write_log("Terminate requested for running command.")
+        process = self.process
+        if not wait:
+            process.terminate()
+            self.app.write_log("Terminate requested for running command.")
+            return
+
+        request_process_exit(process)
+        self.app.write_log("Graceful process shutdown requested.")
+
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(process)
+            self.app.write_log("Running command did not exit; kill requested.")
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _read_output(self) -> None:
         assert self.process is not None
@@ -428,6 +448,7 @@ if TEXTUAL_AVAILABLE:
             self.runner.stop()
 
         def on_exit(self) -> None:
+            self.runner.stop(wait=True)
             self.save_settings()
 
         def apply_theme_setting(self, theme: str) -> None:
