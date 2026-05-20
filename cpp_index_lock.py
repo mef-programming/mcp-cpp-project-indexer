@@ -73,6 +73,7 @@ class IndexFileLock:
 
         if self.acquired:
             try:
+                self._clear_owner()
                 self._unlock()
             finally:
                 self.acquired = False
@@ -132,6 +133,12 @@ class IndexFileLock:
         self._handle.seek(1)
         self._handle.truncate()
         self._handle.write(owner.encode("utf-8", errors="replace"))
+        self._handle.flush()
+
+    def _clear_owner(self) -> None:
+        assert self._handle is not None
+        self._handle.seek(1)
+        self._handle.truncate()
         self._handle.flush()
 
 

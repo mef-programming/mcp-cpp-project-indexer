@@ -30,6 +30,7 @@ from cpp_index_lock import (
     index_watcher_lock,
 )
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
+from indexer_control import process_stats
 from watch_project_index import (
     SnapshotEntry,
     diff_snapshots,
@@ -1379,6 +1380,7 @@ class ServerIndexWatcher:
         self.last_added = 0
         self.last_modified = 0
         self.last_deleted = 0
+        self.stop_event = threading.Event()
         self.thread = threading.Thread(
             target=self._run,
             name="mcp-cpp-project-indexer-watch",
@@ -1425,6 +1427,18 @@ class ServerIndexWatcher:
             self.last_update_result = "watching"
             self.last_error = None
         self.thread.start()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join(timeout=timeout)
+        if self.watcher_lock is not None and not self.thread.is_alive():
+            self.watcher_lock.release()
+            self.watcher_lock = None
+        with self.status_lock:
+            self.running = False
+            if self.watcher_lock is None:
+                self.lock_held = False
 
     def status(self) -> dict[str, Any]:
         with self.status_lock:
@@ -1556,8 +1570,7 @@ class ServerIndexWatcher:
                 flush=True,
             )
 
-            while True:
-                time.sleep(self.poll_interval)
+            while not self.stop_event.wait(self.poll_interval):
                 current = self._snapshot()
                 with self.status_lock:
                     self.last_scan_at = now_iso()
@@ -1570,8 +1583,7 @@ class ServerIndexWatcher:
                 pending_snapshot = current
                 pending_diff = diff
 
-                while True:
-                    time.sleep(self.poll_interval)
+                while not self.stop_event.wait(self.poll_interval):
                     current = self._snapshot()
                     next_diff = diff_snapshots(
                         pending_snapshot,
@@ -1590,6 +1602,9 @@ class ServerIndexWatcher:
 
                     if time.monotonic() - pending_since >= self.debounce:
                         break
+
+                if self.stop_event.is_set():
+                    break
 
                 print(
                     (
@@ -1715,6 +1730,13 @@ class CodeIndexTools:
             emit_debug_file_indexes=emit_debug_file_indexes,
         )
         self.watcher.start()
+
+    def stop_index_watcher(self) -> None:
+        if self.watcher is None:
+            return
+
+        self.watcher.stop()
+        self.watcher = None
 
     def _load_module_map(self) -> None:
         self.module_map = None
@@ -3038,6 +3060,7 @@ class McpServer:
                 "transport": self.transport,
                 "startedAt": self.started_at,
                 "pid": os.getpid(),
+                "process": process_stats(),
             },
             **self.tools.status_snapshot(),
         }
@@ -3149,6 +3172,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
+        self._request_body_bytes = 0
         path = self._request_path()
 
         if path in {"", "/health"}:
@@ -3174,6 +3198,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_OPTIONS(self) -> None:
+        self._request_body_bytes = 0
         self.send_response(HTTPStatus.NO_CONTENT)
         self._write_common_headers(content_length=0)
         self.end_headers()
@@ -3185,6 +3210,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
         try:
             body = self._read_request_body()
+            self._request_body_bytes = len(body)
             payload = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._write_json(
@@ -3239,8 +3265,14 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         if self._request_path() == "/status":
             return
 
+        request_bytes = getattr(self, "_request_body_bytes", 0)
+        response_bytes = getattr(self, "_response_body_bytes", 0)
         print(
-            "[mcp-cpp-project-indexer-http] " + format % args,
+            (
+                "[mcp-cpp-project-indexer-http] "
+                + format % args
+                + f" requestBytes={request_bytes} responseBytes={response_bytes}"
+            ),
             file=sys.stderr,
             flush=True,
         )
@@ -3277,12 +3309,14 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         raise ValueError("Missing Content-Length")
 
     def _write_empty(self, status: HTTPStatus) -> None:
+        self._response_body_bytes = 0
         self.send_response(status)
         self._write_common_headers(content_length=0)
         self.end_headers()
 
     def _write_json(self, status: HTTPStatus, data: Any) -> None:
         body = json_dumps(data).encode("utf-8")
+        self._response_body_bytes = len(body)
         self.send_response(status)
         self._write_common_headers(
             content_length=len(body),
@@ -3293,15 +3327,15 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
     def _write_sse_endpoint(self) -> None:
         session_id = self.server.mcp_session_id  # type: ignore[attr-defined]
+        endpoint_payload = (
+            "event: endpoint\r\n"
+            f"data: /messages?sessionId={session_id}\r\n\r\n"
+        ).encode("utf-8")
+        self._response_body_bytes = len(endpoint_payload)
         self.send_response(HTTPStatus.OK)
         self._write_sse_headers()
         self.end_headers()
-        self.wfile.write(
-            (
-                "event: endpoint\r\n"
-                f"data: /messages?sessionId={session_id}\r\n\r\n"
-            ).encode("utf-8")
-        )
+        self.wfile.write(endpoint_payload)
         self.wfile.flush()
 
         while True:
@@ -3397,7 +3431,17 @@ def run_http_server(
             file=sys.stderr,
             flush=True,
         )
-        httpd.serve_forever()
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print(
+                "[mcp-cpp-project-indexer] HTTP server shutdown requested",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            httpd.server_close()
+            server.tools.stop_index_watcher()
 
 
 # ---------------------------------------------------------------------------
