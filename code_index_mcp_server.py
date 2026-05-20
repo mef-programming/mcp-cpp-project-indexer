@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import sys
 import traceback
@@ -2968,6 +2970,123 @@ class McpServer:
                 write_message(response)
 
 
+class McpHttpHandler(BaseHTTPRequestHandler):
+    server_version = "McpCppProjectIndexerHTTP/0.1"
+
+    def do_GET(self) -> None:
+        if self.path.rstrip("/") in {"", "/health"}:
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "server": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                },
+            )
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def do_POST(self) -> None:
+        if self.path.rstrip("/") not in {"", "/mcp", "/rpc"}:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        content_length = self.headers.get("Content-Length")
+
+        if content_length is None:
+            self.send_error(HTTPStatus.LENGTH_REQUIRED, "Missing Content-Length")
+            return
+
+        try:
+            body = self.rfile.read(int(content_length))
+            payload = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32700,
+                        "message": f"Parse error: {exc}",
+                    },
+                },
+            )
+            return
+
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+
+        if isinstance(payload, list):
+            responses = [
+                response
+                for item in payload
+                if isinstance(item, dict)
+                for response in [mcp_server.handle_request(item)]
+                if response is not None
+            ]
+            self._write_json(HTTPStatus.OK, responses)
+            return
+
+        if not isinstance(payload, dict):
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid Request",
+                    },
+                },
+            )
+            return
+
+        response = mcp_server.handle_request(payload)
+
+        if response is None:
+            self._write_empty(HTTPStatus.ACCEPTED)
+            return
+
+        self._write_json(HTTPStatus.OK, response)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print(
+            "[mcp-cpp-project-indexer-http] " + format % args,
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _write_empty(self, status: HTTPStatus) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _write_json(self, status: HTTPStatus, data: Any) -> None:
+        body = json_dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def run_http_server(
+    server: McpServer,
+    *,
+    host: str,
+    port: int,
+) -> None:
+    httpd = ThreadingHTTPServer((host, port), McpHttpHandler)
+    httpd.mcp_server = server  # type: ignore[attr-defined]
+    print(
+        f"[mcp-cpp-project-indexer] HTTP JSON-RPC listening on http://{host}:{port}/mcp",
+        file=sys.stderr,
+        flush=True,
+    )
+    httpd.serve_forever()
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -3034,6 +3153,23 @@ def main() -> None:
         default=False,
         help="Pass diagnostic emission to watcher-triggered index updates.",
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="MCP transport. stdio is default; http exposes JSON-RPC over HTTP.",
+    )
+    parser.add_argument(
+        "--http-host",
+        default="127.0.0.1",
+        help="HTTP bind host when --transport http is used. Default: 127.0.0.1.",
+    )
+    parser.add_argument(
+        "--http-port",
+        type=int,
+        default=8765,
+        help="HTTP bind port when --transport http is used. Default: 8765.",
+    )
     args = parser.parse_args()
 
     if not args.project_root.exists():
@@ -3060,7 +3196,11 @@ def main() -> None:
         )
 
     server = McpServer(tools)
-    server.run()
+
+    if args.transport == "http":
+        run_http_server(server, host=args.http_host, port=args.http_port)
+    else:
+        server.run()
 
 
 if __name__ == "__main__":

@@ -452,6 +452,37 @@ def run_mcp_server_with_watcher(ctx: MenuContext) -> int:
     return run_command(args)
 
 
+def run_http_mcp_server_with_watcher(ctx: MenuContext) -> int:
+    script = ctx.script("code_index_mcp_server.py")
+
+    if not require_file(script):
+        return 2
+
+    host = input("HTTP host [127.0.0.1]: ").strip() or "127.0.0.1"
+    port = input("HTTP port [8765]: ").strip() or "8765"
+
+    print("Starting HTTP MCP server with index watcher. Stop with Ctrl+C.")
+    args = [
+        str(ctx.python),
+        str(script),
+        "--project-root",
+        str(ctx.root),
+        "--index-root",
+        str(ctx.index_root),
+        "--transport",
+        "http",
+        "--http-host",
+        host,
+        "--http-port",
+        port,
+        "--watch-index",
+        "--watch-jobs",
+        str(ctx.jobs),
+    ]
+    append_server_watcher_debug_args(ctx, args)
+    return run_command(args)
+
+
 def print_lmstudio_config(ctx: MenuContext) -> int:
     config = {
         "mcpServers": {
@@ -519,6 +550,7 @@ def menu_items() -> list[tuple[str, Callable[[MenuContext], int]]]:
         ("Print LM Studio mcp.json config", print_lmstudio_config),
         ("Run MCP server", run_mcp_server),
         ("Run MCP server with index watcher", run_mcp_server_with_watcher),
+        ("Run HTTP MCP server with index watcher", run_http_mcp_server_with_watcher),
         ("Clean index directory", clean_index),
     ]
 
@@ -630,6 +662,7 @@ def parse_args() -> argparse.Namespace:
             "lmstudio-config",
             "server",
             "server-watch",
+            "server-http-watch",
         ],
         default=None,
         help="Run one action non-interactively instead of showing the menu.",
@@ -672,6 +705,7 @@ def main() -> int:
         "lmstudio-config": print_lmstudio_config,
         "server": run_mcp_server,
         "server-watch": run_mcp_server_with_watcher,
+        "server-http-watch": run_http_mcp_server_with_watcher,
     }
 
     if args.action:

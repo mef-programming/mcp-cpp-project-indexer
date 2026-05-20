@@ -497,6 +497,33 @@ If another watcher already owns the same index root, the MCP server continues
 read-only and does not start its own watcher. This avoids concurrent writer
 processes when multiple MCP clients start separate stdio server instances.
 
+### Shared HTTP transport
+
+For setups where multiple MCP clients would otherwise start separate stdio
+server processes, the server can also expose the same JSON-RPC MCP surface over
+HTTP:
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 127.0.0.1 `
+  --http-port 8765 `
+  --watch-index `
+  --watch-jobs 20
+```
+
+The HTTP endpoint is:
+
+```text
+POST http://127.0.0.1:8765/mcp
+```
+
+This keeps one long-running server process, one in-memory index cache, and one
+watcher for the index root. Clients that only support stdio still need a stdio
+configuration or a small client-side bridge to this HTTP endpoint.
+
 ---
 
 ## LM Studio MCP configuration
@@ -901,6 +928,9 @@ Run the MCP stdio server.
                                Pass diagnostic emission to server watcher updates.
                                Compatibility alias: --watch-emit-debug-file-indexes.
                                Default: false.
+--transport stdio|http         Transport mode. Default: stdio.
+--http-host HOST               HTTP bind host for --transport http. Default: 127.0.0.1.
+--http-port PORT               HTTP bind port for --transport http. Default: 8765.
 ```
 
 ### `indexer_menu.py`
@@ -938,6 +968,7 @@ dump-module-tree
 lmstudio-config
 server
 server-watch
+server-http-watch
 ```
 
 ---
