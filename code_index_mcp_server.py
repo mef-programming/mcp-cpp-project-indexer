@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -69,6 +70,15 @@ def path_mtime(path: Path) -> float | None:
         return path.stat().st_mtime
     except OSError:
         return None
+
+
+def path_stat_fingerprint_part(label: str, path: Path) -> str:
+    try:
+        stat = path.stat()
+    except OSError:
+        return f"{label}:missing"
+
+    return f"{label}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
 def read_lock_owner(path: Path) -> dict[str, str] | None:
@@ -1811,14 +1821,29 @@ class CodeIndexTools:
 
         return self.module_map
 
+    def index_state_fingerprint(self) -> str:
+        parts = [
+            path_stat_fingerprint_part("manifest", self.index_root / "manifest.json"),
+            path_stat_fingerprint_part("sqlite", self.index_root / "index.sqlite"),
+            path_stat_fingerprint_part("modules", self.index_root / "modules.json"),
+            path_stat_fingerprint_part("moduleMap", self.index_root / "module_map.json"),
+            path_stat_fingerprint_part("diagnostics", self.index_root / "diagnostics.json"),
+            path_stat_fingerprint_part("updateState", self.index_root / "update_state.json"),
+            path_stat_fingerprint_part("watchSummary", self.index_root / WATCH_UPDATE_SUMMARY_NAME),
+        ]
+        payload = "\n".join(parts)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def get_project_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         counts = self.index.manifest.get("counts", {})
+        state_fingerprint = self.index_state_fingerprint()
         return self.json_result(
             arguments,
             {
                 "schema": self.index.manifest.get("schema"),
                 "projectRoot": self.project_root.as_posix(),
                 "indexRoot": self.index_root.as_posix(),
+                "stateFingerprint": state_fingerprint,
                 "counts": counts,
             }
         )
@@ -1827,6 +1852,8 @@ class CodeIndexTools:
         manifest_path = self.index_root / "manifest.json"
         module_map_path = self.index_root / "module_map.json"
         diagnostics_path = self.index_root / "diagnostics.json"
+        sqlite_path = self.index_root / "index.sqlite"
+        update_state_path = self.index_root / "update_state.json"
         update_lock_path = self.index_root / ".update.lock"
         watcher_lock_path = self.index_root / ".watcher.lock"
 
@@ -1834,6 +1861,7 @@ class CodeIndexTools:
             manifest = self.index.manifest
             counts = dict(manifest.get("counts", {}))
             stats = dict(manifest.get("stats", {}))
+            state_fingerprint = self.index_state_fingerprint()
             watcher_status = (
                 self.watcher.status()
                 if self.watcher is not None
@@ -1850,9 +1878,12 @@ class CodeIndexTools:
                 "root": manifest.get("root"),
                 "counts": counts,
                 "stats": stats,
+                "stateFingerprint": state_fingerprint,
                 "manifestMtime": path_mtime(manifest_path),
+                "sqliteMtime": path_mtime(sqlite_path),
                 "moduleMapMtime": path_mtime(module_map_path),
                 "diagnosticsMtime": path_mtime(diagnostics_path),
+                "updateStateMtime": path_mtime(update_state_path),
             },
             "watcher": watcher_status,
             "locks": {
@@ -1877,6 +1908,7 @@ class CodeIndexTools:
         with self.index_lock:
             before_counts = dict(self.index.manifest.get("counts", {}))
             before_root = self.index.manifest.get("root")
+            before_state_fingerprint = self.index_state_fingerprint()
             before_manifest_mtime = (
                 manifest_path.stat().st_mtime
                 if manifest_path.exists()
@@ -1894,6 +1926,7 @@ class CodeIndexTools:
 
             after_counts = dict(self.index.manifest.get("counts", {}))
             after_root = self.index.manifest.get("root")
+            after_state_fingerprint = self.index_state_fingerprint()
             after_manifest_mtime = (
                 manifest_path.stat().st_mtime
                 if manifest_path.exists()
@@ -1907,6 +1940,8 @@ class CodeIndexTools:
                 "projectRoot": self.project_root.as_posix(),
                 "manifestRootBefore": before_root,
                 "manifestRootAfter": after_root,
+                "stateFingerprintBefore": before_state_fingerprint,
+                "stateFingerprintAfter": after_state_fingerprint,
                 "manifestMtimeBefore": before_manifest_mtime,
                 "manifestMtimeAfter": after_manifest_mtime,
                 "countsBefore": before_counts,
@@ -3223,7 +3258,18 @@ class McpServer:
             if handler is None:
                 raise McpError(-32601, f"Unknown tool: {tool_name}")
 
-            return handler(arguments)
+            result = handler(arguments)
+
+            if isinstance(result, dict):
+                meta = result.get("_meta")
+
+                if not isinstance(meta, dict):
+                    meta = {}
+
+                meta["stateFingerprint"] = self.tools.index_state_fingerprint()
+                result["_meta"] = meta
+
+            return result
 
         # Keep optional MCP surfaces empty but valid.
         if method in {"resources/list", "prompts/list"}:

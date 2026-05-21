@@ -1214,6 +1214,25 @@ server-http-watch
 get_project_summary
 ```
 
+The server exposes an index `stateFingerprint`: a cheap server-side fingerprint
+over the current index artifacts (`manifest.json`, `index.sqlite`,
+module/diagnostic/update files). It changes when the loaded index state changes,
+so relay/orchestrator layers can mark older tool evidence as stale after a
+rebuild, update, or cache reload.
+
+Every MCP tool result carries the fingerprint in result `_meta`:
+
+```json
+{
+  "_meta": {
+    "stateFingerprint": "..."
+  }
+}
+```
+
+The same value is also exposed by `get_project_summary.stateFingerprint` and the
+HTTP status endpoint under `index.stateFingerprint`.
+
 ### Change tracking tools
 
 These tools are exposed only when `git.exe` is available and `project-root` is
