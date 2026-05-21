@@ -659,7 +659,9 @@ def scan_module_facts(lines: list[str]) -> ModuleScanResult:
                 }
             )
 
-    # MVP decision: includes are intentionally ignored and never indexed here.
+    # #include directives are line-based preprocessor metadata. They are
+    # extracted in cpp_file_index where source paths are available for
+    # best-effort project-relative resolution.
     includes: list[dict[str, Any]] = []
 
     # Update unknown event fragments now that module_info is known.

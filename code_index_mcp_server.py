@@ -235,6 +235,7 @@ PACKABLE_TOOL_NAMES = {
     "find_declaration",
     "get_nearest_symbol_for_line",
     "list_file_symbols",
+    "list_file_includes",
     "find_module",
     "list_module_files",
     "find_files",
@@ -312,7 +313,6 @@ MODULE_IMPORTED_BY_COMPACT_FIELDS = {
     "isExported",
     "sourceLine",
 }
-
 
 def compact_dict(item: dict[str, Any], fields: set[str]) -> dict[str, Any]:
     return {
@@ -683,6 +683,36 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "minimum": 1,
                         "maximum": 2000,
                         "default": 500,
+                    },
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_file_includes",
+            "description": (
+                "[File] List lexical #include directives for one fileId or project-relative path. "
+                "Use for classic include-based C++ questions like 'which headers does this file include?'. "
+                "This is metadata-only and best-effort path routing; it does not evaluate #if/#ifdef, "
+                "compiler include directories, generated headers, or macro expansion."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "includeResolved": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include best-effort resolved project file id/path when available.",
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Return compact include routing fields only. Set false to include raw source lines.",
                     },
                 },
                 "required": ["file"],
@@ -1120,8 +1150,8 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "[File] Return a structured overview of one indexed source file using index metadata only. "
                 "Use for first-pass orientation in large files, with includeOutline:false when counts/sections are enough. "
-                "This includes module metadata, symbol counts, data declaration counts, diagnostics, "
-                "section ranges, and an ordered outline. This does not analyze code semantics."
+                "This includes module metadata, include counts, symbol counts, data declaration counts, "
+                "diagnostics, section ranges, and an ordered outline. This does not analyze code semantics."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1161,6 +1191,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "default": True,
                         "description": "Include indexed data declarations in counts/sections/outline.",
+                    },
+                    "includeIncludes": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include compact lexical #include directive metadata for this file.",
                     },
                     "includeDiagnostics": {
                         "type": "boolean",
@@ -2218,6 +2253,21 @@ class CodeIndexTools:
         )
         return self.json_result(arguments, results)
 
+    def list_file_includes(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        include_resolved = optional_bool(arguments, "includeResolved", True)
+        compact = optional_bool(arguments, "compact", True)
+        result = self.index.list_file_includes(
+            file,
+            include_resolved=include_resolved,
+            compact=compact,
+        )
+
+        if result is None:
+            return make_text_result(f"File not found: {file}", is_error=True)
+
+        return self.json_result(arguments, result)
+
     def get_nearest_symbol_for_line(self, arguments: dict[str, Any]) -> dict[str, Any]:
         file = require_string(arguments, "file")
         line = require_int(arguments, "line")
@@ -2662,6 +2712,7 @@ class CodeIndexTools:
         symbol_types = optional_string_set(arguments, "symbolTypes")
         data_kinds = optional_string_set(arguments, "dataKinds")
         include_data = optional_bool(arguments, "includeData", True)
+        include_includes = optional_bool(arguments, "includeIncludes", False)
         include_diagnostics = optional_bool(arguments, "includeDiagnostics", True)
         hide_namespaces = optional_bool(arguments, "hideNamespaces", False)
         include_debug, used_legacy_include_debug = optional_bool_alias(
@@ -2732,6 +2783,7 @@ class CodeIndexTools:
             symbol_types=symbol_types,
             data_kinds=data_kinds,
             include_data=include_data,
+            include_includes=include_includes,
             include_diagnostics=include_diagnostics,
             hide_namespaces=hide_namespaces,
             include_debug=include_debug,
@@ -3034,6 +3086,7 @@ class McpServer:
 
             # File navigation tools
             "list_file_symbols": self.tools.list_file_symbols,
+            "list_file_includes": self.tools.list_file_includes,
             "find_files": self.tools.find_files,
             "find_symbols_glob": self.tools.find_symbols_glob,
 

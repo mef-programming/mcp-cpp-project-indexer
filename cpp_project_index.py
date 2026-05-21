@@ -1273,6 +1273,7 @@ def build_project_index(
                 "tokenCount": file_index.get("tokenCount", 0),
                 "unitKind": file_index["module"]["unitKind"],
                 "fullModuleName": file_index["module"].get("fullModuleName"),
+                "includes": len(file_index.get("includes", [])),
                 "symbols": len(file_index.get("symbols", [])),
                 "data": len(file_index.get("data", [])),
                 "diagnostics": len(file_index.get("diagnostics", [])),
@@ -1589,6 +1590,52 @@ class LoadedProjectIndex:
     def load_file_index(self, file_id: str) -> dict[str, Any]:
         path = self.files_dir / f"{file_id}.json"
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def list_file_includes(
+        self,
+        file: str,
+        *,
+        include_resolved: bool = True,
+        compact: bool = True,
+    ) -> dict[str, Any] | None:
+        file_item = self.get_file_item(file)
+
+        if file_item is None:
+            return None
+
+        file_id = file_item["fileId"]
+        relative_path = file_item["relativePath"]
+        file_index = self.load_file_index(file_id)
+        includes: list[dict[str, Any]] = []
+
+        for include in file_index.get("includes", []):
+            item = {
+                "line": include.get("line"),
+                "kind": include.get("kind"),
+                "target": include.get("target"),
+            }
+
+            if not compact:
+                item["raw"] = include.get("raw")
+
+            if include_resolved:
+                item.update(
+                    {
+                        "resolved": include.get("resolved", False),
+                        "resolvedFileId": include.get("resolvedFileId"),
+                        "resolvedRelativePath": include.get("resolvedRelativePath"),
+                    }
+                )
+
+            includes.append(item)
+
+        return {
+            "schema": "cpp.file_includes.v1",
+            "fileId": file_id,
+            "relativePath": relative_path,
+            "returnedIncludes": len(includes),
+            "includes": includes,
+        }
 
     def find_symbol(
         self,
@@ -2146,6 +2193,7 @@ class LoadedProjectIndex:
         symbol_types: set[str] | None = None,
         data_kinds: set[str] | None = None,
         include_data: bool = True,
+        include_includes: bool = False,
         include_diagnostics: bool = True,
         hide_namespaces: bool = False,
         include_debug: bool = False,
@@ -2164,6 +2212,14 @@ class LoadedProjectIndex:
         relative_path = file_item["relativePath"]
         outline_limit = max(1, outline_limit)
         debug_limit = max(1, debug_limit)
+        includes_result: dict[str, Any] | None = None
+
+        if include_includes:
+            includes_result = self.list_file_includes(
+                file,
+                include_resolved=True,
+                compact=True,
+            )
 
         if self.uses_sqlite:
             all_file_symbols = self.sqlite_symbols_for_file(file_id)
@@ -2374,6 +2430,7 @@ class LoadedProjectIndex:
                 "symbolTypes": sorted(symbol_types) if symbol_types else None,
                 "dataKinds": sorted(data_kinds) if data_kinds else None,
                 "includeData": include_data,
+                "includeIncludes": include_includes,
                 "includeDiagnostics": include_diagnostics,
                 "hideNamespaces": hide_namespaces,
                 "includeDebug": include_debug,
@@ -2387,6 +2444,7 @@ class LoadedProjectIndex:
                 "symbols": len(file_symbols),
                 "data": len(file_data),
                 "diagnostics": len(diagnostics),
+                "includes": int(file_item.get("includes") or 0),
                 "allSymbols": len(all_file_symbols),
                 "allData": len(all_file_data),
                 "symbolsByType": dict(sorted(symbol_counts_filtered.items())),
@@ -2398,6 +2456,9 @@ class LoadedProjectIndex:
             "outlineTruncated": outline_truncated,
             "diagnostics": diagnostics,
         }
+
+        if include_includes:
+            result["includes"] = [] if includes_result is None else includes_result.get("includes", [])
 
         if include_outline:
             result["outline"] = outline

@@ -181,8 +181,9 @@ The indexer deliberately avoids pretending to be a compiler.
 
 1. **Fast token/structure scan**
    Source files are scanned with a lightweight Python lexer and structural
-   parser. The output is a deterministic table of contents: files, symbols,
-   data declarations, source ranges, diagnostics, and module facts.
+    parser. The output is a deterministic table of contents: files, symbols,
+   data declarations, lexical `#include` directives, source ranges,
+   diagnostics, and module facts.
 
 2. **C++20 module map**
    Module interfaces, partitions, imports, export-imports, and consumers are
@@ -238,6 +239,7 @@ The scanner extracts routing facts from C++ source files:
 
 - files and stable file IDs
 - C++20 modules and partitions
+- lexical `#include` directives
 - imports and exports
 - namespaces
 - classes / structs / enums
@@ -1342,12 +1344,30 @@ Canonical argument:
 
 ```text
 find_files(pattern)
+list_file_includes(file)
 get_file_structure(file)
 ```
 
 Glob over project-relative paths only. This is not source grep.
 
-`get_file_structure` returns a metadata-only table of contents for one file. For large files, prefer `includeOutline:false` first. Use `symbolTypes`, `dataKinds`, `hideNamespaces`, `outlineLimit`, and `compactOutline:true` to keep responses small. After identifying a relevant outline item, read the source with `read_symbol` or `read_range` before making implementation claims.
+`list_file_includes` returns the lexical `#include` directives for one file.
+It is intended for classic include-based C++ codebases such as Chromium:
+
+```json
+{
+  "file": "chrome/app/chrome_main.cc",
+  "compact": true,
+  "includeResolved": true
+}
+```
+
+Include metadata is routing evidence only. The indexer records the source line,
+target text, include kind (`quote`, `angle`, or `macro`), and best-effort
+project-relative resolution when the included file is directly visible. It does
+not evaluate `#if`/`#ifdef`, compiler include directories, generated headers, or
+macro expansion.
+
+`get_file_structure` returns a metadata-only table of contents for one file. For large files, prefer `includeOutline:false` first. Use `includeIncludes:true` when include metadata is needed. Use `symbolTypes`, `dataKinds`, `hideNamespaces`, `outlineLimit`, and `compactOutline:true` to keep responses small. After identifying a relevant outline item, read the source with `read_symbol` or `read_range` before making implementation claims.
 
 When file indexes were built with `--emit-diagnostic-file-indexes`,
 `get_file_structure` can also include optional parser/indexer diagnostic

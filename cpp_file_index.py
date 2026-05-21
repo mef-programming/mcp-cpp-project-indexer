@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +129,10 @@ def merge_export_entries(
 # Diagnostics / source metadata
 # ---------------------------------------------------------------------------
 
+INCLUDE_LINE_RE = re.compile(
+    r'^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>|(.+?))\s*(?://.*)?$'
+)
+
 def diagnostics_to_json(diagnostics: list[Diagnostic]) -> list[dict[str, Any]]:
     return [diagnostic.to_json() for diagnostic in diagnostics]
 
@@ -142,6 +148,105 @@ def display_name_for_path(path: Path) -> str:
 def language_for_path(path: Path) -> str:
     # MVP only supports C++ routing facts.
     return "cpp"
+
+
+def resolve_include_target(
+    *,
+    target: str,
+    kind: str,
+    source_path: Path,
+    project_root: Path | None,
+    case_insensitive_paths: bool,
+) -> dict[str, Any]:
+    if project_root is None or kind == "macro":
+        return {
+            "resolved": False,
+            "resolvedFileId": None,
+            "resolvedRelativePath": None,
+        }
+
+    candidates: list[Path] = []
+
+    if kind == "quote":
+        candidates.append(source_path.parent / target)
+
+    candidates.append(project_root / target)
+
+    for candidate in candidates:
+        try:
+            resolved_candidate = candidate.resolve()
+            resolved_root = project_root.resolve()
+            resolved_candidate.relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+
+        if not resolved_candidate.is_file():
+            continue
+
+        relative_path = normalized_relative_path(resolved_candidate, resolved_root)
+        path_hash = make_path_hash(
+            relative_path,
+            case_insensitive_paths=case_insensitive_paths,
+        )
+        return {
+            "resolved": True,
+            "resolvedFileId": make_file_id(path_hash),
+            "resolvedRelativePath": relative_path,
+        }
+
+    return {
+        "resolved": False,
+        "resolvedFileId": None,
+        "resolvedRelativePath": None,
+    }
+
+
+def scan_include_statements(
+    *,
+    raw_lines: list[str],
+    scanner_lines: list[str],
+    source_path: Path,
+    project_root: Path | None,
+    case_insensitive_paths: bool,
+) -> list[dict[str, Any]]:
+    includes: list[dict[str, Any]] = []
+
+    for index, scanner_line in enumerate(scanner_lines):
+        match = INCLUDE_LINE_RE.match(scanner_line)
+
+        if match is None:
+            continue
+
+        if match.group(1) is not None:
+            kind = "quote"
+            target = match.group(1)
+        elif match.group(2) is not None:
+            kind = "angle"
+            target = match.group(2)
+        else:
+            kind = "macro"
+            target = (match.group(3) or "").strip()
+
+        raw = raw_lines[index].rstrip("\r\n") if index < len(raw_lines) else scanner_line.rstrip("\r\n")
+        line = index + 1
+        resolved = resolve_include_target(
+            target=target,
+            kind=kind,
+            source_path=source_path,
+            project_root=project_root,
+            case_insensitive_paths=case_insensitive_paths,
+        )
+        includes.append(
+            {
+                "line": line,
+                "kind": kind,
+                "target": target,
+                "raw": raw,
+                **resolved,
+            }
+        )
+
+    return includes
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +281,13 @@ def build_file_index(
         scanner_lines = blank_comments_preserve_lines(scanner_lines)
 
     module_scan = scan_module_facts(scanner_lines)
+    includes = scan_include_statements(
+        raw_lines=raw_lines,
+        scanner_lines=scanner_lines,
+        source_path=path,
+        project_root=project_root,
+        case_insensitive_paths=case_insensitive_paths,
+    )
     structural_scan = scan_structure(
         scanner_lines,
         module_info=module_scan.module,
@@ -256,7 +368,7 @@ def build_file_index(
         "newline": newline,
         "module": module_scan.module,
         "imports": module_scan.imports,
-        "includes": module_scan.includes,
+        "includes": includes,
         "exports": exports,
         "symbols": symbols,
         "data": data_items,
@@ -307,6 +419,7 @@ def summarize_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
         "fullModuleName": module["fullModuleName"],
         "imports": len(file_index.get("imports", [])),
         "exports": len(file_index.get("exports", [])),
+        "includes": len(file_index.get("includes", [])),
         "symbols": len(file_index.get("symbols", [])),
         "data": len(file_index.get("data", [])),
         "scopeIntervals": len(file_index.get("scopeIntervals", [])),
