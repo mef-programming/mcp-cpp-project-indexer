@@ -29,7 +29,7 @@ def connect_readonly_index_db(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
         f"file:{uri}?mode=ro",
         uri=True,
-        check_same_thread=True,
+        check_same_thread=False,
     )
     connection.row_factory = sqlite3.Row
     return connection
