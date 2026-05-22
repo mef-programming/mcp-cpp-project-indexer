@@ -610,6 +610,19 @@ def find_matching_token(
     return None
 
 
+def update_angle_depth(value: str, angle_depth: int) -> int:
+    if value == "<":
+        return angle_depth + 1
+
+    if value == ">":
+        return max(0, angle_depth - 1)
+
+    if value == ">>":
+        return max(0, angle_depth - 2)
+
+    return angle_depth
+
+
 def split_top_level_commas(tokens: list[Token]) -> list[list[Token]]:
     parts: list[list[Token]] = []
     current: list[Token] = []
@@ -620,11 +633,9 @@ def split_top_level_commas(tokens: list[Token]) -> list[list[Token]]:
     for token in tokens:
         value = token.value
 
-        if value == "<":
-            angle_depth += 1
-        elif value == ">":
-            angle_depth = max(0, angle_depth - 1)
-        elif value == "(":
+        angle_depth = update_angle_depth(value, angle_depth)
+
+        if value == "(":
             paren_depth += 1
         elif value == ")":
             paren_depth = max(0, paren_depth - 1)

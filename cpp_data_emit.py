@@ -6,7 +6,7 @@ from typing import Any
 
 from cpp_index_model import Token
 from cpp_index_utils import normalize_signature_spacing
-from cpp_lexer import split_top_level_commas, tokenize_lines, token_values, tokens_to_text
+from cpp_lexer import split_top_level_commas, tokenize_lines, token_values, tokens_to_text, update_angle_depth
 
 
 DATA_DECLARATION_SCHEMA = "cpp.data_declarations.v1"
@@ -321,10 +321,8 @@ def is_top_level_value(tokens: list[Token], index: int, value: str) -> bool:
             brace_depth += 1
         elif token_value == "}":
             brace_depth = max(0, brace_depth - 1)
-        elif token_value == "<":
-            angle_depth += 1
-        elif token_value == ">":
-            angle_depth = max(0, angle_depth - 1)
+        else:
+            angle_depth = update_angle_depth(token_value, angle_depth)
 
     return False
 
@@ -359,10 +357,8 @@ def first_top_level_index(tokens: list[Token], values: set[str]) -> int | None:
             brace_depth += 1
         elif value == "}":
             brace_depth = max(0, brace_depth - 1)
-        elif value == "<":
-            angle_depth += 1
-        elif value == ">":
-            angle_depth = max(0, angle_depth - 1)
+        else:
+            angle_depth = update_angle_depth(value, angle_depth)
 
     return None
 
@@ -562,10 +558,8 @@ def iter_candidate_statements(
             brace_depth += 1
         elif value == "}":
             brace_depth = max(0, brace_depth - 1)
-        elif value == "<":
-            angle_depth += 1
-        elif value == ">":
-            angle_depth = max(0, angle_depth - 1)
+        else:
+            angle_depth = update_angle_depth(value, angle_depth)
 
         if (
             value == ";"
@@ -932,10 +926,8 @@ def split_top_level_enumerator_commas(tokens: list[Token]) -> list[list[Token]]:
             brace_depth += 1
         elif value == "}":
             brace_depth = max(0, brace_depth - 1)
-        elif value == "<":
-            angle_depth += 1
-        elif value == ">":
-            angle_depth = max(0, angle_depth - 1)
+        else:
+            angle_depth = update_angle_depth(value, angle_depth)
 
         if (
             value == ","
