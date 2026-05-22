@@ -49,13 +49,16 @@ scale runs show the intended range:
 | Project | Files | Source lines | Lexer tokens | Symbols | Data declarations | C++20 modules | Full build |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Anonymized commercial C++20 project | 7,046 | 979,658 | 4,682,882 | 97,924 | 36,551 | 3,754 | 19.5s |
-| Chromium checkout | 137,622 | 30,792,607 | 137,365,399 | 2,327,255 | 771,659 | 0 | ~12m 36s |
+| Chromium checkout | 137,622 | 30,792,607 | 137,365,399 | 2,327,255 | 818,188 | 0 | ~24m 32s |
 
 These numbers are machine-dependent. The Chromium run used `--jobs 60` on a
 high-core workstation with an Intel Xeon Silver 4316 system, 128 GB RAM, and
 enterprise NVMe SSD storage. It is a useful public stress test because it
 exercises a very large classic include-based C++ codebase, while the anonymized
-commercial project exercises dense C++20 module and partition metadata.
+commercial project exercises dense C++20 module and partition metadata. The
+Chromium run also validated the data/member indexer at scale: after fixing
+nested-template `>>` depth handling, the public stress test surfaced **46,529**
+additional data declarations and **66,866** additional data-name aliases.
 
 The SQLite-backed lookup index keeps server startup practical even at Chromium
 scale: the MCP server can start immediately and stay around **200 MB RAM** after
