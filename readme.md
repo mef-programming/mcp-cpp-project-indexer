@@ -738,6 +738,7 @@ Example MCP server entry:
 ```toml
 [mcp_servers.mcp-cpp-project-indexer]
 command = "python"
+
 args = [
   "<indexer-root>\\code_index_mcp_server.py",
   "--project-root",
