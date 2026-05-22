@@ -783,7 +783,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=1,
+        default=None,
         help="Worker process count for launched commands.",
     )
     parser.add_argument(
@@ -818,7 +818,7 @@ def main() -> int:
         index_root=index_root,
     )
     http_url = str(settings.get("httpUrl") or args.http_url)
-    jobs = int(settings.get("jobs") or args.jobs)
+    jobs = int(args.jobs if args.jobs is not None else settings.get("jobs") or 1)
     theme = str(settings.get("theme") or "textual-dark")
     emit_diagnostic_file_indexes = bool(
         settings.get("emitDiagnosticFileIndexes")
