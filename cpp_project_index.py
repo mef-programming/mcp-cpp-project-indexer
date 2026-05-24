@@ -183,6 +183,50 @@ def symbol_matches_type_filter(symbol: dict[str, Any], symbol_types: set[str] | 
     return str(symbol.get("type") or "") in symbol_types
 
 
+def symbol_matches_query_type_filter(
+    symbol: dict[str, Any],
+    symbol_types: set[str] | None,
+    *,
+    query: str,
+    container: str | None,
+) -> bool:
+    if not symbol_types:
+        return True
+
+    symbol_type = str(symbol.get("type") or "")
+
+    if symbol_type in symbol_types:
+        return True
+
+    if "method" in symbol_types and symbol_type == "method_declaration":
+        return True
+
+    if "function" in symbol_types and symbol_type == "function_declaration":
+        return True
+
+    if "method" in symbol_types and symbol_type == "function":
+        qualified_name = str(symbol.get("qualifiedName") or "")
+        short_name = str(symbol.get("shortName") or "")
+        query_tail = query.rsplit("::", 1)[-1]
+
+        if not qualified_name or "::" not in qualified_name:
+            return False
+
+        if container and symbol_matches_container_filter(symbol, container):
+            return True
+
+        return (
+            short_name.casefold() == query_tail.casefold()
+            and (
+                "::" in query
+                or bool(container)
+                or qualified_name.count("::") >= 2
+            )
+        )
+
+    return False
+
+
 def symbol_matches_namespace_filter(symbol: dict[str, Any], hide_namespaces: bool) -> bool:
     if not hide_namespaces:
         return True
@@ -1723,7 +1767,12 @@ class LoadedProjectIndex:
             if symbol_id in seen:
                 return False
 
-            if not symbol_matches_type_filter(symbol, symbol_types):
+            if not symbol_matches_query_type_filter(
+                symbol,
+                symbol_types,
+                query=query,
+                container=container,
+            ):
                 return False
 
             if not symbol_matches_namespace_filter(symbol, hide_namespaces):
@@ -1773,7 +1822,12 @@ class LoadedProjectIndex:
                 if symbol_id in seen:
                     continue
 
-                if not symbol_matches_type_filter(symbol, symbol_types):
+                if not symbol_matches_query_type_filter(
+                    symbol,
+                    symbol_types,
+                    query=query,
+                    container=container,
+                ):
                     continue
 
                 if not symbol_matches_namespace_filter(symbol, hide_namespaces):
