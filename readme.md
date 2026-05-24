@@ -1506,12 +1506,25 @@ Module metadata tools accept `compact:true` where useful:
 find_data(query)
 list_type_members(container)
 read_data(dataId)
+resolve_code_entity(query, file?, line?, container?)
 ```
 
 Use `find_data` for fields, globals, namespace constants, enum values, variable
 templates, and concepts. Use `list_type_members` when the containing type or
 namespace is already known. Both tools are metadata-only and accept
 `compact:true` for smaller routing output.
+
+Use `resolve_code_entity` when a source range contains an identifier and the AI
+needs to decide whether it is probably a field/data declaration, callable
+symbol, type symbol, or ambiguous candidate before choosing the next read tool.
+It accepts optional file, line, and container context and returns ranked
+metadata candidates plus a recommended next tool such as `read_data` or
+`read_symbol`.
+
+`resolve_code_entity` is still orientation only. It does not perform compiler
+name lookup, overload resolution, macro expansion, C++ type resolution, or
+semantic reference resolution. Source-level claims still require
+`read_data`, `read_symbol`, or `read_range`.
 
 `typeText` is the original source text for the declaration type. It is not a
 compiler-resolved type. Treat it as a hint for further symbol/source lookup, not

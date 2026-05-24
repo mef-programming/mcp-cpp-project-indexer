@@ -151,6 +151,30 @@ SYMBOL_COMPACT_FIELDS = {
     "matchKind",
 }
 
+CODE_ENTITY_TYPE_SYMBOL_TYPES = {
+    "class",
+    "struct",
+    "enum",
+    "class_declaration",
+    "struct_declaration",
+    "type_alias",
+    "type_alias_template",
+    "typedef_declaration",
+}
+
+CODE_ENTITY_CALLABLE_SYMBOL_TYPES = {
+    "function",
+    "method",
+    "constructor",
+    "destructor",
+    "operator",
+    "function_declaration",
+    "method_declaration",
+    "constructor_declaration",
+    "destructor_declaration",
+    "operator_declaration",
+}
+
 
 def symbol_matches_type_filter(symbol: dict[str, Any], symbol_types: set[str] | None) -> bool:
     if not symbol_types:
@@ -186,6 +210,34 @@ def compact_symbol_ref(symbol: dict[str, Any]) -> dict[str, Any]:
         for key in SYMBOL_COMPACT_FIELDS
         if key in symbol
     }
+
+
+def code_entity_symbol_kind(symbol_type: str) -> str:
+    if symbol_type in CODE_ENTITY_TYPE_SYMBOL_TYPES:
+        return "type_symbol"
+
+    if symbol_type in CODE_ENTITY_CALLABLE_SYMBOL_TYPES:
+        return "callable_symbol"
+
+    return "symbol"
+
+
+def code_entity_data_kind(item: dict[str, Any]) -> str:
+    declaration_kind = str(item.get("declarationKind") or "")
+
+    if declaration_kind == "field":
+        return "data_member"
+
+    if declaration_kind == "enum_value":
+        return "enum_value"
+
+    if declaration_kind == "concept":
+        return "concept"
+
+    if declaration_kind == "variable_template":
+        return "variable_template"
+
+    return "data_declaration"
 
 
 FILE_STRUCTURE_SYMBOL_COMPACT_FIELDS = {
@@ -2027,6 +2079,419 @@ class LoadedProjectIndex:
             )
         )
         return results
+
+
+    def resolve_code_entity(
+        self,
+        query: str,
+        *,
+        project_root: Path | None = None,
+        file: str | None = None,
+        line: int | None = None,
+        container: str | None = None,
+        include_candidates: bool = True,
+        include_usage_context: bool = True,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        query = query.strip()
+        limit = max(1, min(50, limit))
+        file_item = self.get_file_item(file) if file else None
+        file_id = str(file_item.get("fileId")) if file_item is not None else None
+        relative_path = str(file_item.get("relativePath")) if file_item is not None else file
+        usage_context = (
+            self.code_entity_usage_context(
+                project_root=project_root,
+                file=relative_path,
+                line=line,
+                query=query,
+            )
+            if include_usage_context and file and line
+            else None
+        )
+        scan_limit = max(limit * 4, limit + 20)
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add_candidate(candidate: dict[str, Any]) -> None:
+            candidate_id = str(candidate.get("id") or "")
+            kind = str(candidate.get("kind") or "")
+            key = (kind, candidate_id)
+
+            if key in seen:
+                return
+
+            seen.add(key)
+            candidates.append(candidate)
+
+        def data_score(item: dict[str, Any], source: str) -> float:
+            score = 0.35
+            name = str(item.get("name") or "")
+            qualified_name = str(item.get("qualifiedName") or "")
+            item_container = str(item.get("container") or "")
+
+            if name == query:
+                score += 0.24
+            elif name.casefold() == query.casefold():
+                score += 0.18
+            elif query.casefold() in qualified_name.casefold():
+                score += 0.08
+
+            if container and (
+                item_container.casefold() == container.casefold()
+                or item_container.casefold().endswith("::" + container.casefold())
+            ):
+                score += 0.24
+
+            if file_id is not None and item.get("fileId") == file_id:
+                score += 0.08
+
+            if usage_context and usage_context.get("dataLikeScore", 0) > usage_context.get("callableLikeScore", 0):
+                score += 0.08
+
+            if source == "type_members":
+                score += 0.06
+
+            return min(score, 0.99)
+
+        def symbol_score(symbol: dict[str, Any]) -> float:
+            score = 0.32
+            short_name = str(symbol.get("shortName") or "")
+            qualified_name = str(symbol.get("qualifiedName") or "")
+            symbol_container = str(symbol.get("container") or "")
+            symbol_type = str(symbol.get("type") or "")
+
+            if short_name == query:
+                score += 0.22
+            elif short_name.casefold() == query.casefold():
+                score += 0.16
+            elif query.casefold() in qualified_name.casefold():
+                score += 0.07
+
+            if container and (
+                symbol_container.casefold() == container.casefold()
+                or symbol_container.casefold().endswith("::" + container.casefold())
+            ):
+                score += 0.18
+
+            if file_id is not None and symbol.get("fileId") == file_id:
+                score += 0.08
+
+            if symbol_type in CODE_ENTITY_CALLABLE_SYMBOL_TYPES:
+                if usage_context and usage_context.get("callableLikeScore", 0) > usage_context.get("dataLikeScore", 0):
+                    score += 0.12
+                elif usage_context and usage_context.get("dataLikeScore", 0) > usage_context.get("callableLikeScore", 0):
+                    score -= 0.08
+
+            if symbol_type in CODE_ENTITY_TYPE_SYMBOL_TYPES and usage_context and usage_context.get("kind") == "type_like":
+                score += 0.08
+
+            return max(0.01, min(score, 0.99))
+
+        for item in self.find_data(query, container=container, limit=scan_limit):
+            add_candidate(self.code_entity_data_candidate(item, score=data_score(item, "find_data"), source="find_data"))
+
+        if container:
+            for item in self.list_type_members(container, limit=1000):
+                name = str(item.get("name") or "")
+                qualified_name = str(item.get("qualifiedName") or "")
+
+                if name.casefold() == query.casefold() or query.casefold() in qualified_name.casefold():
+                    add_candidate(
+                        self.code_entity_data_candidate(
+                            item,
+                            score=data_score(item, "type_members"),
+                            source="list_type_members",
+                        )
+                    )
+
+        symbol_types = CODE_ENTITY_TYPE_SYMBOL_TYPES | CODE_ENTITY_CALLABLE_SYMBOL_TYPES
+        for symbol in self.find_symbol(
+            query,
+            limit=scan_limit,
+            symbol_types=symbol_types,
+            container=container,
+            file=file if file_item is not None else None,
+            exact_only=False,
+            hide_namespaces=True,
+            compact=False,
+        ):
+            add_candidate(self.code_entity_symbol_candidate(symbol, score=symbol_score(symbol), source="find_symbol"))
+
+        candidates.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                str(item.get("kind") or ""),
+                str(item.get("qualifiedName") or item.get("name") or ""),
+            )
+        )
+        estimated_matches = len(candidates)
+        returned_candidates = candidates[:limit]
+        truncated = estimated_matches > len(returned_candidates)
+        classification = self.code_entity_classification(returned_candidates)
+        confidence = float(returned_candidates[0].get("score") or 0.0) if returned_candidates else 0.0
+
+        result: dict[str, Any] = {
+            "query": query,
+            "classification": classification,
+            "confidence": round(confidence, 3),
+            "evidenceLevel": "metadata_with_usage_context" if usage_context else "metadata_only",
+            "scope": {
+                "file": relative_path,
+                "line": line,
+                "container": container,
+            },
+            "candidateCount": len(returned_candidates),
+            "estimatedMatches": estimated_matches,
+            "resultsTruncated": truncated,
+            "limit": limit,
+            "recommendedNextTools": self.code_entity_recommended_tools(returned_candidates),
+            "hints": self.code_entity_hints(
+                classification=classification,
+                truncated=truncated,
+                file=file,
+                line=line,
+                container=container,
+                estimated_matches=estimated_matches,
+            ),
+        }
+
+        if usage_context is not None:
+            result["usageContext"] = usage_context
+
+        if include_candidates:
+            result["candidates"] = returned_candidates
+
+        return result
+
+
+    def code_entity_data_candidate(
+        self,
+        item: dict[str, Any],
+        *,
+        score: float,
+        source: str,
+    ) -> dict[str, Any]:
+        return {
+            "kind": code_entity_data_kind(item),
+            "id": item.get("dataId"),
+            "dataId": item.get("dataId"),
+            "name": item.get("name"),
+            "qualifiedName": item.get("qualifiedName"),
+            "container": item.get("container"),
+            "declarationKind": item.get("declarationKind"),
+            "scopeKind": item.get("scopeKind"),
+            "typeText": item.get("typeText"),
+            "relativePath": item.get("relativePath"),
+            "startLine": item.get("startLine"),
+            "endLine": item.get("endLine"),
+            "signature": item.get("signature"),
+            "score": round(score, 3),
+            "source": source,
+        }
+
+
+    def code_entity_symbol_candidate(
+        self,
+        symbol: dict[str, Any],
+        *,
+        score: float,
+        source: str,
+    ) -> dict[str, Any]:
+        symbol_type = str(symbol.get("type") or "")
+
+        return {
+            "kind": code_entity_symbol_kind(symbol_type),
+            "id": symbol.get("symbolId"),
+            "symbolId": symbol.get("symbolId"),
+            "name": symbol.get("shortName"),
+            "qualifiedName": symbol.get("qualifiedName"),
+            "container": symbol.get("container"),
+            "symbolType": symbol_type,
+            "relativePath": symbol.get("relativePath"),
+            "startLine": symbol.get("startLine"),
+            "endLine": symbol.get("endLine"),
+            "signature": symbol.get("signature"),
+            "matchKind": symbol.get("matchKind"),
+            "score": round(score, 3),
+            "source": source,
+        }
+
+
+    def code_entity_classification(self, candidates: list[dict[str, Any]]) -> str:
+        if not candidates:
+            return "unresolved"
+
+        first = candidates[0]
+        first_score = float(first.get("score") or 0.0)
+        second_score = float(candidates[1].get("score") or 0.0) if len(candidates) > 1 else 0.0
+
+        if len(candidates) > 1 and first_score - second_score < 0.12:
+            return "ambiguous"
+
+        return "likely_" + str(first.get("kind") or "entity")
+
+
+    def code_entity_recommended_tools(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+
+        first = candidates[0]
+        kind = str(first.get("kind") or "")
+
+        if kind in {"data_member", "data_declaration", "enum_value", "concept", "variable_template"}:
+            return [
+                {
+                    "tool": "read_data",
+                    "reason": "Best candidate is an indexed data/value declaration.",
+                    "score": round(float(first.get("score") or 0.0), 3),
+                    "arguments": {"dataId": first.get("dataId")},
+                }
+            ]
+
+        if kind in {"callable_symbol", "type_symbol", "symbol"}:
+            return [
+                {
+                    "tool": "read_symbol",
+                    "reason": "Best candidate is an indexed symbol declaration or definition.",
+                    "score": round(float(first.get("score") or 0.0), 3),
+                    "arguments": {"symbolId": first.get("symbolId")},
+                }
+            ]
+
+        return []
+
+
+    def code_entity_hints(
+        self,
+        *,
+        classification: str,
+        truncated: bool,
+        file: str | None,
+        line: int | None,
+        container: str | None,
+        estimated_matches: int,
+    ) -> list[str]:
+        hints: list[str] = []
+
+        if truncated:
+            hints.append(
+                f"Result set was limited: {estimated_matches} candidate(s) matched, only the top results were returned."
+            )
+
+        if not container:
+            hints.append(
+                "Pass container when known to avoid broad project-wide matches for common identifiers."
+            )
+
+        if not file or line is None:
+            hints.append(
+                "Pass file and line from the observed usage to improve lexical usage classification."
+            )
+
+        if classification == "ambiguous":
+            hints.append(
+                "Classification is ambiguous; read the top candidate only as a candidate and keep the ambiguity visible."
+            )
+
+        if classification == "unresolved":
+            hints.append(
+                "No indexed symbol/data candidate matched; verify spelling, pass a containing container, or inspect the containing source range."
+            )
+
+        return hints
+
+
+    def code_entity_usage_context(
+        self,
+        *,
+        project_root: Path | None,
+        file: str | None,
+        line: int | None,
+        query: str,
+    ) -> dict[str, Any] | None:
+        if file is None or line is None or line < 1:
+            return None
+
+        path = (project_root or self.index_root.parent) / file
+
+        if not path.exists():
+            return None
+
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+        if line > len(lines):
+            return None
+
+        source_line = lines[line - 1]
+        tokens = [token for token in tokenize_lines([source_line]) if token.value]
+        query_indices = [index for index, token in enumerate(tokens) if token.value == query]
+        before = ""
+        after = ""
+
+        if query_indices:
+            index = query_indices[0]
+            before = tokens[index - 1].value if index > 0 else ""
+            after = tokens[index + 1].value if index + 1 < len(tokens) else ""
+
+        callable_like = 0.0
+        data_like = 0.0
+        type_like = 0.0
+        kind = "unknown"
+        operator = None
+
+        if after == "(":
+            callable_like = 0.9
+            data_like = 0.1
+            kind = "callable_expression"
+        elif after in {"::"}:
+            type_like = 0.65
+            data_like = 0.2
+            kind = "qualified_name_prefix"
+        elif before in {".", "->"}:
+            data_like = 0.72
+            callable_like = 0.25 if after == "(" else 0.05
+            kind = "member_access"
+        elif before in {"&", "*"}:
+            data_like = 0.62
+            kind = "address_or_pointer_operand"
+        else:
+            comparison_operators = {"==", "!=", "<", "<=", ">", ">="}
+            assignment_operators = {"=", "+=", "-=", "*=", "/=", "%=", "|=", "&=", "^="}
+            arithmetic_operators = {"+", "-", "*", "/", "%", "|", "&", "^", "&&", "||"}
+
+            if before in comparison_operators or after in comparison_operators:
+                data_like = 0.9
+                callable_like = 0.03
+                kind = "comparison_value"
+                operator = before if before in comparison_operators else after
+            elif before in assignment_operators or after in assignment_operators:
+                data_like = 0.84
+                callable_like = 0.03
+                kind = "assignment_value"
+                operator = before if before in assignment_operators else after
+            elif before in arithmetic_operators or after in arithmetic_operators:
+                data_like = 0.78
+                callable_like = 0.04
+                kind = "expression_value"
+                operator = before if before in arithmetic_operators else after
+            else:
+                data_like = 0.45
+                callable_like = 0.2
+
+        result: dict[str, Any] = {
+            "kind": kind,
+            "beforeToken": before,
+            "afterToken": after,
+            "callableLikeScore": round(callable_like, 3),
+            "dataLikeScore": round(data_like, 3),
+            "typeLikeScore": round(type_like, 3),
+        }
+
+        if operator is not None:
+            result["operator"] = operator
+
+        return result
 
 
     def read_data(self, *, project_root: Path, data_id: str) -> str:

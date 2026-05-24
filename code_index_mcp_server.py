@@ -258,6 +258,7 @@ PACKABLE_TOOL_NAMES = {
     "get_module_tree",
     "find_data",
     "list_type_members",
+    "resolve_code_entity",
     "get_file_structure",
 }
 
@@ -1042,6 +1043,60 @@ def tool_definitions() -> list[dict[str, Any]]:
                     }
                 },
                 "required": ["dataId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "resolve_code_entity",
+            "description": (
+                "[Entity] Classify a code name across indexed symbols and data declarations using optional "
+                "file/line/container context. Use when a read source range contains an identifier and it is "
+                "unclear whether the next step should be symbol lookup or data/member lookup. "
+                "This is metadata/orientation only: it ranks candidates and recommends read_symbol or read_data, "
+                "but it does not perform compiler name lookup, macro expansion, type resolution, overload "
+                "resolution, or semantic reference resolution."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Identifier or qualified name to classify, e.g. '_OverlayPosition'.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Compatibility alias for query. Prefer 'query'.",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Optional source file containing the observed usage.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional 1-based source line for lightweight lexical usage context.",
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Optional containing class/struct/namespace from the currently read source.",
+                    },
+                    "includeCandidates": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include ranked symbol/data candidates.",
+                    },
+                    "includeUsageContext": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include small lexical context from file+line when available.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                    },
+                },
                 "additionalProperties": False,
             },
         },
@@ -2661,6 +2716,32 @@ class CodeIndexTools:
         )
 
 
+    def resolve_code_entity(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = require_query(arguments)
+        file = optional_string(arguments, "file")
+        container = optional_string(arguments, "container")
+        include_candidates = optional_bool(arguments, "includeCandidates", True)
+        include_usage_context = optional_bool(arguments, "includeUsageContext", True)
+        limit = clamp_int(arguments.get("limit", 10), minimum=1, maximum=50)
+        line = arguments.get("line")
+
+        if line is not None:
+            line = clamp_int(line, minimum=1, maximum=10_000_000)
+
+        result = self.index.resolve_code_entity(
+            query,
+            project_root=self.project_root,
+            file=file,
+            line=line,
+            container=container,
+            include_candidates=include_candidates,
+            include_usage_context=include_usage_context,
+            limit=limit,
+        )
+
+        return self.json_result(arguments, result)
+
+
     def get_symbol_leading_comment(self, arguments: dict[str, Any]) -> dict[str, Any]:
         symbol_id = require_string(arguments, "symbolId")
         max_lines = clamp_int(arguments.get("maxLines", 20), minimum=1, maximum=200)
@@ -3129,6 +3210,7 @@ class McpServer:
             "find_data": self.tools.find_data,
             "list_type_members": self.tools.list_type_members,
             "read_data": self.tools.read_data,
+            "resolve_code_entity": self.tools.resolve_code_entity,
 
             # Module metadata tools
             "search_modules": self.tools.search_modules,
