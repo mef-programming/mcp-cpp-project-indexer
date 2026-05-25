@@ -1269,10 +1269,17 @@ list_changed_files
 list_recent_revisions
 get_revision_summary
 get_file_change_hunks
+resolve_hunk_to_indexed_range
 ```
 
 Use them for current changes, recent revisions, hunk inspection, review of
 modified files, and commit-message suggestions.
+
+Use `resolve_hunk_to_indexed_range(file, line|startLine/endLine)` when hunk
+metadata gives a changed new-line range and the relay needs a valid
+`symbolId`/`dataId` routing target before reading source. It returns indexed
+symbol/data ranges that contain, overlap, or are nearest to the changed range.
+This is metadata-only and does not interpret the diff or claim correctness.
 
 When the user says they fixed, changed, saved, updated, committed, or wants
 current work reviewed, the agent should check these tools before normal source

@@ -249,6 +249,7 @@ PACKABLE_TOOL_NAMES = {
     "find_symbol",
     "find_declaration",
     "get_nearest_symbol_for_line",
+    "resolve_hunk_to_indexed_range",
     "list_file_symbols",
     "list_file_includes",
     "find_module",
@@ -790,6 +791,61 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["file", "line"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "resolve_hunk_to_indexed_range",
+            "description": (
+                "[Change] Map a changed file line/range to indexed symbol/data ranges in that file. "
+                "Use after hunk metadata gives a file plus new-line range and you need valid symbolId/dataId "
+                "routing targets. Metadata only: this does not inspect diff/source meaning or judge correctness."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "fileId or project-relative path.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Single changed line. Cannot be combined with startLine/endLine.",
+                    },
+                    "startLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Start of changed new-line range.",
+                    },
+                    "endLine": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "End of changed new-line range.",
+                    },
+                    "includeData": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include indexed data/value declarations in addition to symbols.",
+                    },
+                    "includeOverlaps": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include overlapping indexed ranges, not only the primary route target.",
+                    },
+                    "includeNamespaces": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include namespace ranges. Default false to keep hunk routing focused on functions/types/data.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 20,
+                    },
+                },
+                "required": ["file"],
                 "additionalProperties": False,
             },
         },
@@ -2759,12 +2815,15 @@ class CodeIndexTools:
             else:
                 nearest_after.append(result)
 
-        for symbol in self.index.symbols:
+        file_symbols = self.index.sqlite_symbols_for_file(file_id) if self.index.uses_sqlite else self.index.symbols
+        file_data = self.index.sqlite_data_for_file(file_id) if self.index.uses_sqlite else self.index.data
+
+        for symbol in file_symbols:
             if symbol.get("fileId") == file_id:
                 classify(symbol, kind="symbol")
 
         if include_data:
-            for data_item in self.index.data:
+            for data_item in file_data:
                 if data_item.get("fileId") == file_id:
                     classify(data_item, kind="data")
 
@@ -2803,6 +2862,178 @@ class CodeIndexTools:
                 "nearestAfter": nearest_after[:limit],
             }
         )
+
+    def resolve_hunk_to_indexed_range(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        line = optional_int(arguments, "line")
+        start_line = optional_int(arguments, "startLine")
+        end_line = optional_int(arguments, "endLine")
+        include_data = optional_bool(arguments, "includeData", True)
+        include_overlaps = optional_bool(arguments, "includeOverlaps", True)
+        include_namespaces = optional_bool(arguments, "includeNamespaces", False)
+        limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=100)
+
+        has_line = line is not None
+        has_range = start_line is not None or end_line is not None
+
+        if has_line and has_range:
+            raise McpError(-32602, "line cannot be combined with startLine/endLine")
+
+        if has_line:
+            range_start = int(line)
+            range_end = int(line)
+        else:
+            if start_line is None:
+                raise McpError(-32602, "line or startLine is required")
+
+            range_start = int(start_line)
+            range_end = int(end_line if end_line is not None else start_line)
+
+        if range_start < 1 or range_end < 1:
+            raise McpError(-32602, "line/startLine/endLine must be >= 1")
+
+        if range_end < range_start:
+            raise McpError(-32602, "endLine must be >= startLine")
+
+        file_item = self.index.get_file_item(file)
+
+        if file_item is None:
+            return make_text_result(f"File not found: {file}", is_error=True)
+
+        file_id = str(file_item["fileId"])
+        relative_path = str(file_item["relativePath"])
+        file_symbols = self.index.sqlite_symbols_for_file(file_id) if self.index.uses_sqlite else self.index.symbols
+        file_data = self.index.sqlite_data_for_file(file_id) if self.index.uses_sqlite else self.index.data
+        candidates: list[dict[str, Any]] = []
+
+        def ranges_intersect(left_start: int, left_end: int, right_start: int, right_end: int) -> bool:
+            return left_start <= right_end and right_start <= left_end
+
+        def relation_for(item_start: int, item_end: int) -> tuple[str, int]:
+            if item_start <= range_start and range_end <= item_end:
+                return "contains_range", 0
+
+            if ranges_intersect(range_start, range_end, item_start, item_end):
+                return "overlaps_range", 0
+
+            if item_end < range_start:
+                return "before", range_start - item_end
+
+            return "after", item_start - range_end
+
+        def add_candidate(item: dict[str, Any], *, kind: str) -> None:
+            if kind == "symbol" and not include_namespaces and str(item.get("type") or "") == "namespace":
+                return
+
+            item_start = int(item.get("startLine") or 0)
+            item_end = int(item.get("endLine") or item_start)
+
+            if item_start <= 0 or item_end <= 0:
+                return
+
+            relation, distance = relation_for(item_start, item_end)
+            result = {
+                "kind": kind,
+                "relationship": relation,
+                "distance": distance,
+                "relativePath": relative_path,
+                "startLine": item_start,
+                "endLine": item_end,
+            }
+
+            if kind == "symbol":
+                result.update(
+                    {
+                        "symbolId": item.get("symbolId"),
+                        "type": item.get("type"),
+                        "qualifiedName": item.get("qualifiedName") or item.get("shortName"),
+                        "signature": item.get("signature"),
+                    }
+                )
+            else:
+                result.update(
+                    {
+                        "dataId": item.get("dataId"),
+                        "declarationKind": item.get("declarationKind"),
+                        "qualifiedName": item.get("qualifiedName") or item.get("name"),
+                        "signature": item.get("signature"),
+                        "typeText": item.get("typeText"),
+                    }
+                )
+
+            candidates.append(result)
+
+        for symbol in file_symbols:
+            if symbol.get("fileId") == file_id:
+                add_candidate(symbol, kind="symbol")
+
+        if include_data:
+            for data_item in file_data:
+                if data_item.get("fileId") == file_id:
+                    add_candidate(data_item, kind="data")
+
+        relation_rank = {
+            "contains_range": 0,
+            "overlaps_range": 1,
+            "before": 2,
+            "after": 3,
+        }
+        candidates.sort(
+            key=lambda item: (
+                relation_rank.get(str(item.get("relationship")), 9),
+                int(item.get("distance") or 0),
+                int(item.get("endLine") or 0) - int(item.get("startLine") or 0),
+                int(item.get("startLine") or 0),
+                str(item.get("kind") or ""),
+                str(item.get("qualifiedName") or ""),
+            )
+        )
+        primary = candidates[0] if candidates else None
+        overlaps = [
+            item
+            for item in candidates
+            if item.get("relationship") in {"contains_range", "overlaps_range"}
+        ][:limit]
+        nearest_before = [
+            item
+            for item in candidates
+            if item.get("relationship") == "before"
+        ][:limit]
+        nearest_after = [
+            item
+            for item in candidates
+            if item.get("relationship") == "after"
+        ][:limit]
+
+        result: dict[str, Any] = {
+            "schema": "cpp.hunk_to_indexed_range.v1",
+            "fileId": file_id,
+            "relativePath": relative_path,
+            "range": {
+                "startLine": range_start,
+                "endLine": range_end,
+            },
+            "indexed": True,
+            "primary": primary,
+            "returnedOverlaps": len(overlaps) if include_overlaps else 0,
+            "estimatedOverlaps": sum(
+                1
+                for item in candidates
+                if item.get("relationship") in {"contains_range", "overlaps_range"}
+            ),
+            "limit": limit,
+        }
+
+        if include_overlaps:
+            result["overlaps"] = overlaps
+
+        if not overlaps and nearest_before:
+            result["nearestBefore"] = nearest_before[:limit]
+
+        if not overlaps and nearest_after:
+            result["nearestAfter"] = nearest_after[:limit]
+
+        return self.json_result(arguments, result)
 
     def find_module(self, arguments: dict[str, Any]) -> dict[str, Any]:
         module_name = require_string(arguments, "moduleName")
@@ -3539,6 +3770,7 @@ class McpServer:
             "read_symbol": self.tools.read_symbol,
             "read_range": self.tools.read_range,
             "get_nearest_symbol_for_line": self.tools.get_nearest_symbol_for_line,
+            "resolve_hunk_to_indexed_range": self.tools.resolve_hunk_to_indexed_range,
 
             # File navigation tools
             "list_file_symbols": self.tools.list_file_symbols,
