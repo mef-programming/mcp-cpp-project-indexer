@@ -237,6 +237,11 @@ def read_messages():
 
 PACKABLE_TOOL_NAMES = {
     "get_project_summary",
+    "get_index_fingerprint",
+    "get_file_fingerprint",
+    "get_symbol_fingerprint",
+    "get_data_fingerprint",
+    "validate_fingerprints",
     "list_changed_files",
     "list_recent_revisions",
     "get_revision_summary",
@@ -325,6 +330,17 @@ MODULE_IMPORTED_BY_COMPACT_FIELDS = {
     "sourceLine",
 }
 
+
+def stable_hash_payload(data: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
 def compact_dict(item: dict[str, Any], fields: set[str]) -> dict[str, Any]:
     return {
         key: item.get(key)
@@ -385,6 +401,125 @@ def tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_index_fingerprint",
+            "description": (
+                "[Fingerprint] Return the compact global index fingerprint. "
+                "Use as a cheap warning signal for possible stale evidence; use file/symbol/data fingerprints "
+                "for precise fact reuse validation."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_file_fingerprint",
+            "description": (
+                "[Fingerprint] Return a compact fingerprint for one indexed file. "
+                "Metadata/hash only; no source text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Project-relative file path or fileId.",
+                    }
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_symbol_fingerprint",
+            "description": (
+                "[Fingerprint] Return a compact fingerprint for one indexed symbol range. "
+                "The fingerprint includes the containing file content hash, range, and signature. "
+                "Metadata/hash only; no source text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Symbol id returned by symbol tools.",
+                    }
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_data_fingerprint",
+            "description": (
+                "[Fingerprint] Return a compact fingerprint for one indexed data/value declaration range. "
+                "The fingerprint includes the containing file content hash, range, and signature. "
+                "Metadata/hash only; no source text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "dataId": {
+                        "type": "string",
+                        "description": "Data declaration id returned by data tools.",
+                    }
+                },
+                "required": ["dataId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "validate_fingerprints",
+            "description": (
+                "[Fingerprint] Batch validate file/symbol/data fingerprints for evidence-cache reuse. "
+                "This is the preferred cheap staleness probe for many active facts. "
+                "Metadata/hash only; no source text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "maxItems": 500,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["file", "symbol", "data"],
+                                },
+                                "file": {
+                                    "type": "string",
+                                    "description": "For kind=file: project-relative path or fileId.",
+                                },
+                                "symbolId": {
+                                    "type": "string",
+                                    "description": "For kind=symbol.",
+                                },
+                                "dataId": {
+                                    "type": "string",
+                                    "description": "For kind=data.",
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "Compatibility id for symbolId/dataId/file.",
+                                },
+                                "fingerprint": {
+                                    "type": "string",
+                                    "description": "Optional previous fingerprint to compare against.",
+                                },
+                            },
+                            "required": ["kind"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["items"],
                 "additionalProperties": False,
             },
         },
@@ -1889,6 +2024,206 @@ class CodeIndexTools:
         payload = "\n".join(parts)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def index_generation(self) -> int:
+        manifest_mtime = int((self.index_root / "manifest.json").stat().st_mtime_ns) if (self.index_root / "manifest.json").exists() else 0
+        sqlite_mtime = int((self.index_root / "index.sqlite").stat().st_mtime_ns) if (self.index_root / "index.sqlite").exists() else 0
+        return max(manifest_mtime, sqlite_mtime)
+
+    def index_fingerprint_payload(self) -> dict[str, Any]:
+        manifest_path = self.index_root / "manifest.json"
+        return {
+            "indexGeneration": self.index_generation(),
+            "projectFingerprint": self.index_state_fingerprint(),
+            "createdAt": self.index.manifest.get("createdUtc") or self.index.manifest.get("createdAt"),
+            "sourceRoot": self.project_root.as_posix(),
+            "indexRoot": self.index_root.as_posix(),
+            "manifestMtime": path_mtime(manifest_path),
+            "schema": self.index.manifest.get("schema"),
+        }
+
+    def get_index_fingerprint(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.json_result(arguments, self.index_fingerprint_payload())
+
+    def file_fingerprint_payload(self, file: str) -> dict[str, Any]:
+        file_item = self.index.get_file_item(file)
+
+        if file_item is None:
+            return {
+                "kind": "file",
+                "file": file,
+                "indexed": False,
+                "valid": False,
+            }
+
+        fingerprint = stable_hash_payload(
+            {
+                "kind": "file",
+                "fileId": file_item.get("fileId"),
+                "relativePath": file_item.get("relativePath"),
+                "contentHash": file_item.get("contentHash"),
+                "lineCount": file_item.get("lineCount"),
+                "tokenCount": file_item.get("tokenCount"),
+            }
+        )
+        return {
+            "kind": "file",
+            "file": file_item.get("relativePath"),
+            "fileId": file_item.get("fileId"),
+            "indexed": True,
+            "valid": True,
+            "fileFingerprint": fingerprint,
+            "fingerprint": fingerprint,
+            "contentHash": file_item.get("contentHash"),
+            "lineCount": file_item.get("lineCount"),
+        }
+
+    def symbol_fingerprint_payload(self, symbol_id: str) -> dict[str, Any]:
+        symbol = self.index.symbol_by_id.get(symbol_id)
+
+        if symbol is None:
+            return {
+                "kind": "symbol",
+                "id": symbol_id,
+                "symbolId": symbol_id,
+                "indexed": False,
+                "valid": False,
+            }
+
+        file_item = self.index.file_by_id.get(str(symbol.get("fileId") or ""))
+        file_fingerprint = self.file_fingerprint_payload(str(symbol.get("fileId") or ""))
+        fingerprint = stable_hash_payload(
+            {
+                "kind": "symbol",
+                "symbolId": symbol_id,
+                "fileFingerprint": file_fingerprint.get("fingerprint"),
+                "startLine": symbol.get("startLine"),
+                "endLine": symbol.get("endLine"),
+                "signature": symbol.get("signature"),
+            }
+        )
+        return {
+            "kind": "symbol",
+            "id": symbol_id,
+            "symbolId": symbol_id,
+            "indexed": True,
+            "valid": True,
+            "file": (file_item or {}).get("relativePath") or symbol.get("relativePath"),
+            "fileId": symbol.get("fileId"),
+            "startLine": symbol.get("startLine"),
+            "endLine": symbol.get("endLine"),
+            "rangeFingerprint": fingerprint,
+            "fingerprint": fingerprint,
+            "fileFingerprint": file_fingerprint.get("fingerprint"),
+        }
+
+    def data_fingerprint_payload(self, data_id: str) -> dict[str, Any]:
+        data_item = self.index.data_by_id.get(data_id)
+
+        if data_item is None:
+            return {
+                "kind": "data",
+                "id": data_id,
+                "dataId": data_id,
+                "indexed": False,
+                "valid": False,
+            }
+
+        file_item = self.index.file_by_id.get(str(data_item.get("fileId") or ""))
+        file_fingerprint = self.file_fingerprint_payload(str(data_item.get("fileId") or ""))
+        fingerprint = stable_hash_payload(
+            {
+                "kind": "data",
+                "dataId": data_id,
+                "fileFingerprint": file_fingerprint.get("fingerprint"),
+                "startLine": data_item.get("startLine"),
+                "endLine": data_item.get("endLine"),
+                "signature": data_item.get("signature"),
+            }
+        )
+        return {
+            "kind": "data",
+            "id": data_id,
+            "dataId": data_id,
+            "indexed": True,
+            "valid": True,
+            "file": (file_item or {}).get("relativePath") or data_item.get("relativePath"),
+            "fileId": data_item.get("fileId"),
+            "startLine": data_item.get("startLine"),
+            "endLine": data_item.get("endLine"),
+            "rangeFingerprint": fingerprint,
+            "fingerprint": fingerprint,
+            "fileFingerprint": file_fingerprint.get("fingerprint"),
+        }
+
+    def get_file_fingerprint(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        file = require_string(arguments, "file")
+        return self.json_result(arguments, self.file_fingerprint_payload(file))
+
+    def get_symbol_fingerprint(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        return self.json_result(arguments, self.symbol_fingerprint_payload(symbol_id))
+
+    def get_data_fingerprint(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        data_id = require_string(arguments, "dataId")
+        return self.json_result(arguments, self.data_fingerprint_payload(data_id))
+
+    def validate_fingerprints(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        items = arguments.get("items")
+
+        if not isinstance(items, list):
+            raise McpError(-32602, "items must be an array")
+
+        if len(items) > 500:
+            raise McpError(-32602, "items must contain at most 500 entries")
+
+        results: list[dict[str, Any]] = []
+
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise McpError(-32602, f"items[{index}] must be an object")
+
+            kind = item.get("kind")
+            previous_fingerprint = item.get("fingerprint")
+
+            if kind == "file":
+                file = item.get("file") or item.get("id")
+
+                if not isinstance(file, str) or not file:
+                    raise McpError(-32602, f"items[{index}].file/id must be a string")
+
+                result = self.file_fingerprint_payload(file)
+                result["id"] = result.get("fileId") or file
+            elif kind == "symbol":
+                symbol_id = item.get("symbolId") or item.get("id")
+
+                if not isinstance(symbol_id, str) or not symbol_id:
+                    raise McpError(-32602, f"items[{index}].symbolId/id must be a string")
+
+                result = self.symbol_fingerprint_payload(symbol_id)
+            elif kind == "data":
+                data_id = item.get("dataId") or item.get("id")
+
+                if not isinstance(data_id, str) or not data_id:
+                    raise McpError(-32602, f"items[{index}].dataId/id must be a string")
+
+                result = self.data_fingerprint_payload(data_id)
+            else:
+                raise McpError(-32602, f"items[{index}].kind must be file, symbol, or data")
+
+            if isinstance(previous_fingerprint, str) and previous_fingerprint:
+                result["matchesPrevious"] = result.get("fingerprint") == previous_fingerprint
+
+            results.append(result)
+
+        return self.json_result(
+            arguments,
+            {
+                **self.index_fingerprint_payload(),
+                "itemCount": len(results),
+                "items": results,
+            },
+        )
+
     def get_project_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         counts = self.index.manifest.get("counts", {})
         state_fingerprint = self.index_state_fingerprint()
@@ -3191,6 +3526,11 @@ class McpServer:
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             # Project/cache tools
             "get_project_summary": self.tools.get_project_summary,
+            "get_index_fingerprint": self.tools.get_index_fingerprint,
+            "get_file_fingerprint": self.tools.get_file_fingerprint,
+            "get_symbol_fingerprint": self.tools.get_symbol_fingerprint,
+            "get_data_fingerprint": self.tools.get_data_fingerprint,
+            "validate_fingerprints": self.tools.validate_fingerprints,
             "reload_index_cache": self.tools.reload_index_cache,
 
             # Symbol/source navigation tools

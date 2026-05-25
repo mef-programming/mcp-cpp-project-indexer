@@ -1216,6 +1216,11 @@ server-http-watch
 
 ```text
 get_project_summary
+get_index_fingerprint
+get_file_fingerprint(file)
+get_symbol_fingerprint(symbolId)
+get_data_fingerprint(dataId)
+validate_fingerprints(items)
 ```
 
 The server exposes an index `stateFingerprint`: a cheap server-side fingerprint
@@ -1236,6 +1241,23 @@ Every MCP tool result carries the fingerprint in result `_meta`:
 
 The same value is also exposed by `get_project_summary.stateFingerprint` and the
 HTTP status endpoint under `index.stateFingerprint`.
+
+For fine-grained evidence reuse, prefer the fingerprint tools. The global index
+fingerprint is only a warning signal. File, symbol, and data fingerprints let a
+relay validate active facts without dropping the whole evidence cache after
+every update:
+
+```text
+fileFingerprint =
+  hash(fileId + relativePath + contentHash + line/token counts)
+
+symbol/data fingerprint =
+  hash(id + fileFingerprint + startLine + endLine + signature)
+```
+
+`validate_fingerprints` is the batch entry point for relay/orchestrator layers.
+It accepts up to 500 file/symbol/data items and returns compact validity and
+fingerprint metadata only. These calls do not read or return source text.
 
 ### Change tracking tools
 
