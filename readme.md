@@ -15,11 +15,127 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 
 ---
 
+## 30-Second Overview
+
+`mcp-cpp-project-indexer` builds a lightweight routing index over a C++ source
+tree. MCP clients can then ask deterministic questions such as:
+
+- where is this function/class/data member?
+- which exact source range should be read?
+- which module imports or exports this partition?
+- which changed hunk intersects which indexed symbol or data range?
+
+The indexer returns metadata and original source ranges. It does not claim to
+understand the program. The AI still has to read the returned source and reason
+from that evidence.
+
+Minimal workflow:
+
+```text
+User asks about Widget::OnScroll
+-> find_symbol("Widget::OnScroll")
+-> read_symbol(symbolId)
+-> AI explains only what was visible in that source range
+```
+
+This keeps large C++ projects out of the prompt until exact source evidence is
+needed.
+
+---
+
+## 5-Minute Quick Start
+
+### 1. Clone this repository
+
+```powershell
+git clone https://github.com/walti1972/mcp-cpp-project-indexer.git
+cd mcp-cpp-project-indexer
+```
+
+### 2. Build an index for your C++ project
+
+```powershell
+python <indexer-root>\build_project_index.py `
+  --root <project-root> `
+  --output-root <project-root>\.mcp-cpp-project-indexer
+```
+
+The generated index is written to:
+
+```text
+<project-root>\.mcp-cpp-project-indexer
+```
+
+### 3. Start the MCP server
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer
+```
+
+For multiple MCP clients or a long-running shared process, use HTTP transport:
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 127.0.0.1 `
+  --http-port 8765
+```
+
+### 4. Add the server to your MCP client
+
+Minimal LM Studio-style config:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "command": "python",
+      "args": [
+        "<indexer-root>\\code_index_mcp_server.py",
+        "--project-root",
+        "<project-root>",
+        "--index-root",
+        "<project-root>\\.mcp-cpp-project-indexer"
+      ]
+    }
+  }
+}
+```
+
+### 5. Ask for exact source, not whole files
+
+Good first request:
+
+```text
+Find the symbol Widget::OnScroll, read its implementation, and explain only
+what is visible in the source range.
+```
+
+Expected tool path:
+
+```text
+find_symbol -> read_symbol -> source-grounded answer
+```
+
+For best results, give your AI the rules from
+[prompt_template.md](prompt_template.md). The short version is:
+
+```text
+Use metadata to locate code. Read exact source ranges before explaining behavior.
+Do not infer implementation behavior from metadata alone.
+```
+
+---
+
 ## Contents
 
+- [5-Minute Quick Start](#5-minute-quick-start)
 - [Production Scale & Performance](#-production-scale--performance)
 - [TUI Control Center](#tui-control-center)
-- [Development Backstory](#-development-backstory)
 - [Why This Tool?](#-why-this-tool)
 - [Before / After](#-before--after)
 - [How It Works](#how-it-works)
@@ -36,6 +152,7 @@ The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so
 - [Recommended AI Usage Rules](#recommended-ai-usage-rules)
 - [Example Workflows](#example-workflows)
 - [Design Rules](#design-rules)
+- [Development Backstory](#-development-backstory)
 - [Smoke Tests](#smoke-tests)
 - [Maintenance Checklist](#maintenance-checklist)
 
@@ -103,40 +220,6 @@ python <indexer-root>\indexer_tui.py `
 The UI is optional; the core indexer remains dependency-light and can still be
 driven entirely from scripts or MCP clients. For setup and keyboard shortcuts,
 see [Control Center](#control-center).
-
----
-
-## 🤖 Development Backstory
-
-This project was shaped through a multi-model AI-assisted development workflow
-involving ChatGPT, Gemini, and DeepSeek. The goal was not to let one model
-blindly invent a broad tool, but to use multiple models and real production
-feedback to argue about scope, constraints, and workflow friction.
-
-1. **Architecture and scope debate**
-   ChatGPT and Gemini were used to debate the boundary of the tool: what it
-   should do, what it should avoid, and why it should stay a lightweight routing
-   index instead of becoming a compiler or `clangd` replacement.
-
-2. **Incremental implementation**
-   The codebase was implemented incrementally with an AI coding agent, with
-   each functional change tested against real C++20 module-heavy projects.
-
-3. **Workflow structure analysis and review**
-   DeepSeek was used as a dedicated workflow-analysis partner during production
-   use inside a 7,000-file codebase. It evaluated tool-call sequences,
-   parameter choices, output size, ranking quality, navigation friction, and
-   context hygiene, then fed back concrete changes to reduce calls and improve
-   token efficiency.
-
-4. **Iterative refinement**
-   Feedback from those sessions drove focused improvements: compact outputs,
-   symbol/file/container filters, change hunk routing, watcher reloads,
-   around-line reads, and tighter prompt rules.
-
-The result is a tool built with AI for AI-assisted code navigation, optimized
-around one strict principle: keep the indexer honest and small, and let the AI
-reason only from source ranges it explicitly reads.
 
 ---
 
@@ -1602,8 +1685,6 @@ The full system prompt template is available in [prompt_template.md](prompt_temp
 
 ---
 
----
-
 ## Example workflows
 
 ### Find declaration and definition
@@ -1745,6 +1826,40 @@ mcp-cpp-project-indexer
 
 ---
 
+
+## 🤖 Development Backstory
+
+This project was shaped through a multi-model AI-assisted development workflow
+involving ChatGPT, Gemini, and DeepSeek. The goal was not to let one model
+blindly invent a broad tool, but to use multiple models and real production
+feedback to argue about scope, constraints, and workflow friction.
+
+1. **Architecture and scope debate**
+   ChatGPT and Gemini were used to debate the boundary of the tool: what it
+   should do, what it should avoid, and why it should stay a lightweight routing
+   index instead of becoming a compiler or `clangd` replacement.
+
+2. **Incremental implementation**
+   The codebase was implemented incrementally with an AI coding agent, with
+   each functional change tested against real C++20 module-heavy projects.
+
+3. **Workflow structure analysis and review**
+   DeepSeek was used as a dedicated workflow-analysis partner during production
+   use inside a 7,000-file codebase. It evaluated tool-call sequences,
+   parameter choices, output size, ranking quality, navigation friction, and
+   context hygiene, then fed back concrete changes to reduce calls and improve
+   token efficiency.
+
+4. **Iterative refinement**
+   Feedback from those sessions drove focused improvements: compact outputs,
+   symbol/file/container filters, change hunk routing, watcher reloads,
+   around-line reads, and tighter prompt rules.
+
+The result is a tool built with AI for AI-assisted code navigation, optimized
+around one strict principle: keep the indexer honest and small, and let the AI
+reason only from source ranges it explicitly reads.
+
+---
 
 ## Smoke tests
 
