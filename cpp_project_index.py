@@ -1537,6 +1537,10 @@ class LoadedProjectIndex:
         if self.sqlite_connections is not None:
             self.sqlite_connections.close()
 
+    def close_sqlite_connections(self) -> None:
+        if self.sqlite_connections is not None:
+            self.sqlite_connections.close()
+
     def sqlite_connection(self):
         if self.sqlite_connections is None:
             return None

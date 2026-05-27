@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 from http import HTTPStatus
@@ -17,7 +18,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from cpp_change_tracking import (
     ChangeTracker,
@@ -1936,39 +1937,40 @@ class ServerIndexWatcher:
                     self.last_modified = len(pending_diff.modified)
                     self.last_deleted = len(pending_diff.deleted)
                     self.last_update_result = "updating"
-                result, index_changed = self._run_update(
-                    known_files_only=not pending_diff.requires_full_discovery_update,
-                    changed_files=pending_diff.modified,
-                )
+                with self.tools.locked_index_write():
+                    result, index_changed = self._run_update(
+                        known_files_only=not pending_diff.requires_full_discovery_update,
+                        changed_files=pending_diff.modified,
+                    )
 
-                if result != 0:
+                    if result != 0:
+                        with self.status_lock:
+                            self.last_update_at = now_iso()
+                            self.last_update_result = "failed"
+                            self.last_error = f"update exit code {result}"
+                        print(
+                            f"[mcp-cpp-project-indexer] watcher update failed: {result}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        continue
+
+                    snapshot = pending_snapshot
                     with self.status_lock:
                         self.last_update_at = now_iso()
-                        self.last_update_result = "failed"
-                        self.last_error = f"update exit code {result}"
-                    print(
-                        f"[mcp-cpp-project-indexer] watcher update failed: {result}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    continue
-
-                snapshot = pending_snapshot
-                with self.status_lock:
-                    self.last_update_at = now_iso()
-                    self.last_update_result = (
-                        "updated" if index_changed else "no_index_changes"
-                    )
-                    self.last_error = None
-                if index_changed:
-                    self.tools.reload_index_cache_from_disk(
-                        reason="Server index watcher updated the index on disk."
-                    )
-                    print(
-                        "[mcp-cpp-project-indexer] watcher reloaded MCP cache",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                        self.last_update_result = (
+                            "updated" if index_changed else "no_index_changes"
+                        )
+                        self.last_error = None
+                    if index_changed:
+                        self.tools.reload_index_cache_from_disk(
+                            reason="Server index watcher updated the index on disk."
+                        )
+                        print(
+                            "[mcp-cpp-project-indexer] watcher reloaded MCP cache",
+                            file=sys.stderr,
+                            flush=True,
+                        )
         except Exception:  # noqa: BLE001 - watcher must not take down MCP server.
             with self.status_lock:
                 self.running = False
@@ -2011,6 +2013,7 @@ class ManagementCommandRunner:
         self.process: subprocess.Popen[str] | None = None
         self.reader: threading.Thread | None = None
         self.on_success: Callable[[], None] | None = None
+        self.on_finish: Callable[[], None] | None = None
         self.last_command: str | None = None
         self.last_exit_code: int | None = None
         self.started_at: str | None = None
@@ -2094,12 +2097,14 @@ class ManagementCommandRunner:
         *,
         cwd: Path | None = None,
         on_success: Callable[[], None] | None = None,
+        on_finish: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if self.running:
                 raise McpError(-32010, "A management command is already running")
 
             self.on_success = on_success
+            self.on_finish = on_finish
             self.last_command = " ".join(args)
             self.last_exit_code = None
             self.started_at = now_iso()
@@ -2155,17 +2160,24 @@ class ManagementCommandRunner:
 
         exit_code = process.wait()
         on_success = self.on_success
+        on_finish = self.on_finish
         with self.lock:
             self.last_exit_code = exit_code
             self.finished_at = now_iso()
             self.process = None
             self.on_success = None
+            self.on_finish = None
         if exit_code == 0 and on_success is not None:
             try:
                 on_success()
                 self.append_event("Server index cache reloaded after successful command.")
             except Exception as exc:  # noqa: BLE001 - command already finished; report reload issue.
                 self.append_event(f"Post-command reload failed: {exc}")
+        if on_finish is not None:
+            try:
+                on_finish()
+            except Exception as exc:  # noqa: BLE001 - command already finished; report unlock issue.
+                self.append_event(f"Post-command cleanup failed: {exc}")
         self.append_event(f"Process exited with code {exit_code}.")
 
 
@@ -2245,6 +2257,8 @@ class CodeIndexTools:
         self.module_map_path = index_root / "module_map.json"
         self.module_map: dict[str, Any] | None = None
         self.index_lock = threading.RLock()
+        self.index_condition = threading.Condition(self.index_lock)
+        self.index_write_active = False
         self.watcher: ServerIndexWatcher | None = None
         self.change_tracking_availability = detect_change_tracking(project_root)
         self.change_tracker: ChangeTracker | None = None
@@ -2303,6 +2317,36 @@ class CodeIndexTools:
 
         self.watcher.stop()
         self.watcher = None
+
+    @contextmanager
+    def locked_index_read(self) -> Iterator[None]:
+        with self.index_condition:
+            while self.index_write_active:
+                self.index_condition.wait()
+            try:
+                yield
+            finally:
+                self.index.close_sqlite_connections()
+
+    def begin_index_write(self) -> None:
+        with self.index_condition:
+            while self.index_write_active:
+                self.index_condition.wait()
+            self.index_write_active = True
+            self.index.close_sqlite_connections()
+
+    def end_index_write(self) -> None:
+        with self.index_condition:
+            self.index_write_active = False
+            self.index_condition.notify_all()
+
+    @contextmanager
+    def locked_index_write(self) -> Iterator[None]:
+        self.begin_index_write()
+        try:
+            yield
+        finally:
+            self.end_index_write()
 
     def _load_module_map(self) -> None:
         self.module_map = None
@@ -4381,16 +4425,27 @@ class McpServer:
             raise McpError(-32602, f"Unknown management command: {command}")
 
         reload_after_success = command in {"build", "update", "fast_update", "module_map"}
-        return self.management_runner.start_process(
-            args,
-            on_success=(
-                lambda: self.tools.reload_index_cache_from_disk(
-                    reason=f"Management command '{command}' completed successfully."
-                )
-                if reload_after_success
-                else None
-            ),
-        )
+        writes_index_db = command in {"build", "update", "fast_update"}
+
+        if writes_index_db:
+            self.tools.begin_index_write()
+
+        try:
+            return self.management_runner.start_process(
+                args,
+                on_success=(
+                    lambda: self.tools.reload_index_cache_from_disk(
+                        reason=f"Management command '{command}' completed successfully."
+                    )
+                    if reload_after_success
+                    else None
+                ),
+                on_finish=(self.tools.end_index_write if writes_index_db else None),
+            )
+        except Exception:
+            if writes_index_db:
+                self.tools.end_index_write()
+            raise
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
@@ -4477,7 +4532,8 @@ class McpServer:
             if handler is None:
                 raise McpError(-32601, f"Unknown tool: {tool_name}")
 
-            result = handler(arguments)
+            with self.tools.locked_index_read():
+                result = handler(arguments)
 
             if isinstance(result, dict):
                 meta = result.get("_meta")

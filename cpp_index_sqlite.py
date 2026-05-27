@@ -41,15 +41,18 @@ class ThreadLocalIndexConnections:
         self.local = threading.local()
         self.all_connections: list[sqlite3.Connection] = []
         self.lock = threading.Lock()
+        self.generation = 0
 
     def get(self) -> sqlite3.Connection:
         connection = getattr(self.local, "connection", None)
+        generation = getattr(self.local, "generation", None)
 
-        if connection is not None:
+        if connection is not None and generation == self.generation:
             return connection
 
         connection = connect_readonly_index_db(self.path)
         self.local.connection = connection
+        self.local.generation = self.generation
 
         with self.lock:
             self.all_connections.append(connection)
@@ -60,6 +63,7 @@ class ThreadLocalIndexConnections:
         with self.lock:
             connections = list(self.all_connections)
             self.all_connections.clear()
+            self.generation += 1
 
         for connection in connections:
             try:
