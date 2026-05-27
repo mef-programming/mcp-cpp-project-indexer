@@ -76,6 +76,8 @@ def save_ui_settings(
     jobs: int,
     emit_diagnostic_file_indexes: bool,
     theme: str | None = None,
+    management_api_enabled: bool | None = None,
+    management_token: str | None = None,
 ) -> None:
     path = ui_settings_path(
         indexer_root=indexer_root,
@@ -87,12 +89,24 @@ def save_ui_settings(
     if not isinstance(existing, dict):
         existing = {}
     saved_theme = theme or str(existing.get("theme") or "textual-dark")
+    saved_management_enabled = (
+        management_api_enabled
+        if management_api_enabled is not None
+        else bool(existing.get("managementApiEnabled", False))
+    )
+    saved_management_token = (
+        management_token
+        if management_token is not None
+        else str(existing.get("managementToken") or "")
+    )
     path.write_text(
         json.dumps(
             {
                 "schema": UI_SETTINGS_SCHEMA,
                 "theme": saved_theme,
                 "httpUrl": http_url,
+                "managementApiEnabled": saved_management_enabled,
+                "managementToken": saved_management_token,
                 "jobs": jobs,
                 "emitDiagnosticFileIndexes": emit_diagnostic_file_indexes,
                 "lastProjectRoot": root.as_posix(),

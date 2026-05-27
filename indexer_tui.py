@@ -27,6 +27,7 @@ from indexer_control import (
     request_process_exit,
     save_ui_settings,
     subprocess_creation_flags,
+    ui_settings_path,
 )
 
 
@@ -214,6 +215,7 @@ if TEXTUAL_AVAILABLE:
             ("f", "fast_update", "Fast update"),
             ("m", "module_map", "Module map"),
             ("h", "http_server", "HTTP server"),
+            ("g", "management_server", "HTTP management"),
             ("w", "watcher", "Watcher"),
             ("s", "toggle_diagnostics", "Diagnostics"),
             ("x", "stop_process", "Stop"),
@@ -229,6 +231,8 @@ if TEXTUAL_AVAILABLE:
             indexer_root: Path,
             jobs: int,
             http_url: str,
+            management_api_enabled: bool,
+            management_token: str,
             emit_diagnostic_file_indexes: bool,
             theme: str | None = None,
         ) -> None:
@@ -238,6 +242,8 @@ if TEXTUAL_AVAILABLE:
             self.indexer_root = indexer_root.resolve()
             self.jobs = jobs
             self.http_url = http_url.rstrip("/")
+            self.management_api_enabled = management_api_enabled
+            self.management_token = management_token
             self.emit_diagnostic_file_indexes = emit_diagnostic_file_indexes
             self.initial_theme = theme or ""
             self.python = Path(sys.executable)
@@ -260,6 +266,7 @@ if TEXTUAL_AVAILABLE:
                     yield Button("Fast update", id="action-fast-update")
                     yield Button("Build module map", id="action-module-map")
                     yield Button("Start HTTP + watcher", id="action-http-server", variant="success")
+                    yield Button("Start HTTP + management", id="action-management-server", variant="success")
                     yield Button("Start watcher", id="action-watcher")
                     yield Button("Toggle diagnostics", id="action-diagnostics")
                     yield Button("Settings / Help", id="action-help")
@@ -301,6 +308,8 @@ if TEXTUAL_AVAILABLE:
                 self.action_module_map()
             elif button_id == "action-http-server":
                 self.action_http_server()
+            elif button_id == "action-management-server":
+                self.action_management_server()
             elif button_id == "action-watcher":
                 self.action_watcher()
             elif button_id == "action-diagnostics":
@@ -380,6 +389,7 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#mode", Static).update(
                 f"{self.label('Mode')}    "
                 f"{self.label('diagnostic file sections')} {self.state_value('ON' if diagnostics_enabled else 'OFF', diagnostics_enabled)}   "
+                f"{self.label('mgmt')} {self.state_value('ON' if self.management_api_enabled else 'OFF', self.management_api_enabled)}   "
                 f"{self.label('jobs')} {self.value(self.jobs)}   "
                 f"{self.label('theme')} {self.value(self.current_theme_name())}"
             )
@@ -388,6 +398,7 @@ if TEXTUAL_AVAILABLE:
                 f"{self.label('HTTP:')} {self.state_value('connected' if http_connected else 'offline', http_connected)}   "
                 f"{self.label('Watcher:')} {self.state_value('running' if watcher_running else 'stopped', watcher_running)}   "
                 f"{self.label('Diagnostics:')} {self.warn_value(fmt_count(counts.get('diagnostics')))}   "
+                f"{self.label('Mgmt:')} {self.state_value('on' if self.management_api_enabled else 'off', self.management_api_enabled)}   "
                 f"{self.label('SQLite:')} {self.state_value('yes' if (self.index_root / 'index.sqlite').exists() else 'no', (self.index_root / 'index.sqlite').exists())}   "
                 f"{self.label('Jobs:')} {self.value(self.jobs)}"
             )
@@ -661,6 +672,40 @@ if TEXTUAL_AVAILABLE:
 
             self.runner.start(args)
 
+        def action_management_server(self) -> None:
+            host, port = parse_http_url(self.http_url)
+            args = self.command_base("code_index_mcp_server.py") + [
+                "--project-root",
+                str(self.root),
+                "--index-root",
+                str(self.index_root),
+                "--transport",
+                "http",
+                "--http-host",
+                host,
+                "--http-port",
+                str(port),
+                "--watch-index",
+                "--watch-jobs",
+                str(self.jobs),
+                "--enable-management-api",
+            ]
+
+            if self.management_token:
+                args.extend(["--management-token", self.management_token])
+            else:
+                self.write_log(
+                    "Warning: management API is starting without a token. "
+                    "Use managementToken in the TUI settings file for external UIs."
+                )
+
+            if self.emit_diagnostic_file_indexes:
+                args.append("--watch-emit-diagnostic-file-indexes")
+
+            self.management_api_enabled = True
+            self.save_settings()
+            self.runner.start(args)
+
         def action_watcher(self) -> None:
             args = self.command_base("watch_project_index.py") + [
                 "--root",
@@ -741,6 +786,8 @@ if TEXTUAL_AVAILABLE:
                 jobs=self.jobs,
                 emit_diagnostic_file_indexes=self.emit_diagnostic_file_indexes,
                 theme=self.current_theme_name(),
+                management_api_enabled=self.management_api_enabled,
+                management_token=self.management_token,
             )
 
         def action_refresh_status(self) -> None:
@@ -751,10 +798,26 @@ if TEXTUAL_AVAILABLE:
             self.write_log("Project root: " + str(self.root))
             self.write_log("Index root: " + str(self.index_root))
             self.write_log("HTTP URL: " + self.http_url)
+            self.write_log("Management API: " + ("enabled" if self.management_api_enabled else "disabled"))
+            self.write_log(
+                "Management token: "
+                + ("configured" if self.management_token else "not configured")
+            )
+            self.write_log(
+                "Settings file: "
+                + str(
+                    ui_settings_path(
+                        indexer_root=self.indexer_root,
+                        root=self.root,
+                        index_root=self.index_root,
+                    )
+                )
+            )
             self.write_log("Theme: " + self.current_theme_name())
             self.write_log(
                 "Shortcuts: B build, U update, F fast update, M module map, "
-                "C clean index, H HTTP+watcher, W watcher, S diagnostics, X stop, R refresh, Q quit."
+                "C clean index, H HTTP+watcher, G HTTP+management, W watcher, "
+                "S diagnostics, X stop, R refresh, Q quit."
             )
 
 
@@ -792,6 +855,17 @@ def parse_args() -> argparse.Namespace:
         help="HTTP server base URL used for live status.",
     )
     parser.add_argument(
+        "--enable-management-api",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable the TUI's HTTP + management launch mode.",
+    )
+    parser.add_argument(
+        "--management-token",
+        default=None,
+        help="Management API token used when launching HTTP + management.",
+    )
+    parser.add_argument(
         "--emit-diagnostic-file-indexes",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -819,6 +893,16 @@ def main() -> int:
     )
     http_url = str(settings.get("httpUrl") or args.http_url)
     jobs = int(args.jobs if args.jobs is not None else settings.get("jobs") or 1)
+    management_api_enabled = bool(
+        args.enable_management_api
+        if args.enable_management_api is not None
+        else settings.get("managementApiEnabled", False)
+    )
+    management_token = str(
+        args.management_token
+        if args.management_token is not None
+        else settings.get("managementToken") or ""
+    )
     theme = str(settings.get("theme") or "textual-dark")
     emit_diagnostic_file_indexes = bool(
         settings.get("emitDiagnosticFileIndexes")
@@ -831,6 +915,8 @@ def main() -> int:
         indexer_root=indexer_root,
         jobs=jobs,
         http_url=http_url,
+        management_api_enabled=management_api_enabled,
+        management_token=management_token,
         emit_diagnostic_file_indexes=emit_diagnostic_file_indexes,
         theme=theme,
     )

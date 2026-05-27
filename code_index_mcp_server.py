@@ -31,7 +31,16 @@ from cpp_index_lock import (
     index_watcher_lock,
 )
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
-from indexer_control import process_stats
+from indexer_control import (
+    fmt_bytes,
+    fmt_count,
+    fmt_duration,
+    iso_age_seconds,
+    kill_process_tree,
+    process_stats,
+    request_process_exit,
+    subprocess_creation_flags,
+)
 from watch_project_index import (
     SnapshotEntry,
     diff_snapshots,
@@ -1980,6 +1989,254 @@ class ServerIndexWatcher:
                 self.lock_held = False
 
 
+class ManagementCommandRunner:
+    def __init__(
+        self,
+        *,
+        indexer_root: Path,
+        project_root: Path,
+        index_root: Path,
+        default_jobs: int,
+        max_events: int = 5000,
+    ) -> None:
+        self.indexer_root = indexer_root
+        self.project_root = project_root
+        self.index_root = index_root
+        self.default_jobs = default_jobs
+        self.max_events = max_events
+        self.lock = threading.RLock()
+        self.condition = threading.Condition(self.lock)
+        self.events: list[dict[str, Any]] = []
+        self.next_event_id = 1
+        self.process: subprocess.Popen[str] | None = None
+        self.reader: threading.Thread | None = None
+        self.on_success: Callable[[], None] | None = None
+        self.last_command: str | None = None
+        self.last_exit_code: int | None = None
+        self.started_at: str | None = None
+        self.finished_at: str | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def status(self) -> dict[str, Any]:
+        with self.lock:
+            pid = self.process.pid if self.process is not None and self.running else None
+            return {
+                "running": self.running,
+                "pid": pid,
+                "process": process_stats(pid) if pid is not None else None,
+                "lastCommand": self.last_command,
+                "lastExitCode": self.last_exit_code,
+                "startedAt": self.started_at,
+                "finishedAt": self.finished_at,
+                "nextLogEventId": self.next_event_id,
+                "availableCommands": [
+                    "build",
+                    "update",
+                    "fast_update",
+                    "module_map",
+                    "reload_index",
+                    "start_watcher",
+                    "stop_watcher",
+                    "stop_command",
+                ],
+            }
+
+    def recent_events(self, *, since: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 2000))
+        with self.lock:
+            events = [
+                event
+                for event in self.events
+                if int(event.get("id") or 0) > since
+            ]
+            return events[-limit:]
+
+    def wait_for_events(
+        self,
+        *,
+        since: int,
+        timeout: float,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while True:
+                events = self.recent_events(since=since, limit=limit)
+                if events:
+                    return events
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+
+                self.condition.wait(timeout=remaining)
+
+    def append_event(self, message: str, *, stream: str = "system") -> None:
+        with self.condition:
+            event = {
+                "id": self.next_event_id,
+                "time": now_iso(),
+                "stream": stream,
+                "message": message.rstrip(),
+            }
+            self.next_event_id += 1
+            self.events.append(event)
+            if len(self.events) > self.max_events:
+                del self.events[: len(self.events) - self.max_events]
+            self.condition.notify_all()
+
+    def start_process(
+        self,
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        on_success: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise McpError(-32010, "A management command is already running")
+
+            self.on_success = on_success
+            self.last_command = " ".join(args)
+            self.last_exit_code = None
+            self.started_at = now_iso()
+            self.finished_at = None
+            self.append_event("> " + self.last_command)
+            self.process = subprocess.Popen(
+                args,
+                cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess_creation_flags(),
+            )
+            self.reader = threading.Thread(
+                target=self._read_process_output,
+                name="mcp-cpp-project-indexer-management-command",
+                daemon=True,
+            )
+            self.reader.start()
+            return self.status()
+
+    def stop_process(self, *, wait: bool = False) -> dict[str, Any]:
+        with self.lock:
+            if not self.running or self.process is None:
+                self.append_event("No running command to stop.")
+                return self.status()
+
+            process = self.process
+
+        if wait:
+            request_process_exit(process)
+            self.append_event("Graceful process shutdown requested.")
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                kill_process_tree(process)
+                self.append_event("Running command did not exit; kill requested.")
+        else:
+            process.terminate()
+            self.append_event("Terminate requested for running command.")
+
+        return self.status()
+
+    def _read_process_output(self) -> None:
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+
+        for line in process.stdout:
+            self.append_event(line, stream="stdout")
+
+        exit_code = process.wait()
+        on_success = self.on_success
+        with self.lock:
+            self.last_exit_code = exit_code
+            self.finished_at = now_iso()
+            self.process = None
+            self.on_success = None
+        if exit_code == 0 and on_success is not None:
+            try:
+                on_success()
+                self.append_event("Server index cache reloaded after successful command.")
+            except Exception as exc:  # noqa: BLE001 - command already finished; report reload issue.
+                self.append_event(f"Post-command reload failed: {exc}")
+        self.append_event(f"Process exited with code {exit_code}.")
+
+
+class ServerTrafficLog:
+    def __init__(self, *, max_events: int = 5000) -> None:
+        self.max_events = max_events
+        self.lock = threading.RLock()
+        self.condition = threading.Condition(self.lock)
+        self.events: list[dict[str, Any]] = []
+        self.next_event_id = 1
+
+    def recent_events(self, *, since: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 2000))
+        with self.lock:
+            events = [
+                event
+                for event in self.events
+                if int(event.get("id") or 0) > since
+            ]
+            return events[-limit:]
+
+    def wait_for_events(
+        self,
+        *,
+        since: int,
+        timeout: float,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while True:
+                events = self.recent_events(since=since, limit=limit)
+                if events:
+                    return events
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+
+                self.condition.wait(timeout=remaining)
+
+    def append_event(
+        self,
+        message: str,
+        *,
+        stream: str = "http",
+        detail: str | None = None,
+    ) -> None:
+        with self.condition:
+            event = {
+                "id": self.next_event_id,
+                "time": now_iso(),
+                "stream": stream,
+                "message": message.rstrip(),
+            }
+            if detail is not None:
+                event["detail"] = detail
+            self.next_event_id += 1
+            self.events.append(event)
+            if len(self.events) > self.max_events:
+                del self.events[: len(self.events) - self.max_events]
+            self.condition.notify_all()
+
+    def status(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "nextLogEventId": self.next_event_id,
+                "eventCount": len(self.events),
+            }
+
+
 class CodeIndexTools:
     def __init__(self, *, project_root: Path, index_root: Path) -> None:
         self.project_root = project_root
@@ -3750,10 +4007,36 @@ def json_response_options(arguments: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class McpServer:
-    def __init__(self, tools: CodeIndexTools) -> None:
+    def __init__(
+        self,
+        tools: CodeIndexTools,
+        *,
+        management_runner: ManagementCommandRunner | None = None,
+        management_enabled: bool = False,
+        management_token: str | None = None,
+        watch_poll_interval: float = 1.0,
+        watch_debounce: float = 1.0,
+        watch_jobs: int = 0,
+        watch_module_map: bool = True,
+        watch_emit_debug_file_indexes: bool = False,
+        watch_include_extensionless_headers: bool = False,
+        watch_git_ignore: bool = True,
+    ) -> None:
         self.tools = tools
         self.started_at = now_iso()
         self.transport = "stdio"
+        self.http_url: str | None = None
+        self.management_runner = management_runner
+        self.management_enabled = management_enabled
+        self.management_token = management_token
+        self.server_traffic_log = ServerTrafficLog()
+        self.watch_poll_interval = watch_poll_interval
+        self.watch_debounce = watch_debounce
+        self.watch_jobs = watch_jobs
+        self.watch_module_map = watch_module_map
+        self.watch_emit_debug_file_indexes = watch_emit_debug_file_indexes
+        self.watch_include_extensionless_headers = watch_include_extensionless_headers
+        self.watch_git_ignore = watch_git_ignore
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             # Project/cache tools
             "get_project_summary": self.tools.get_project_summary,
@@ -3815,17 +4098,299 @@ class McpServer:
             )
 
     def status_snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot = {
             "server": {
                 "name": SERVER_NAME,
                 "version": SERVER_VERSION,
                 "transport": self.transport,
+                "url": self.http_url,
                 "startedAt": self.started_at,
                 "pid": os.getpid(),
                 "process": process_stats(),
             },
             **self.tools.status_snapshot(),
         }
+        snapshot["dashboard"] = self.dashboard_snapshot(snapshot)
+        if self.management_enabled and self.management_runner is not None:
+            snapshot["management"] = self.management_status(include_server=False)
+        return snapshot
+
+    def management_status(self, *, include_server: bool = True) -> dict[str, Any]:
+        runner_status = (
+            self.management_runner.status()
+            if self.management_runner is not None
+            else {"running": False, "availableCommands": []}
+        )
+        result: dict[str, Any] = {
+            "enabled": self.management_enabled,
+            "requiresToken": bool(self.management_token),
+            "runner": runner_status,
+            "dashboard": self.dashboard_snapshot(self.status_snapshot_without_management()),
+            "watcher": (
+                self.tools.watcher.status()
+                if self.tools.watcher is not None
+                else {"configured": False, "running": False, "lockHeld": False}
+            ),
+        }
+        if include_server:
+            result["status"] = self.status_snapshot_without_management()
+        return result
+
+    def status_snapshot_without_management(self) -> dict[str, Any]:
+        return {
+            "server": {
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "transport": self.transport,
+                "url": self.http_url,
+                "startedAt": self.started_at,
+                "pid": os.getpid(),
+                "process": process_stats(),
+            },
+            **self.tools.status_snapshot(),
+        }
+
+    def dashboard_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        project = snapshot.get("project", {})
+        index = snapshot.get("index", {})
+        server = snapshot.get("server", {})
+        process = server.get("process", {}) if isinstance(server.get("process"), dict) else {}
+        watcher = snapshot.get("watcher", {})
+        locks = snapshot.get("locks", {})
+        counts = index.get("counts", {}) if isinstance(index.get("counts"), dict) else {}
+        stats = index.get("stats", {}) if isinstance(index.get("stats"), dict) else {}
+
+        uptime_seconds = iso_age_seconds(server.get("startedAt"))
+        if uptime_seconds is None and process.get("createTime") is not None:
+            try:
+                uptime_seconds = max(0.0, time.time() - float(process.get("createTime")))
+            except (TypeError, ValueError):
+                uptime_seconds = None
+
+        cpu_user = process.get("cpuUserSeconds")
+        cpu_system = process.get("cpuSystemSeconds")
+        cpu_seconds: float | None = None
+        cpu_percent_total: float | None = None
+        cpu_percent_machine: float | None = None
+        cpu_cores_average: float | None = None
+        try:
+            cpu_seconds = float(cpu_user or 0.0) + float(cpu_system or 0.0)
+            if uptime_seconds and uptime_seconds > 0:
+                cpu_percent_total = (cpu_seconds / uptime_seconds) * 100.0
+                cpu_cores_average = cpu_percent_total / 100.0
+                cpu_percent_machine = cpu_percent_total / float(os.cpu_count() or 1)
+        except (TypeError, ValueError):
+            cpu_seconds = None
+
+        def cpu_text() -> str:
+            if cpu_cores_average is None or cpu_percent_machine is None:
+                return "-"
+            return f"{cpu_cores_average:.2f}c / {cpu_percent_machine:.1f}%"
+
+        diagnostics_enabled = self.watch_emit_debug_file_indexes
+        jobs = normalize_jobs(self.watch_jobs)
+        return {
+            "project": {
+                "root": project.get("root") or self.tools.project_root.as_posix(),
+                "text": str(project.get("root") or self.tools.project_root.as_posix()),
+            },
+            "index": {
+                "root": project.get("indexRoot") or self.tools.index_root.as_posix(),
+                "text": str(project.get("indexRoot") or self.tools.index_root.as_posix()),
+            },
+            "server": {
+                "url": server.get("url"),
+                "pid": server.get("pid") or process.get("pid"),
+                "ramBytes": process.get("rssBytes"),
+                "ramText": fmt_bytes(process.get("rssBytes")),
+                "cpuTimeSeconds": cpu_seconds,
+                "cpuTimeText": f"{cpu_seconds:.1f}s" if cpu_seconds is not None else "-",
+                "cpuCoresAverage": cpu_cores_average,
+                "cpuPercentMachine": cpu_percent_machine,
+                "cpuText": cpu_text(),
+                "uptimeSeconds": uptime_seconds,
+                "uptimeText": fmt_duration(uptime_seconds),
+                "threads": process.get("threads"),
+                "threadsText": fmt_count(process.get("threads")),
+            },
+            "watcher": {
+                "running": bool(watcher.get("running")),
+                "runningText": "running" if watcher.get("running") else "stopped",
+                "lockHeld": bool(watcher.get("lockHeld")),
+                "lockText": "held" if watcher.get("lockHeld") else "not-held",
+                "last": watcher.get("lastUpdateResult") or "-",
+            },
+            "counts": {
+                "files": counts.get("files"),
+                "filesText": fmt_count(counts.get("files")),
+                "symbols": counts.get("symbols"),
+                "symbolsText": fmt_count(counts.get("symbols")),
+                "data": counts.get("data"),
+                "dataText": fmt_count(counts.get("data")),
+                "modules": counts.get("modules"),
+                "modulesText": fmt_count(counts.get("modules")),
+                "diagnostics": counts.get("diagnostics"),
+                "diagnosticsText": fmt_count(counts.get("diagnostics")),
+            },
+            "stats": {
+                "codeLines": stats.get("totalCodeLines"),
+                "codeLinesText": fmt_count(stats.get("totalCodeLines")),
+                "tokens": stats.get("totalTokens"),
+                "tokensText": fmt_count(stats.get("totalTokens")),
+                "cpuTimeSeconds": cpu_seconds,
+                "cpuTimeText": f"{cpu_seconds:.1f}s" if cpu_seconds is not None else "-",
+                "threads": process.get("threads"),
+                "threadsText": fmt_count(process.get("threads")),
+            },
+            "locks": {
+                "updateFile": bool(locks.get("updateLockFileExists")),
+                "watcherFile": bool(locks.get("watcherLockFileExists")),
+            },
+            "mode": {
+                "diagnosticFileSections": diagnostics_enabled,
+                "diagnosticFileSectionsText": "ON" if diagnostics_enabled else "OFF",
+                "jobs": jobs,
+                "jobsText": fmt_count(jobs),
+                "theme": None,
+            },
+        }
+
+    def handle_management_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.management_runner is None:
+            raise McpError(-32020, "Management runner is not configured")
+
+        command = payload.get("command")
+        if not isinstance(command, str):
+            raise McpError(-32602, "management command requires string field 'command'")
+
+        command = command.strip().casefold().replace("-", "_")
+        jobs = normalize_jobs(int(payload.get("jobs") or self.watch_jobs or self.management_runner.default_jobs))
+        emit_diagnostics = bool(
+            payload.get("emitDiagnosticFileIndexes")
+            if "emitDiagnosticFileIndexes" in payload
+            else self.watch_emit_debug_file_indexes
+        )
+        include_extensionless_headers = bool(
+            payload.get("includeExtensionlessHeaders")
+            if "includeExtensionlessHeaders" in payload
+            else self.watch_include_extensionless_headers
+        )
+        use_git_ignore = bool(
+            payload.get("useGitIgnore")
+            if "useGitIgnore" in payload
+            else self.watch_git_ignore
+        )
+
+        if command == "stop_command":
+            return self.management_runner.stop_process(wait=bool(payload.get("wait")))
+
+        if command == "reload_index":
+            result = self.tools.reload_index_cache_from_disk(
+                reason="Management API requested index reload."
+            )
+            self.management_runner.append_event("Index cache reloaded by management API.")
+            return {"reloaded": result, "management": self.management_runner.status()}
+
+        if command == "start_watcher":
+            self.tools.start_index_watcher(
+                poll_interval=float(payload.get("pollIntervalSeconds") or self.watch_poll_interval),
+                debounce=float(payload.get("debounceSeconds") or self.watch_debounce),
+                jobs=jobs,
+                module_map=bool(
+                    payload.get("moduleMap")
+                    if "moduleMap" in payload
+                    else self.watch_module_map
+                ),
+                emit_debug_file_indexes=emit_diagnostics,
+                include_extensionless_headers=include_extensionless_headers,
+                use_git_ignore=use_git_ignore,
+            )
+            self.management_runner.append_event("Built-in watcher start requested.")
+            return {"watcher": self.tools.status_snapshot().get("watcher"), "management": self.management_runner.status()}
+
+        if command == "stop_watcher":
+            self.tools.stop_index_watcher()
+            self.management_runner.append_event("Built-in watcher stop requested.")
+            return {"watcher": self.tools.status_snapshot().get("watcher"), "management": self.management_runner.status()}
+
+        args = [sys.executable]
+        if command == "build":
+            args.extend(
+                [
+                    str(self.management_runner.indexer_root / "build_project_index.py"),
+                    "--root",
+                    str(self.tools.project_root),
+                    "--output-root",
+                    str(self.tools.index_root),
+                    "--jobs",
+                    str(jobs),
+                ]
+            )
+            if emit_diagnostics:
+                args.append("--emit-diagnostic-file-indexes")
+            if include_extensionless_headers:
+                args.append("--include-extensionless-headers")
+            if not use_git_ignore:
+                args.append("--no-git-ignore")
+        elif command == "update":
+            args.extend(
+                [
+                    str(self.management_runner.indexer_root / "update_project_index.py"),
+                    "--root",
+                    str(self.tools.project_root),
+                    "--index-root",
+                    str(self.tools.index_root),
+                    "--jobs",
+                    str(jobs),
+                ]
+            )
+            if emit_diagnostics:
+                args.append("--emit-diagnostic-file-indexes")
+            if include_extensionless_headers:
+                args.append("--include-extensionless-headers")
+            if not use_git_ignore:
+                args.append("--no-git-ignore")
+        elif command == "fast_update":
+            args.extend(
+                [
+                    str(self.management_runner.indexer_root / "update_project_index.py"),
+                    "--root",
+                    str(self.tools.project_root),
+                    "--index-root",
+                    str(self.tools.index_root),
+                    "--jobs",
+                    str(jobs),
+                    "--known-files-only",
+                ]
+            )
+            if emit_diagnostics:
+                args.append("--emit-diagnostic-file-indexes")
+            if include_extensionless_headers:
+                args.append("--include-extensionless-headers")
+            if not use_git_ignore:
+                args.append("--no-git-ignore")
+        elif command == "module_map":
+            args.extend(
+                [
+                    str(self.management_runner.indexer_root / "build_module_map.py"),
+                    "--index-root",
+                    str(self.tools.index_root),
+                ]
+            )
+        else:
+            raise McpError(-32602, f"Unknown management command: {command}")
+
+        reload_after_success = command in {"build", "update", "fast_update", "module_map"}
+        return self.management_runner.start_process(
+            args,
+            on_success=(
+                lambda: self.tools.reload_index_cache_from_disk(
+                    reason=f"Management command '{command}' completed successfully."
+                )
+                if reload_after_success
+                else None
+            ),
+        )
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
@@ -3964,6 +4529,66 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
 
+        if path == "/management/status":
+            if not self._management_allowed():
+                return
+            mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
+            self._write_json(HTTPStatus.OK, mcp_server.management_status())
+            return
+
+        if path == "/management/log":
+            if not self._management_allowed():
+                return
+            mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
+            runner = mcp_server.management_runner
+            if runner is None:
+                self._write_json(HTTPStatus.OK, {"events": []})
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            since = int((query.get("since") or ["0"])[0] or 0)
+            limit = int((query.get("limit") or ["500"])[0] or 500)
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "events": runner.recent_events(since=since, limit=limit),
+                    "nextLogEventId": runner.status().get("nextLogEventId"),
+                },
+            )
+            return
+
+        if path == "/management/log/stream":
+            if not self._management_allowed():
+                return
+            self._write_management_log_stream()
+            return
+
+        if path == "/management/server-log":
+            if not self._management_allowed():
+                return
+            mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            since = int((query.get("since") or ["0"])[0] or 0)
+            limit = int((query.get("limit") or ["500"])[0] or 500)
+            self._write_json(
+                HTTPStatus.OK,
+                {
+                    "events": mcp_server.server_traffic_log.recent_events(
+                        since=since,
+                        limit=limit,
+                    ),
+                    "nextLogEventId": mcp_server.server_traffic_log.status().get(
+                        "nextLogEventId"
+                    ),
+                },
+            )
+            return
+
+        if path == "/management/server-log/stream":
+            if not self._management_allowed():
+                return
+            self._write_server_traffic_log_stream()
+            return
+
         if path in {"/mcp", "/sse"}:
             self._write_sse_endpoint()
             return
@@ -3977,6 +4602,41 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
+        if self._request_path() == "/management/command":
+            if not self._management_allowed():
+                return
+
+            try:
+                body = self._read_request_body()
+                self._request_body_bytes = len(body)
+                payload = json.loads(body.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._write_json(HTTPStatus.BAD_REQUEST, {"error": f"Parse error: {exc}"})
+                return
+
+            if not isinstance(payload, dict):
+                self._write_json(HTTPStatus.BAD_REQUEST, {"error": "Expected JSON object"})
+                return
+
+            mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+            try:
+                result = mcp_server.handle_management_command(payload)
+            except McpError as exc:
+                self._write_json(
+                    HTTPStatus.CONFLICT if exc.code == -32010 else HTTPStatus.BAD_REQUEST,
+                    {"error": exc.message, "code": exc.code, "data": exc.data},
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - keep management endpoint alive.
+                self._write_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": str(exc), "traceback": traceback.format_exc()},
+                )
+                return
+
+            self._write_json(HTTPStatus.OK, result)
+            return
+
         if self._request_path() not in {"", "/mcp", "/rpc", "/messages"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
@@ -4037,22 +4697,31 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self._write_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
-        if self._request_path() == "/status":
+        path = self._request_path()
+        if path in {"/status", "/management/server-log", "/management/server-log/stream"}:
             return
 
         request_bytes = getattr(self, "_request_body_bytes", 0)
         response_bytes = getattr(self, "_response_body_bytes", 0)
         mcp_detail = getattr(self, "_mcp_request_detail", "-")
-        print(
-            (
-                "[mcp-cpp-project-indexer-http] "
-                + format % args
-                + f" mcp={mcp_detail}"
-                + f" requestBytes={request_bytes} responseBytes={response_bytes}"
-            ),
-            file=sys.stderr,
-            flush=True,
+        message = (
+            "[mcp-cpp-project-indexer-http] "
+            + format % args
+            + f" mcp={mcp_detail}"
+            + f" requestBytes={request_bytes} responseBytes={response_bytes}"
         )
+        print(message, file=sys.stderr, flush=True)
+
+        try:
+            mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+            stream = "mcp" if path in {"", "/mcp", "/rpc", "/messages"} else "http"
+            mcp_server.server_traffic_log.append_event(
+                message,
+                stream=stream,
+                detail=str(mcp_detail),
+            )
+        except Exception:
+            pass
 
     def _request_path(self) -> str:
         return urllib.parse.urlparse(self.path).path.rstrip("/")
@@ -4123,6 +4792,24 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
         return method
 
+    def _management_allowed(self) -> bool:
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        if not mcp_server.management_enabled:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return False
+
+        token = mcp_server.management_token
+        if not token:
+            return True
+
+        auth = self.headers.get("Authorization", "")
+        api_key = self.headers.get("x-api-key", "")
+        if auth == f"Bearer {token}" or api_key == token:
+            return True
+
+        self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "Management token required"})
+        return False
+
     def _write_empty(self, status: HTTPStatus) -> None:
         self._response_body_bytes = 0
         self.send_response(status)
@@ -4157,6 +4844,68 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             try:
                 time.sleep(15)
                 self.wfile.write(b": keepalive\r\n\r\n")
+                self.wfile.flush()
+            except (ConnectionError, OSError):
+                return
+
+    def _write_management_log_stream(self) -> None:
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        runner = mcp_server.management_runner
+        if runner is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Management runner not configured")
+            return
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        last_id = int((query.get("since") or ["0"])[0] or 0)
+        self._response_body_bytes = 0
+        self.send_response(HTTPStatus.OK)
+        self._write_sse_headers()
+        self.end_headers()
+
+        while True:
+            try:
+                events = runner.wait_for_events(since=last_id, timeout=15.0)
+                if not events:
+                    self.wfile.write(b": keepalive\r\n\r\n")
+                    self.wfile.flush()
+                    continue
+
+                for event in events:
+                    last_id = int(event.get("id") or last_id)
+                    payload = json_dumps(event)
+                    self.wfile.write(f"id: {last_id}\r\n".encode("utf-8"))
+                    self.wfile.write(b"event: log\r\n")
+                    self.wfile.write(f"data: {payload}\r\n\r\n".encode("utf-8"))
+                self.wfile.flush()
+            except (ConnectionError, OSError):
+                return
+
+    def _write_server_traffic_log_stream(self) -> None:
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        last_id = int((query.get("since") or ["0"])[0] or 0)
+        self._response_body_bytes = 0
+        self.send_response(HTTPStatus.OK)
+        self._write_sse_headers()
+        self.end_headers()
+
+        while True:
+            try:
+                events = mcp_server.server_traffic_log.wait_for_events(
+                    since=last_id,
+                    timeout=15.0,
+                )
+                if not events:
+                    self.wfile.write(b": keepalive\r\n\r\n")
+                    self.wfile.flush()
+                    continue
+
+                for event in events:
+                    last_id = int(event.get("id") or last_id)
+                    payload = json_dumps(event)
+                    self.wfile.write(f"id: {last_id}\r\n".encode("utf-8"))
+                    self.wfile.write(b"event: log\r\n")
+                    self.wfile.write(f"data: {payload}\r\n\r\n".encode("utf-8"))
                 self.wfile.flush()
             except (ConnectionError, OSError):
                 return
@@ -4237,6 +4986,7 @@ def run_http_server(
     port: int,
 ) -> None:
     server.transport = "http"
+    server.http_url = f"http://{host}:{port}"
     with index_http_server_lock(server.tools.index_root, host=host, port=port):
         httpd = ExclusiveThreadingHTTPServer((host, port), McpHttpHandler)
         httpd.mcp_server = server  # type: ignore[attr-defined]
@@ -4357,7 +5107,29 @@ def main() -> None:
         default=8765,
         help="HTTP bind port when --transport http is used. Default: 8765.",
     )
+    parser.add_argument(
+        "--enable-management-api",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable HTTP management endpoints for external UIs: "
+            "/management/status, /management/command, /management/log, "
+            "/management/log/stream, /management/server-log, and "
+            "/management/server-log/stream. Only available with --transport http."
+        ),
+    )
+    parser.add_argument(
+        "--management-token",
+        default=os.environ.get("MCP_CPP_MANAGEMENT_TOKEN"),
+        help=(
+            "Optional bearer/API token required for management endpoints. "
+            "Can also be provided through MCP_CPP_MANAGEMENT_TOKEN."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.enable_management_api and args.transport != "http":
+        raise SystemExit("--enable-management-api requires --transport http")
 
     if not args.project_root.exists():
         raise SystemExit(f"Project root not found: {args.project_root}")
@@ -4384,7 +5156,29 @@ def main() -> None:
             use_git_ignore=args.watch_git_ignore,
         )
 
-    server = McpServer(tools)
+    management_runner = (
+        ManagementCommandRunner(
+            indexer_root=Path(__file__).resolve().parent,
+            project_root=args.project_root,
+            index_root=args.index_root,
+            default_jobs=args.watch_jobs,
+        )
+        if args.enable_management_api
+        else None
+    )
+    server = McpServer(
+        tools,
+        management_runner=management_runner,
+        management_enabled=args.enable_management_api,
+        management_token=args.management_token,
+        watch_poll_interval=args.watch_poll_interval,
+        watch_debounce=args.watch_debounce,
+        watch_jobs=args.watch_jobs,
+        watch_module_map=args.watch_module_map,
+        watch_emit_debug_file_indexes=args.watch_emit_debug_file_indexes,
+        watch_include_extensionless_headers=args.watch_include_extensionless_headers,
+        watch_git_ignore=args.watch_git_ignore,
+    )
 
     if args.transport == "http":
         run_http_server(server, host=args.http_host, port=args.http_port)

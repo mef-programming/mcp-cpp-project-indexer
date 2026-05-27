@@ -660,7 +660,26 @@ UI settings are saved under `<indexer-root>/.ui-settings/` on exit and when
 diagnostic file sections are toggled. Each settings file is keyed by project
 name plus a path hash, so UI preferences do not write into the project root or
 generated index directory. Stored preferences include the HTTP URL, jobs value,
-diagnostic-section toggle, active Textual theme, and project/index paths.
+diagnostic-section toggle, management API launch settings, active Textual
+theme, and project/index paths.
+
+The settings file can also be edited directly for external Relay UI setups:
+
+```json
+{
+  "httpUrl": "http://127.0.0.1:8765",
+  "jobs": 20,
+  "managementApiEnabled": true,
+  "managementToken": "local-secret-token",
+  "emitDiagnosticFileIndexes": true,
+  "theme": "textual-dark"
+}
+```
+
+The Textual UI has a separate `Start HTTP + management` action. It starts the
+HTTP MCP server with watcher and `--enable-management-api`, using the saved
+`managementToken` when configured. This action is intentionally local to the
+TUI and is not exposed as a management command on the HTTP API.
 
 Fallback control center:
 
@@ -680,6 +699,7 @@ U  incremental update
 F  fast known-files update
 M  rebuild module map
 H  start HTTP server with watcher
+G  start HTTP server with watcher and management API
 W  start standalone watcher
 S  toggle diagnostic file sections for launched commands
 X  stop the currently running command
@@ -786,6 +806,82 @@ GET http://127.0.0.1:8765/status
 This keeps one long-running server process, one in-memory index cache, and one
 watcher for the index root. Clients that only support stdio still need a stdio
 configuration or a small client-side bridge to this HTTP endpoint.
+
+### HTTP management API
+
+External control UIs can optionally enable a small management surface on the
+same HTTP server. It is disabled by default because it can start build/update
+processes.
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 127.0.0.1 `
+  --http-port 8765 `
+  --enable-management-api `
+  --management-token <token>
+```
+
+Endpoints:
+
+```text
+GET  /management/status
+POST /management/command
+GET  /management/log?since=<eventId>&limit=<n>
+GET  /management/log/stream
+GET  /management/server-log?since=<eventId>&limit=<n>
+GET  /management/server-log/stream
+```
+
+`/management/status` includes a `dashboard` object shaped for external control
+centers. It contains the same high-value fields shown by the TUI:
+
+```text
+dashboard.project.text
+dashboard.index.text
+dashboard.server.url / pid / ramText / cpuText / uptimeText
+dashboard.watcher.runningText / lockText / last
+dashboard.counts.filesText / symbolsText / dataText / modulesText / diagnosticsText
+dashboard.stats.codeLinesText / tokensText / cpuTimeText / threadsText
+dashboard.locks.updateFile / watcherFile
+dashboard.mode.diagnosticFileSectionsText / jobsText / theme
+```
+
+Raw numeric values are included next to the formatted `*Text` fields where the
+server can provide them. `dashboard.mode.theme` is reserved for external UIs;
+the HTTP server itself does not own a visual theme.
+
+Pass the token as either:
+
+```text
+Authorization: Bearer <token>
+x-api-key: <token>
+```
+
+Commands are single JSON objects:
+
+```json
+{ "command": "build", "jobs": 20 }
+{ "command": "update", "jobs": 20 }
+{ "command": "fast_update", "jobs": 20 }
+{ "command": "module_map" }
+{ "command": "reload_index" }
+{ "command": "start_watcher", "jobs": 20 }
+{ "command": "stop_watcher" }
+{ "command": "stop_command", "wait": true }
+```
+
+`/management/log` returns management command output. `/management/log/stream`
+is the matching SSE stream. Build and update subprocess output is read
+asynchronously, so a UI can keep polling status and streaming logs while large
+projects are being indexed.
+
+`/management/server-log` returns recent HTTP/MCP traffic log events, including
+request/response byte counts and the MCP method detail where available.
+`/management/server-log/stream` is the matching SSE stream for live request
+activity.
 
 ---
 
@@ -1232,6 +1328,10 @@ Terminal control center for build/update/watch/server workflows.
 --jobs N                       Worker process count for launched commands.
 --http-url URL                 HTTP server base URL for live status.
                                Default: http://127.0.0.1:8765.
+--enable-management-api / --no-enable-management-api
+                               Enable the TUI's HTTP + management launch mode.
+--management-token TOKEN       Management API token used when launching
+                               HTTP + management.
 --emit-diagnostic-file-indexes / --no-emit-diagnostic-file-indexes
                                Initial diagnostic file section setting.
 ```
