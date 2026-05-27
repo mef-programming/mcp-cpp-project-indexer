@@ -174,6 +174,35 @@ def iso_age_seconds(value: Any) -> float | None:
     return max(0.0, (now - started).total_seconds())
 
 
+def add_process_cpu_fields(stats: dict[str, Any]) -> dict[str, Any]:
+    user = stats.get("cpuUserSeconds")
+    system = stats.get("cpuSystemSeconds")
+
+    try:
+        cpu_time = float(user or 0.0) + float(system or 0.0)
+    except (TypeError, ValueError):
+        return stats
+
+    stats["cpuTimeSeconds"] = cpu_time
+    stats["cpuTimeText"] = f"{cpu_time:.1f}s"
+
+    create_time = stats.get("createTime")
+    try:
+        uptime = max(0.0, time.time() - float(create_time))
+    except (TypeError, ValueError):
+        uptime = 0.0
+
+    if uptime > 0:
+        cpu_percent_total = (cpu_time / uptime) * 100.0
+        cpu_cores_average = cpu_percent_total / 100.0
+        cpu_percent_machine = cpu_percent_total / float(os.cpu_count() or 1)
+        stats["cpuCoresAverage"] = cpu_cores_average
+        stats["cpuPercentMachine"] = cpu_percent_machine
+        stats["cpuText"] = f"{cpu_cores_average:.2f}c / {cpu_percent_machine:.1f}%"
+
+    return stats
+
+
 def process_stats(pid: int | None = None) -> dict[str, Any]:
     pid = pid or os.getpid()
 
@@ -182,7 +211,7 @@ def process_stats(pid: int | None = None) -> dict[str, Any]:
             process = psutil.Process(pid)
             memory = process.memory_info()
             cpu_times = process.cpu_times()
-            return {
+            stats = {
                 "pid": pid,
                 "rssBytes": memory.rss,
                 "vmsBytes": memory.vms,
@@ -191,6 +220,7 @@ def process_stats(pid: int | None = None) -> dict[str, Any]:
                 "threads": process.num_threads(),
                 "createTime": process.create_time(),
             }
+            return add_process_cpu_fields(stats)
         except Exception:
             pass
 
@@ -279,6 +309,50 @@ def process_stats(pid: int | None = None) -> dict[str, Any]:
         except Exception:
             pass
 
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class FileTime(ctypes.Structure):
+                _fields_ = [
+                    ("dwLowDateTime", wintypes.DWORD),
+                    ("dwHighDateTime", wintypes.DWORD),
+                ]
+
+                def as_100ns(self) -> int:
+                    return (int(self.dwHighDateTime) << 32) | int(self.dwLowDateTime)
+
+            process_query_limited_information = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(
+                process_query_limited_information,
+                False,
+                int(pid),
+            )
+            if handle:
+                try:
+                    created = FileTime()
+                    exited = FileTime()
+                    kernel = FileTime()
+                    user = FileTime()
+                    if kernel32.GetProcessTimes(
+                        handle,
+                        ctypes.byref(created),
+                        ctypes.byref(exited),
+                        ctypes.byref(kernel),
+                        ctypes.byref(user),
+                    ):
+                        windows_epoch_offset_100ns = 116444736000000000
+                        stats["createTime"] = (
+                            created.as_100ns() - windows_epoch_offset_100ns
+                        ) / 10_000_000.0
+                        stats["cpuUserSeconds"] = user.as_100ns() / 10_000_000.0
+                        stats["cpuSystemSeconds"] = kernel.as_100ns() / 10_000_000.0
+                finally:
+                    kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
     if pid == os.getpid():
         times = os.times()
         stats.update(
@@ -289,7 +363,7 @@ def process_stats(pid: int | None = None) -> dict[str, Any]:
             }
         )
 
-    return stats
+    return add_process_cpu_fields(stats)
 
 
 def load_json(path: Path) -> Any | None:

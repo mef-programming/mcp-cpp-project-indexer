@@ -841,7 +841,7 @@ centers. It contains the same high-value fields shown by the TUI:
 ```text
 dashboard.project.text
 dashboard.index.text
-dashboard.server.url / pid / ramText / cpuText / uptimeText
+dashboard.server.url / pid / ramText / cpuTimeText / cpuText / uptimeText
 dashboard.watcher.runningText / lockText / last
 dashboard.counts.filesText / symbolsText / dataText / modulesText / diagnosticsText
 dashboard.stats.codeLinesText / tokensText / cpuTimeText / threadsText
@@ -852,6 +852,19 @@ dashboard.mode.diagnosticFileSectionsText / jobsText / theme
 Raw numeric values are included next to the formatted `*Text` fields where the
 server can provide them. `dashboard.mode.theme` is reserved for external UIs;
 the HTTP server itself does not own a visual theme.
+
+The generic `server.process` and `management.runner.process` objects also expose
+normalized CPU fields when available:
+
+```text
+cpuUserSeconds
+cpuSystemSeconds
+cpuTimeSeconds
+cpuTimeText
+cpuCoresAverage
+cpuPercentMachine
+cpuText
+```
 
 Pass the token as either:
 
