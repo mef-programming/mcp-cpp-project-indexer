@@ -2224,7 +2224,9 @@ class ServerTrafficLog:
         message: str,
         *,
         stream: str = "http",
-        detail: str | None = None,
+        detail: Any | None = None,
+        mcp: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         with self.condition:
             event = {
@@ -2235,6 +2237,10 @@ class ServerTrafficLog:
             }
             if detail is not None:
                 event["detail"] = detail
+            if mcp is not None:
+                event["mcp"] = mcp
+            if extra is not None:
+                event.update(extra)
             self.next_event_id += 1
             self.events.append(event)
             if len(self.events) > self.max_events:
@@ -4702,8 +4708,10 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._request_body_bytes = len(body)
             payload = json.loads(body.decode("utf-8"))
             self._mcp_request_detail = self._describe_mcp_payload(payload)
+            self._mcp_request_summary = self._summarize_mcp_payload(payload)
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._mcp_request_detail = "parse_error"
+            self._mcp_request_summary = {"parseError": str(exc)}
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -4760,6 +4768,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         request_bytes = getattr(self, "_request_body_bytes", 0)
         response_bytes = getattr(self, "_response_body_bytes", 0)
         mcp_detail = getattr(self, "_mcp_request_detail", "-")
+        mcp_summary = getattr(self, "_mcp_request_summary", None)
         message = (
             "[mcp-cpp-project-indexer-http] "
             + format % args
@@ -4775,6 +4784,12 @@ class McpHttpHandler(BaseHTTPRequestHandler):
                 message,
                 stream=stream,
                 detail=str(mcp_detail),
+                mcp=mcp_summary if isinstance(mcp_summary, dict) else None,
+                extra={
+                    "requestBytes": request_bytes,
+                    "responseBytes": response_bytes,
+                    "path": path or "/",
+                },
             )
         except Exception:
             pass
@@ -4847,6 +4862,83 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return f"tools/call:{tool_name or '?'}({keys_text})"
 
         return method
+
+    @classmethod
+    def _summarize_mcp_payload(cls, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, list):
+            items = [
+                cls._summarize_mcp_request(item)
+                for item in payload
+                if isinstance(item, dict)
+            ]
+            return {
+                "kind": "batch",
+                "count": len(payload),
+                "items": items[:20],
+                "truncated": len(items) > 20,
+            }
+
+        if isinstance(payload, dict):
+            return cls._summarize_mcp_request(payload)
+
+        return {"kind": type(payload).__name__}
+
+    @classmethod
+    def _summarize_mcp_request(cls, request: dict[str, Any]) -> dict[str, Any]:
+        method = request.get("method")
+        request_id = request.get("id")
+        result: dict[str, Any] = {
+            "kind": "request",
+            "id": request_id,
+            "method": method if isinstance(method, str) else "invalid",
+        }
+
+        params = request.get("params")
+        if method == "tools/call" and isinstance(params, dict):
+            arguments = params.get("arguments")
+            tool_name = params.get("name")
+            result["toolName"] = tool_name if isinstance(tool_name, str) else None
+            if isinstance(arguments, dict):
+                result["argumentKeys"] = sorted(str(key) for key in arguments.keys())
+                result["arguments"] = cls._compact_log_value(arguments)
+            else:
+                result["argumentKeys"] = []
+                result["arguments"] = None
+
+        return result
+
+    @classmethod
+    def _compact_log_value(cls, value: Any, *, depth: int = 0) -> Any:
+        if depth >= 4:
+            return cls._compact_scalar(value)
+
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            items = list(value.items())
+            for key, item in items[:30]:
+                result[str(key)] = cls._compact_log_value(item, depth=depth + 1)
+            if len(items) > 30:
+                result["..."] = f"+{len(items) - 30} more"
+            return result
+
+        if isinstance(value, list):
+            result = [
+                cls._compact_log_value(item, depth=depth + 1)
+                for item in value[:30]
+            ]
+            if len(value) > 30:
+                result.append(f"... +{len(value) - 30} more")
+            return result
+
+        return cls._compact_scalar(value)
+
+    @staticmethod
+    def _compact_scalar(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > 500:
+            return value[:500] + f"... <truncated {len(value) - 500} chars>"
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
 
     def _management_allowed(self) -> bool:
         mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]

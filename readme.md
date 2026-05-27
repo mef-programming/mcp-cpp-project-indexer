@@ -894,7 +894,9 @@ projects are being indexed.
 `/management/server-log` returns recent HTTP/MCP traffic log events, including
 request/response byte counts and the MCP method detail where available.
 `/management/server-log/stream` is the matching SSE stream for live request
-activity.
+activity. MCP `tools/call` events also include a compact structured `mcp`
+object with `toolName`, `argumentKeys`, and bounded `arguments` for expandable
+UI details.
 
 ---
 
