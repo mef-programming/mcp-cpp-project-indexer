@@ -4571,8 +4571,16 @@ class McpHttpHandler(BaseHTTPRequestHandler):
     server_version = "McpCppProjectIndexerHTTP/0.1"
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self) -> None:
+    def _reset_request_log_state(self) -> None:
         self._request_body_bytes = 0
+        self._response_body_bytes = 0
+        self._mcp_request_detail = "-"
+        self._mcp_request_summary = None
+        self._mcp_response_outcome = None
+        self._mcp_response_error_count = None
+
+    def do_GET(self) -> None:
+        self._reset_request_log_state()
         path = self._request_path()
 
         if path in {"", "/health"}:
@@ -4658,12 +4666,13 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_OPTIONS(self) -> None:
-        self._request_body_bytes = 0
+        self._reset_request_log_state()
         self.send_response(HTTPStatus.NO_CONTENT)
         self._write_common_headers(content_length=0)
         self.end_headers()
 
     def do_POST(self) -> None:
+        self._reset_request_log_state()
         if self._request_path() == "/management/command":
             if not self._management_allowed():
                 return
@@ -4712,6 +4721,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._mcp_request_detail = "parse_error"
             self._mcp_request_summary = {"parseError": str(exc)}
+            self._set_mcp_response_outcome({"error": {"code": -32700}})
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -4735,10 +4745,12 @@ class McpHttpHandler(BaseHTTPRequestHandler):
                 for response in [mcp_server.handle_request(item)]
                 if response is not None
             ]
+            self._set_mcp_response_outcome(responses)
             self._write_json(HTTPStatus.OK, responses)
             return
 
         if not isinstance(payload, dict):
+            self._set_mcp_response_outcome({"error": {"code": -32600}})
             self._write_json(
                 HTTPStatus.OK,
                 {
@@ -4755,9 +4767,11 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         response = mcp_server.handle_request(payload)
 
         if response is None:
+            self._set_mcp_response_outcome({"notification": True})
             self._write_empty(HTTPStatus.ACCEPTED)
             return
 
+        self._set_mcp_response_outcome(response)
         self._write_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -4769,6 +4783,18 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         response_bytes = getattr(self, "_response_body_bytes", 0)
         mcp_detail = getattr(self, "_mcp_request_detail", "-")
         mcp_summary = getattr(self, "_mcp_request_summary", None)
+        mcp_outcome = getattr(self, "_mcp_response_outcome", None)
+        mcp_error_count = getattr(self, "_mcp_response_error_count", None)
+        if path not in {"", "/mcp", "/rpc", "/messages"}:
+            mcp_detail = "-"
+            mcp_summary = None
+            mcp_outcome = None
+            mcp_error_count = None
+        if isinstance(mcp_summary, dict) and mcp_outcome:
+            mcp_summary = dict(mcp_summary)
+            mcp_summary["outcome"] = mcp_outcome
+            if mcp_error_count is not None:
+                mcp_summary["errorCount"] = mcp_error_count
         message = (
             "[mcp-cpp-project-indexer-http] "
             + format % args
@@ -4824,6 +4850,21 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return b"".join(chunks)
 
         raise ValueError("Missing Content-Length")
+
+    def _set_mcp_response_outcome(self, response: Any) -> None:
+        error_count = self._count_mcp_response_errors(response)
+        self._mcp_response_error_count = error_count
+        self._mcp_response_outcome = "error" if error_count > 0 else "success"
+
+    @classmethod
+    def _count_mcp_response_errors(cls, response: Any) -> int:
+        if isinstance(response, list):
+            return sum(cls._count_mcp_response_errors(item) for item in response)
+
+        if isinstance(response, dict):
+            return 1 if "error" in response else 0
+
+        return 0
 
     def _describe_mcp_payload(self, payload: Any) -> str:
         if isinstance(payload, list):

@@ -896,7 +896,11 @@ request/response byte counts and the MCP method detail where available.
 `/management/server-log/stream` is the matching SSE stream for live request
 activity. MCP `tools/call` events also include a compact structured `mcp`
 object with `toolName`, `argumentKeys`, and bounded `arguments` for expandable
-UI details.
+UI details. After the JSON-RPC response is known, the event includes
+`mcp.outcome` (`success` or `error`) and `mcp.errorCount` so control UIs can
+color failed tool calls without parsing the response payload.
+HTTP keep-alive requests reset request-local log metadata, so status polling
+cannot inherit a previous MCP call label.
 
 ---
 
