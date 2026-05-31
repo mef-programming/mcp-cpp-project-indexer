@@ -410,9 +410,18 @@ def request_process_exit(process: subprocess.Popen[str]) -> None:
     process.terminate()
 
 
-def read_http_status(base_url: str, timeout: float = 0.5) -> dict[str, Any] | None:
+def read_http_status(
+    base_url: str,
+    timeout: float = 0.5,
+    *,
+    management_token: str = "",
+) -> dict[str, Any] | None:
     try:
-        with urllib.request.urlopen(f"{base_url.rstrip('/')}/status", timeout=timeout) as response:
+        request = urllib.request.Request(f"{base_url.rstrip('/')}/status")
+        if management_token:
+            request.add_header("Authorization", f"Bearer {management_token}")
+            request.add_header("X-API-Key", management_token)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
         return None

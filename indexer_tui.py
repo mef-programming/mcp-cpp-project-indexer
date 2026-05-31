@@ -320,7 +320,10 @@ if TEXTUAL_AVAILABLE:
                 self.action_stop_process()
 
         def refresh_status(self) -> None:
-            http_status = read_http_status(self.http_url)
+            http_status = read_http_status(
+                self.http_url,
+                management_token=self.management_token,
+            )
 
             if http_status is not None:
                 self.status = http_status
