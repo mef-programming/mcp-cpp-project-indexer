@@ -866,7 +866,8 @@ cpuPercentMachine
 cpuText
 ```
 
-Pass the token as either:
+When configured, the token protects the shared HTTP MCP/status surface as well
+as management endpoints. Pass it as either:
 
 ```text
 Authorization: Bearer <token>
@@ -901,6 +902,88 @@ UI details. After the JSON-RPC response is known, the event includes
 color failed tool calls without parsing the response payload.
 HTTP keep-alive requests reset request-local log metadata, so status polling
 cannot inherit a previous MCP call label.
+
+### HTTP security profiles
+
+Local development can keep using loopback HTTP:
+
+```text
+--transport http --http-host 127.0.0.1 --http-port 8765
+```
+
+For customer or LAN deployments, do not expose the server as plain HTTP. The
+server refuses to start on a non-loopback bind address unless TLS and
+authentication are enabled.
+
+Security profiles:
+
+| Profile | Intended use | Requirements |
+|---|---|---|
+| `local-dev` | same-machine development | loopback HTTP allowed |
+| `trusted-lan` | Relay and indexer on different trusted hosts | TLS plus token or mTLS |
+| `production` | customer deployment | TLS plus token or mTLS |
+
+Token-authenticated TLS example:
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 10.0.0.20 `
+  --http-port 8765 `
+  --management-security-profile trusted-lan `
+  --management-tls cert `
+  --management-cert security\indexer-server.crt `
+  --management-key security\indexer-server.key `
+  --management-token <token> `
+  --management-cors-origin https://relay.customer.internal `
+  --management-allow-ip 10.0.0.12
+```
+
+mTLS example:
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 10.0.0.20 `
+  --http-port 8765 `
+  --management-security-profile production `
+  --management-tls cert `
+  --management-cert security\indexer-server.crt `
+  --management-key security\indexer-server.key `
+  --management-client-ca security\relay-clients-ca.crt `
+  --management-require-client-cert `
+  --management-cors-origin https://relay.customer.internal `
+  --management-allow-ip 10.0.0.12
+```
+
+For encrypted local testing without a customer certificate, a self-signed
+certificate can be generated on first start:
+
+```powershell
+python <indexer-root>\code_index_mcp_server.py `
+  --project-root <project-root> `
+  --index-root <project-root>\.mcp-cpp-project-indexer `
+  --transport http `
+  --http-host 127.0.0.1 `
+  --http-port 8765 `
+  --management-tls self-signed `
+  --management-auto-cert
+```
+
+The generated files are stored below:
+
+```text
+<index-root>\certs\management-cert.pem
+<index-root>\certs\management-key.pem
+```
+
+Self-signed TLS encrypts traffic but is not automatically trusted by browsers
+or remote clients. Customer deployments should use a customer CA, public
+certificate, or explicit mTLS trust material.
 
 ---
 

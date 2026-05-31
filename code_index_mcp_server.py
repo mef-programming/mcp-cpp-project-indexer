@@ -4,9 +4,11 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime
 import hashlib
+import ipaddress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import shutil
 import sys
 import traceback
 import urllib.parse
@@ -14,6 +16,7 @@ import uuid
 import os
 import re
 import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -62,6 +65,22 @@ DEFAULT_INDEX_ROOT = Path(
         str(DEFAULT_PROJECT_ROOT / ".mcp-cpp-project-indexer"),
     )
 )
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def is_loopback_host(host: str) -> bool:
+    normalized = host.strip().strip("[]").lower()
+    if normalized in LOOPBACK_HOSTS:
+        return True
+
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def public_url_scheme(tls_enabled: bool) -> str:
+    return "https" if tls_enabled else "http"
 
 def configure_stdio_encoding() -> None:
     if hasattr(sys.stdout, "reconfigure"):
@@ -4064,6 +4083,12 @@ class McpServer:
         management_runner: ManagementCommandRunner | None = None,
         management_enabled: bool = False,
         management_token: str | None = None,
+        management_security_profile: str = "local-dev",
+        management_tls_mode: str = "off",
+        management_auth_mode: str = "none",
+        management_cors_origin: str = "*",
+        management_allow_ips: list[str] | None = None,
+        management_require_client_cert: bool = False,
         watch_poll_interval: float = 1.0,
         watch_debounce: float = 1.0,
         watch_jobs: int = 0,
@@ -4079,6 +4104,12 @@ class McpServer:
         self.management_runner = management_runner
         self.management_enabled = management_enabled
         self.management_token = management_token
+        self.management_security_profile = management_security_profile
+        self.management_tls_mode = management_tls_mode
+        self.management_auth_mode = management_auth_mode
+        self.management_cors_origin = management_cors_origin
+        self.management_allow_ips = set(management_allow_ips or [])
+        self.management_require_client_cert = management_require_client_cert
         self.server_traffic_log = ServerTrafficLog()
         self.watch_poll_interval = watch_poll_interval
         self.watch_debounce = watch_debounce
@@ -4174,6 +4205,14 @@ class McpServer:
         result: dict[str, Any] = {
             "enabled": self.management_enabled,
             "requiresToken": bool(self.management_token),
+            "security": {
+                "profile": self.management_security_profile,
+                "tlsMode": self.management_tls_mode,
+                "authMode": self.management_auth_mode,
+                "corsOrigin": self.management_cors_origin,
+                "allowIps": sorted(self.management_allow_ips),
+                "requiresClientCertificate": self.management_require_client_cert,
+            },
             "runner": runner_status,
             "dashboard": self.dashboard_snapshot(self.status_snapshot_without_management()),
             "watcher": (
@@ -4595,6 +4634,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/status":
+            if not self._http_access_allowed():
+                return
             mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
             self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
@@ -4660,6 +4701,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return
 
         if path in {"/mcp", "/sse"}:
+            if not self._http_access_allowed():
+                return
             self._write_sse_endpoint()
             return
 
@@ -4710,6 +4753,9 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
         if self._request_path() not in {"", "/mcp", "/rpc", "/messages"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        if not self._http_access_allowed():
             return
 
         try:
@@ -4987,6 +5033,16 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return False
 
+        return self._http_access_allowed()
+
+    def _http_access_allowed(self) -> bool:
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        if mcp_server.management_allow_ips:
+            client_ip = str(self.client_address[0])
+            if client_ip not in mcp_server.management_allow_ips:
+                self._write_json(HTTPStatus.FORBIDDEN, {"error": "Client IP not allowed"})
+                return False
+
         token = mcp_server.management_token
         if not token:
             return True
@@ -5103,7 +5159,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        self.send_header("Access-Control-Allow-Origin", mcp_server.management_cors_origin)
         self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
         self.send_header(
             "Mcp-Session-Id",
@@ -5118,7 +5175,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
     ) -> None:
         if content_type is not None:
             self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        mcp_server: McpServer = self.server.mcp_server  # type: ignore[attr-defined]
+        self.send_header("Access-Control-Allow-Origin", mcp_server.management_cors_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
@@ -5173,18 +5231,46 @@ def run_http_server(
     *,
     host: str,
     port: int,
+    tls_mode: str = "off",
+    cert_file: Path | None = None,
+    key_file: Path | None = None,
+    client_ca_file: Path | None = None,
+    require_client_cert: bool = False,
 ) -> None:
     server.transport = "http"
-    server.http_url = f"http://{host}:{port}"
+    tls_enabled = tls_mode != "off"
+    scheme = public_url_scheme(tls_enabled)
+    server.http_url = f"{scheme}://{host}:{port}"
     with index_http_server_lock(server.tools.index_root, host=host, port=port):
         httpd = ExclusiveThreadingHTTPServer((host, port), McpHttpHandler)
+        if tls_enabled:
+            if cert_file is None or key_file is None:
+                raise SystemExit("--management-tls requires --management-cert and --management-key")
+
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certfile=str(cert_file), keyfile=str(key_file))
+            if require_client_cert:
+                if client_ca_file is None:
+                    raise SystemExit("--management-require-client-cert requires --management-client-ca")
+                context.verify_mode = ssl.CERT_REQUIRED
+                context.load_verify_locations(cafile=str(client_ca_file))
+            httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         httpd.mcp_server = server  # type: ignore[attr-defined]
         httpd.mcp_session_id = uuid.uuid4().hex  # type: ignore[attr-defined]
         print(
-            f"[mcp-cpp-project-indexer] HTTP JSON-RPC listening on http://{host}:{port}/mcp",
+            f"[mcp-cpp-project-indexer] HTTP JSON-RPC listening on {scheme}://{host}:{port}/mcp",
             file=sys.stderr,
             flush=True,
         )
+        if tls_enabled:
+            print(
+                (
+                    "[mcp-cpp-project-indexer] management TLS enabled "
+                    f"mode={tls_mode} clientCertRequired={require_client_cert}"
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -5196,6 +5282,118 @@ def run_http_server(
         finally:
             httpd.server_close()
             server.tools.stop_index_watcher()
+
+
+def generate_self_signed_certificate(
+    *,
+    cert_file: Path,
+    key_file: Path,
+    hosts: list[str],
+) -> None:
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise SystemExit(
+            "OpenSSL is required for --management-auto-cert. "
+            "Install OpenSSL or provide --management-cert and --management-key."
+        )
+
+    cert_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    san_entries: list[str] = []
+    for host in hosts:
+        normalized = host.strip().strip("[]")
+        try:
+            ipaddress.ip_address(normalized)
+            san_entries.append(f"IP:{normalized}")
+        except ValueError:
+            san_entries.append(f"DNS:{normalized}")
+
+    command = [
+        openssl,
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:3072",
+        "-sha256",
+        "-days",
+        "825",
+        "-nodes",
+        "-keyout",
+        str(key_file),
+        "-out",
+        str(cert_file),
+        "-subj",
+        "/CN=mcp-cpp-project-indexer.local",
+        "-addext",
+        f"subjectAltName={','.join(san_entries)}",
+    ]
+    subprocess.run(command, check=True)
+
+
+def prepare_management_certificate(args: argparse.Namespace) -> tuple[Path | None, Path | None]:
+    cert_file = Path(args.management_cert) if args.management_cert else None
+    key_file = Path(args.management_key) if args.management_key else None
+
+    if args.management_tls == "off":
+        return cert_file, key_file
+
+    if cert_file is not None and key_file is not None:
+        return cert_file, key_file
+
+    if not args.management_auto_cert:
+        raise SystemExit(
+            "--management-tls requires --management-cert and --management-key "
+            "unless --management-auto-cert is used"
+        )
+
+    cert_dir = args.index_root / "certs"
+    cert_file = cert_file or cert_dir / "management-cert.pem"
+    key_file = key_file or cert_dir / "management-key.pem"
+    if not cert_file.exists() or not key_file.exists():
+        hosts = sorted({args.http_host, "localhost", "127.0.0.1", "::1"})
+        generate_self_signed_certificate(
+            cert_file=cert_file,
+            key_file=key_file,
+            hosts=hosts,
+        )
+        print(
+            (
+                "[mcp-cpp-project-indexer] generated self-signed management "
+                f"certificate cert={cert_file} key={key_file}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return cert_file, key_file
+
+
+def validate_http_security(args: argparse.Namespace) -> None:
+    if args.transport != "http":
+        return
+
+    tls_enabled = args.management_tls != "off"
+    token_enabled = bool(args.management_token)
+    mtls_enabled = bool(args.management_require_client_cert)
+    has_auth = token_enabled or mtls_enabled
+    non_loopback = not is_loopback_host(args.http_host)
+
+    if args.management_security_profile in {"trusted-lan", "production"}:
+        if not tls_enabled:
+            raise SystemExit(
+                f"--management-security-profile {args.management_security_profile} requires TLS"
+            )
+        if not has_auth:
+            raise SystemExit(
+                f"--management-security-profile {args.management_security_profile} requires token or mTLS auth"
+            )
+
+    if non_loopback and (not tls_enabled or not has_auth):
+        raise SystemExit(
+            "Refusing to expose HTTP transport on a non-loopback address without "
+            "TLS and authentication. Use --management-tls cert|self-signed plus "
+            "--management-token or --management-require-client-cert, or bind to 127.0.0.1."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -5311,14 +5509,83 @@ def main() -> None:
         "--management-token",
         default=os.environ.get("MCP_CPP_MANAGEMENT_TOKEN"),
         help=(
-            "Optional bearer/API token required for management endpoints. "
+            "Optional bearer/API token required for protected HTTP endpoints. "
             "Can also be provided through MCP_CPP_MANAGEMENT_TOKEN."
         ),
+    )
+    parser.add_argument(
+        "--management-security-profile",
+        choices=["local-dev", "trusted-lan", "production"],
+        default="local-dev",
+        help=(
+            "Management security profile. trusted-lan and production require "
+            "TLS plus token or mTLS authentication."
+        ),
+    )
+    parser.add_argument(
+        "--management-tls",
+        choices=["off", "cert", "self-signed"],
+        default="off",
+        help="Enable TLS for HTTP transport using provided or auto-generated certificates.",
+    )
+    parser.add_argument(
+        "--management-cert",
+        type=Path,
+        default=None,
+        help="TLS server certificate path for --management-tls cert|self-signed.",
+    )
+    parser.add_argument(
+        "--management-key",
+        type=Path,
+        default=None,
+        help="TLS server private key path for --management-tls cert|self-signed.",
+    )
+    parser.add_argument(
+        "--management-auto-cert",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Generate a local self-signed certificate when TLS is enabled and "
+            "cert/key files are missing. Requires openssl."
+        ),
+    )
+    parser.add_argument(
+        "--management-client-ca",
+        type=Path,
+        default=None,
+        help="Client CA certificate path used when requiring mTLS client certificates.",
+    )
+    parser.add_argument(
+        "--management-require-client-cert",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require a trusted client certificate for HTTPS connections.",
+    )
+    parser.add_argument(
+        "--management-cors-origin",
+        default=os.environ.get("MCP_CPP_MANAGEMENT_CORS_ORIGIN", "*"),
+        help="Access-Control-Allow-Origin value for HTTP/management responses.",
+    )
+    parser.add_argument(
+        "--management-allow-ip",
+        action="append",
+        default=[],
+        help="Allowed client IP for protected HTTP endpoints. Can be repeated.",
     )
     args = parser.parse_args()
 
     if args.enable_management_api and args.transport != "http":
         raise SystemExit("--enable-management-api requires --transport http")
+
+    if args.management_require_client_cert and args.management_tls == "off":
+        raise SystemExit("--management-require-client-cert requires --management-tls cert|self-signed")
+
+    validate_http_security(args)
+    cert_file, key_file = (
+        prepare_management_certificate(args)
+        if args.transport == "http"
+        else (None, None)
+    )
 
     if not args.project_root.exists():
         raise SystemExit(f"Project root not found: {args.project_root}")
@@ -5355,11 +5622,24 @@ def main() -> None:
         if args.enable_management_api
         else None
     )
+    management_auth_mode = (
+        "mtls"
+        if args.management_require_client_cert
+        else "token"
+        if args.management_token
+        else "none"
+    )
     server = McpServer(
         tools,
         management_runner=management_runner,
         management_enabled=args.enable_management_api,
         management_token=args.management_token,
+        management_security_profile=args.management_security_profile,
+        management_tls_mode=args.management_tls,
+        management_auth_mode=management_auth_mode,
+        management_cors_origin=args.management_cors_origin,
+        management_allow_ips=args.management_allow_ip,
+        management_require_client_cert=args.management_require_client_cert,
         watch_poll_interval=args.watch_poll_interval,
         watch_debounce=args.watch_debounce,
         watch_jobs=args.watch_jobs,
@@ -5370,7 +5650,16 @@ def main() -> None:
     )
 
     if args.transport == "http":
-        run_http_server(server, host=args.http_host, port=args.http_port)
+        run_http_server(
+            server,
+            host=args.http_host,
+            port=args.http_port,
+            tls_mode=args.management_tls,
+            cert_file=cert_file,
+            key_file=key_file,
+            client_ca_file=args.management_client_ca,
+            require_client_cert=args.management_require_client_cert,
+        )
     else:
         server.run()
 
