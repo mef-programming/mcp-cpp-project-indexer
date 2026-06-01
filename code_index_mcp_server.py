@@ -4640,14 +4640,19 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
 
-        if path == "/management/status":
+        if path in {"/management/status", "/server/management/status"}:
             if not self._management_allowed():
                 return
             mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
             self._write_json(HTTPStatus.OK, mcp_server.management_status())
             return
 
-        if path == "/management/log":
+        if path in {
+            "/management/log",
+            "/management/events",
+            "/server/management/log",
+            "/server/management/events",
+        }:
             if not self._management_allowed():
                 return
             mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
@@ -4667,13 +4672,13 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if path == "/management/log/stream":
+        if path in {"/management/log/stream", "/server/management/log/stream"}:
             if not self._management_allowed():
                 return
             self._write_management_log_stream()
             return
 
-        if path == "/management/server-log":
+        if path in {"/management/server-log", "/server/management/server-log"}:
             if not self._management_allowed():
                 return
             mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
@@ -4694,7 +4699,10 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if path == "/management/server-log/stream":
+        if path in {
+            "/management/server-log/stream",
+            "/server/management/server-log/stream",
+        }:
             if not self._management_allowed():
                 return
             self._write_server_traffic_log_stream()
@@ -4716,7 +4724,7 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._reset_request_log_state()
-        if self._request_path() == "/management/command":
+        if self._request_path() in {"/management/command", "/server/management/command"}:
             if not self._management_allowed():
                 return
 
