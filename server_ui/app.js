@@ -1,8 +1,11 @@
 const $ = (selector) => document.querySelector(selector);
+const MANAGEMENT_TOKEN_STORAGE_KEY = "managedMcp.managementToken";
 
 const state = {
   statusTimer: null,
-  apiToken: sessionStorage.getItem("cppIndexer.managementToken") || "",
+  apiToken: sessionStorage.getItem(MANAGEMENT_TOKEN_STORAGE_KEY) ||
+    sessionStorage.getItem("cppIndexer.managementToken") ||
+    "",
   commandSince: 0,
   serverSince: 0,
   commandEvents: [],
@@ -143,11 +146,14 @@ async function runCommand(command) {
 
 window.addEventListener("message", (event) => {
   const data = event.data || {};
-  if (data.type !== "cpp-indexer-management-token" || typeof data.token !== "string") {
+  if (
+    !["managed-mcp-management-token", "cpp-indexer-management-token"].includes(data.type) ||
+    typeof data.token !== "string"
+  ) {
     return;
   }
   state.apiToken = data.token;
-  sessionStorage.setItem("cppIndexer.managementToken", data.token);
+  sessionStorage.setItem(MANAGEMENT_TOKEN_STORAGE_KEY, data.token);
   void refreshStatus();
   void refreshLogs();
 });
