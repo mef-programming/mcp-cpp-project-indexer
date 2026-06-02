@@ -4892,7 +4892,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             pass
 
     def _request_path(self) -> str:
-        return urllib.parse.urlparse(self.path).path.rstrip("/")
+        path = urllib.parse.urlparse(self.path).path
+        return path.rstrip("/") or "/"
 
     def _read_request_body(self) -> bytes:
         content_length = self.headers.get("Content-Length")
