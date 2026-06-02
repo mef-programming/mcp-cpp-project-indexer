@@ -54,6 +54,12 @@ from watch_project_index import (
 
 SERVER_NAME = "vs-project-indexer"
 SERVER_VERSION = "0.1"
+SERVER_UI_ROOT = Path(__file__).resolve().parent / "server_ui"
+SERVER_UI_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+}
 WATCH_UPDATE_SUMMARY_NAME = ".watch_update_summary.json"
 DEFAULT_PROJECT_ROOT = Path(
     os.environ.get("MCP_CPP_PROJECT_ROOT", Path.cwd())
@@ -4640,6 +4646,17 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, mcp_server.status_snapshot())
             return
 
+        if path == "/server/ui":
+            self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+            self.send_header("Location", "/server/ui/")
+            self._write_common_headers(content_length=0)
+            self.end_headers()
+            return
+
+        if path == "/server/ui/" or path.startswith("/server/ui/"):
+            self._write_server_ui_asset(path)
+            return
+
         if path in {"/management/status", "/server/management/status"}:
             if not self._management_allowed():
                 return
@@ -5062,6 +5079,39 @@ class McpHttpHandler(BaseHTTPRequestHandler):
 
         self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "Management token required"})
         return False
+
+    def _write_server_ui_asset(self, path: str) -> None:
+        relative = path.removeprefix("/server/ui/") or "index.html"
+        if relative.endswith("/"):
+            relative += "index.html"
+        relative_path = Path(urllib.parse.unquote(relative))
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        asset_path = (SERVER_UI_ROOT / relative_path).resolve()
+        try:
+            asset_path.relative_to(SERVER_UI_ROOT.resolve())
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        if not asset_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        body = asset_path.read_bytes()
+        self._response_body_bytes = len(body)
+        self.send_response(HTTPStatus.OK)
+        self._write_common_headers(
+            content_length=len(body),
+            content_type=SERVER_UI_CONTENT_TYPES.get(
+                asset_path.suffix.lower(),
+                "application/octet-stream",
+            ),
+        )
+        self.end_headers()
+        self.wfile.write(body)
 
     def _write_empty(self, status: HTTPStatus) -> None:
         self._response_body_bytes = 0

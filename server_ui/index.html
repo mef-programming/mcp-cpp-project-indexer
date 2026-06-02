@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>C++ Project Indexer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Managed MCP Server</p>
+          <h1>C++ Project Indexer</h1>
+        </div>
+        <div class="status-pill" id="statusPill">offline</div>
+      </header>
+
+      <section class="stats" aria-label="Indexer status">
+        <article><span>Files</span><strong id="filesValue">-</strong></article>
+        <article><span>Symbols</span><strong id="symbolsValue">-</strong></article>
+        <article><span>Data</span><strong id="dataValue">-</strong></article>
+        <article><span>Modules</span><strong id="modulesValue">-</strong></article>
+        <article><span>Diagnostics</span><strong id="diagnosticsValue">-</strong></article>
+        <article><span>Watcher</span><strong id="watcherValue">-</strong></article>
+        <article><span>Command</span><strong id="commandValue">-</strong></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Commands</h2>
+          <label class="jobs-control">Jobs <input id="jobsInput" type="number" min="1" value="20" /></label>
+        </div>
+        <div class="command-grid">
+          <button data-command="build">Build</button>
+          <button data-command="update">Update</button>
+          <button data-command="fast_update">Fast Update</button>
+          <button data-command="module_map">Module Map</button>
+          <button data-command="reload_index">Reload Index</button>
+          <button data-command="start_watcher">Start Watcher</button>
+          <button data-command="stop_watcher">Stop Watcher</button>
+          <button class="danger" data-command="stop_command">Stop Command</button>
+        </div>
+        <div class="command-state" id="commandState">Command idle</div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Details</h2>
+            <button id="refreshButton">Refresh</button>
+          </div>
+          <dl class="details" id="detailsList"></dl>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h2>Server Log</h2>
+            <button id="clearServerLog">Clear</button>
+          </div>
+          <pre class="log" id="serverLog"></pre>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Command Log</h2>
+          <button id="clearCommandLog">Clear</button>
+        </div>
+        <pre class="log" id="commandLog"></pre>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
