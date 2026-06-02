@@ -13,6 +13,10 @@ Find code. Read code. Do not guess code.
 
 The indexer maps C++ symbols, files, and C++20 modules to exact source ranges so an AI can read only the code it needs.
 
+Project and related AI orchestration work is documented on the
+[MEF Programming homepage](https://www.mef-programming.eu/), including the
+ongoing relay/governance layer we are building around MCP tool use.
+
 ---
 
 ## 30-Second Overview
