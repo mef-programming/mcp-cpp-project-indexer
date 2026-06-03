@@ -5566,10 +5566,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--management-token",
-        default=os.environ.get("MCP_CPP_MANAGEMENT_TOKEN"),
+        default=None,
         help=(
             "Optional bearer/API token required for protected HTTP endpoints. "
-            "Can also be provided through MCP_CPP_MANAGEMENT_TOKEN."
+            "When the management API is enabled, it can also be provided through "
+            "MCP_CPP_MANAGEMENT_TOKEN."
         ),
     )
     parser.add_argument(
@@ -5635,6 +5636,9 @@ def main() -> None:
 
     if args.enable_management_api and args.transport != "http":
         raise SystemExit("--enable-management-api requires --transport http")
+
+    if args.management_token is None and args.enable_management_api:
+        args.management_token = os.environ.get("MCP_CPP_MANAGEMENT_TOKEN")
 
     if args.management_require_client_cert and args.management_tls == "off":
         raise SystemExit("--management-require-client-cert requires --management-tls cert|self-signed")
