@@ -4628,6 +4628,16 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         self._reset_request_log_state()
         path = self._request_path()
 
+        if path.startswith("/.well-known/oauth-"):
+            self._write_json(
+                HTTPStatus.NOT_FOUND,
+                {
+                    "error": "OAuth metadata is not configured for this MCP server.",
+                    "auth": "Use the configured bearer token/API key when token auth is enabled.",
+                },
+            )
+            return
+
         if path in {"", "/health"}:
             self._write_json(
                 HTTPStatus.OK,
@@ -4732,6 +4742,51 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def do_HEAD(self) -> None:
+        self._reset_request_log_state()
+        path = self._request_path()
+
+        if path.startswith("/.well-known/oauth-"):
+            self._write_empty(HTTPStatus.NOT_FOUND)
+            return
+
+        if path in {"", "/health"}:
+            self._write_empty(HTTPStatus.OK)
+            return
+
+        if path == "/status":
+            if not self._http_access_allowed():
+                return
+            self._write_empty(HTTPStatus.OK)
+            return
+
+        if path == "/server/ui" or path == "/server/ui/" or path.startswith("/server/ui/"):
+            self._write_empty(HTTPStatus.OK)
+            return
+
+        if path in {
+            "/management/status",
+            "/server/management/status",
+            "/management/log",
+            "/management/events",
+            "/server/management/log",
+            "/server/management/events",
+            "/management/server-log",
+            "/server/management/server-log",
+        }:
+            if not self._management_allowed():
+                return
+            self._write_empty(HTTPStatus.OK)
+            return
+
+        if path in {"/mcp", "/sse"}:
+            if not self._http_access_allowed():
+                return
+            self._write_empty(HTTPStatus.OK)
+            return
+
+        self._write_empty(HTTPStatus.NOT_FOUND)
 
     def do_OPTIONS(self) -> None:
         self._reset_request_log_state()
