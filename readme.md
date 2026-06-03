@@ -832,12 +832,17 @@ Endpoints:
 
 ```text
 GET  /management/status
+GET  /server/management/capabilities
 POST /management/command
 GET  /management/log?since=<eventId>&limit=<n>
 GET  /management/log/stream
 GET  /management/server-log?since=<eventId>&limit=<n>
 GET  /management/server-log/stream
 ```
+
+`/server/management/capabilities` returns the machine-readable
+intent/category/tool contract used by external relay/governance layers. The
+legacy alias `/management/capabilities` is also accepted.
 
 `/management/status` includes a `dashboard` object shaped for external control
 centers. It contains the same high-value fields shown by the TUI:

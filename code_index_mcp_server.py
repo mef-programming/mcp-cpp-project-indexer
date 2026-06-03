@@ -323,6 +323,118 @@ PACKING_SCHEMA_PROPERTIES = {
 }
 
 
+CAPABILITY_INTENTS: dict[str, list[str]] = {
+    "symbol_behavior": ["locator", "source_reader"],
+    "type_resolution": ["locator", "source_reader", "member"],
+    "module_structure": ["module"],
+    "source_occurrence": ["search"],
+    "change_review": ["change", "source_reader"],
+    "comment_purpose": ["comment", "locator"],
+    "file_orientation": ["metadata"],
+    "diagnostics_probe": ["metadata"],
+    "include_analysis": ["include", "source_reader"],
+    "evidence_staleness": ["fingerprint"],
+    "hunk_to_symbol_resolution": ["hunk_resolution"],
+    "rethink_resolution": ["rethink"],
+}
+
+
+CAPABILITY_CATEGORIES: dict[str, list[str]] = {
+    "locator": [
+        "find_symbol",
+        "find_declaration",
+        "find_data",
+        "find_files",
+        "find_symbols_glob",
+    ],
+    "source_reader": ["read_symbol", "read_range", "read_data"],
+    "metadata": [
+        "get_project_summary",
+        "get_file_structure",
+        "list_file_symbols",
+        "get_nearest_symbol_for_line",
+    ],
+    "search": ["search_source"],
+    "module": [
+        "get_module_info",
+        "list_module_imports",
+        "list_module_imported_by",
+        "get_module_tree",
+        "get_module_map_summary",
+        "find_module",
+        "list_module_files",
+        "search_modules",
+    ],
+    "member": ["list_type_members", "find_data", "read_data"],
+    "comment": [
+        "get_symbol_leading_comment",
+        "get_data_leading_comment",
+        "get_file_header_comment",
+        "get_module_header_comment",
+    ],
+    "change": [
+        "list_changed_files",
+        "list_recent_revisions",
+        "get_revision_summary",
+        "get_file_change_hunks",
+    ],
+    "include": ["list_file_includes"],
+    "fingerprint": [
+        "get_index_fingerprint",
+        "get_file_fingerprint",
+        "get_symbol_fingerprint",
+        "get_data_fingerprint",
+        "validate_fingerprints",
+    ],
+    "hunk_resolution": ["resolve_hunk_to_indexed_range"],
+    "rethink": ["resolve_code_entity"],
+    "admin": ["reload_index_cache"],
+}
+
+
+CAPABILITY_TOOL_METADATA: dict[str, dict[str, Any]] = {
+    "get_project_summary": {"category": "metadata", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_index_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_file_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_symbol_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_data_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "validate_fingerprints": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "reload_index_cache": {"category": "admin", "claimStrength": "none", "preFetchAllowed": False},
+    "find_symbol": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "find_declaration": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "read_symbol": {"category": "source_reader", "claimStrength": "source_behavior_allowed", "preFetchAllowed": False},
+    "read_range": {"category": "source_reader", "claimStrength": "source_behavior_allowed", "preFetchAllowed": False},
+    "get_nearest_symbol_for_line": {"category": "metadata", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "resolve_hunk_to_indexed_range": {"category": "hunk_resolution", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_file_symbols": {"category": "metadata", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_file_includes": {"category": "include", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "find_files": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "find_symbols_glob": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "find_data": {"category": "member", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_type_members": {"category": "member", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "read_data": {"category": "source_reader", "claimStrength": "source_behavior_allowed", "preFetchAllowed": False},
+    "resolve_code_entity": {"category": "rethink", "claimStrength": "metadata_only", "preFetchAllowed": False},
+    "search_modules": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_module_map_summary": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_module_info": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "find_module": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_module_files": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_module_imports": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_module_imported_by": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_module_tree": {"category": "module", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_file_structure": {"category": "metadata", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_symbol_leading_comment": {"category": "comment", "claimStrength": "comment_intent_allowed", "preFetchAllowed": False},
+    "get_data_leading_comment": {"category": "comment", "claimStrength": "comment_intent_allowed", "preFetchAllowed": False},
+    "get_file_header_comment": {"category": "comment", "claimStrength": "comment_intent_allowed", "preFetchAllowed": False},
+    "get_module_header_comment": {"category": "comment", "claimStrength": "comment_intent_allowed", "preFetchAllowed": False},
+    "search_source": {"category": "search", "claimStrength": "source_structure_allowed", "preFetchAllowed": False},
+    "list_changed_files": {"category": "change", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "list_recent_revisions": {"category": "change", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_revision_summary": {"category": "change", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_file_change_hunks": {"category": "change", "claimStrength": "metadata_only", "preFetchAllowed": False},
+}
+
+
 DATA_COMPACT_FIELDS = {
     "dataId",
     "declarationKind",
@@ -4184,6 +4296,40 @@ class McpServer:
                 }
             )
 
+    def capabilities(self) -> dict[str, Any]:
+        available_tools = set(self.tool_handlers)
+        categories = {
+            category: [tool for tool in tools if tool in available_tools]
+            for category, tools in CAPABILITY_CATEGORIES.items()
+        }
+        categories = {
+            category: tools
+            for category, tools in categories.items()
+            if tools
+        }
+        intents = {
+            intent: {"categories": intent_categories}
+            for intent, intent_categories in CAPABILITY_INTENTS.items()
+            if all(category in categories for category in intent_categories)
+        }
+        tool_metadata = {
+            tool: metadata
+            for tool, metadata in CAPABILITY_TOOL_METADATA.items()
+            if tool in available_tools
+        }
+
+        return {
+            "schema": "mcp.server.capabilities.v1",
+            "server": {
+                "name": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "domain": "cpp",
+            },
+            "intents": intents,
+            "categories": categories,
+            "toolMetadata": tool_metadata,
+        }
+
     def status_snapshot(self) -> dict[str, Any]:
         snapshot = {
             "server": {
@@ -4674,6 +4820,13 @@ class McpHttpHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, mcp_server.management_status())
             return
 
+        if path in {"/management/capabilities", "/server/management/capabilities"}:
+            if not self._management_allowed():
+                return
+            mcp_server = self.server.mcp_server  # type: ignore[attr-defined]
+            self._write_json(HTTPStatus.OK, mcp_server.capabilities())
+            return
+
         if path in {
             "/management/log",
             "/management/events",
@@ -4768,6 +4921,8 @@ class McpHttpHandler(BaseHTTPRequestHandler):
         if path in {
             "/management/status",
             "/server/management/status",
+            "/management/capabilities",
+            "/server/management/capabilities",
             "/management/log",
             "/management/events",
             "/server/management/log",
