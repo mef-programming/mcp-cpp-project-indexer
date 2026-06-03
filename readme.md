@@ -1012,6 +1012,49 @@ Example `mcp.json`:
 }
 ```
 
+For a shared HTTP server without token authentication:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+If the HTTP server was started with `--management-token <token>`, LM Studio must
+send that token as a header:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+The server also accepts `X-API-Key`:
+
+```json
+{
+  "mcpServers": {
+    "mcp-cpp-project-indexer": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {
+        "X-API-Key": "<token>"
+      }
+    }
+  }
+}
+```
+
 After rebuilding the index or module map, restart the MCP server / LM Studio.
 
 ---
