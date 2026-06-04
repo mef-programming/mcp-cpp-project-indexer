@@ -13,6 +13,16 @@ const state = {
   previousProcessStats: null,
 };
 
+function initializeTokenFromHash() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = params.get("token");
+  if (!token) return;
+  state.apiToken = token;
+  sessionStorage.setItem(MANAGEMENT_TOKEN_STORAGE_KEY, token);
+  sessionStorage.setItem("cppIndexer.managementToken", token);
+  history.replaceState(null, document.title, window.location.pathname);
+}
+
 async function requestJson(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -133,6 +143,7 @@ function renderDetails(status) {
   const dashboard = status.dashboard || {};
   const processStats = normalizeProcess(status);
   const counts = dashboard.counts || {};
+  const watcher = dashboard.watcher || {};
   const details = [
     ["Server", server.name || "mcp-cpp-project-indexer"],
     ["Version", server.version || "-"],
@@ -284,4 +295,5 @@ function startPolling() {
 }
 
 document.addEventListener("visibilitychange", startPolling);
+initializeTokenFromHash();
 startPolling();
