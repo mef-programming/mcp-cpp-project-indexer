@@ -10,6 +10,7 @@ const state = {
   serverSince: 0,
   commandEvents: [],
   serverEvents: [],
+  previousProcessStats: null,
 };
 
 async function requestJson(path, options = {}) {
@@ -43,15 +44,105 @@ function formatNumber(value) {
   return Number(value).toLocaleString();
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return "-";
+  const mib = value / 1024 / 1024;
+  return `${mib.toFixed(mib >= 100 ? 0 : 1)} MiB`;
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function normalizeProcess(status) {
+  const dashboardServer = (status.dashboard && status.dashboard.server) || {};
+  const server = status.server || {};
+  const process = server.process || {};
+  const cpuUser = Number(process.cpuUserSeconds);
+  const cpuSystem = Number(process.cpuSystemSeconds);
+  const cpuTimeSeconds = Number.isFinite(Number(dashboardServer.cpuTimeSeconds))
+    ? Number(dashboardServer.cpuTimeSeconds)
+    : Number.isFinite(cpuUser) || Number.isFinite(cpuSystem)
+      ? (Number.isFinite(cpuUser) ? cpuUser : 0) + (Number.isFinite(cpuSystem) ? cpuSystem : 0)
+      : NaN;
+  const cpuCores = Number.isFinite(Number(dashboardServer.cpuCoresAverage))
+    ? Number(dashboardServer.cpuCoresAverage)
+    : Number.isFinite(Number(process.cpuCoresAverage))
+      ? Number(process.cpuCoresAverage)
+      : NaN;
+  const uptimeSeconds = Number.isFinite(Number(dashboardServer.uptimeSeconds))
+    ? Number(dashboardServer.uptimeSeconds)
+    : Number.isFinite(Number(process.createTime))
+      ? Math.max(0, Date.now() / 1000 - Number(process.createTime))
+      : NaN;
+
+  return {
+    pid: server.pid || dashboardServer.pid || process.pid,
+    ramBytes: Number.isFinite(Number(dashboardServer.ramBytes)) ? Number(dashboardServer.ramBytes) : Number(process.rssBytes),
+    ramText: dashboardServer.ramText || formatBytes(process.rssBytes),
+    cpuCores,
+    cpuText: dashboardServer.cpuText || (Number.isFinite(cpuCores) ? `${cpuCores.toFixed(2)}c` : "-"),
+    cpuTimeSeconds,
+    cpuTimeText: dashboardServer.cpuTimeText || (Number.isFinite(cpuTimeSeconds) ? `${cpuTimeSeconds.toFixed(1)}s` : "-"),
+    uptimeSeconds,
+    uptimeText: dashboardServer.uptimeText || (Number.isFinite(uptimeSeconds) ? formatDuration(uptimeSeconds) : "-"),
+    threads: Number.isFinite(Number(dashboardServer.threads)) ? Number(dashboardServer.threads) : Number(process.threads),
+    threadsText: dashboardServer.threadsText || formatNumber(process.threads),
+  };
+}
+
+function pulseProcessBadge(key, currentValue) {
+  const badge = document.querySelector(`[data-process-key="${key}"]`);
+  if (!badge || !Number.isFinite(currentValue)) return;
+  const previous = state.previousProcessStats ? state.previousProcessStats[key] : undefined;
+  badge.classList.remove("trend-up", "trend-down", "trend-same", "trend-live");
+  if (key === "uptimeSeconds") {
+    badge.classList.add("trend-live");
+    window.setTimeout(() => badge.classList.remove("trend-live"), 900);
+    return;
+  }
+  if (Number.isFinite(previous)) {
+    const epsilon = key === "ramBytes" ? 1024 * 32 : 0.001;
+    const delta = currentValue - previous;
+    badge.classList.add(Math.abs(delta) <= epsilon ? "trend-same" : delta > 0 ? "trend-up" : "trend-down");
+    window.setTimeout(() => badge.classList.remove("trend-up", "trend-down", "trend-same"), 900);
+  }
+}
+
+function renderProcessStats(status) {
+  const processStats = normalizeProcess(status);
+  setText("#ramValue", processStats.ramText || "-");
+  setText("#cpuValue", processStats.cpuText || "-");
+  setText("#cpuTimeValue", processStats.cpuTimeText || "-");
+  setText("#uptimeValue", processStats.uptimeText || "-");
+  setText("#threadsValue", processStats.threadsText || "-");
+  for (const key of ["ramBytes", "cpuCores", "cpuTimeSeconds", "uptimeSeconds", "threads"]) {
+    pulseProcessBadge(key, processStats[key]);
+  }
+  state.previousProcessStats = processStats;
+}
+
 function renderDetails(status) {
   const server = status.server || {};
   const security = status.security || {};
   const dashboard = status.dashboard || {};
+  const processStats = normalizeProcess(status);
   const counts = dashboard.counts || {};
   const details = [
     ["Server", server.name || "mcp-cpp-project-indexer"],
     ["Version", server.version || "-"],
     ["Started", server.startedAt || "-"],
+    ["PID", processStats.pid || "-"],
+    ["RAM", processStats.ramText || "-"],
+    ["CPU", processStats.cpuText || "-"],
+    ["CPU time", processStats.cpuTimeText || "-"],
+    ["Uptime", processStats.uptimeText || "-"],
+    ["Threads", processStats.threadsText || "-"],
     ["TLS", security.tlsMode || "-"],
     ["Auth", security.authMode || (status.requiresToken ? "token" : "none")],
     ["Files", counts.filesText || counts.files || "-"],
@@ -81,6 +172,7 @@ function renderStatus(status) {
   setText("#diagnosticsValue", counts.diagnosticsText || formatNumber(counts.diagnostics));
   setText("#watcherValue", watcherText);
   setText("#commandValue", commandText);
+  renderProcessStats(status);
   setText(
     "#commandState",
     runner.running

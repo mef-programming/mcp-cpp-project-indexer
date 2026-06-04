@@ -130,6 +130,65 @@ h2 {
   font-size: 18px;
 }
 
+.process-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -6px;
+}
+
+.process-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid rgba(158, 175, 191, 0.28);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(15, 23, 32, 0.84);
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.process-badge span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.process-badge strong {
+  color: var(--ink);
+  font-family: Consolas, ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.process-badge.trend-up {
+  border-color: rgba(255, 109, 122, 0.72);
+  background: rgba(255, 109, 122, 0.13);
+  box-shadow: 0 0 0 1px rgba(255, 109, 122, 0.16), 0 0 18px rgba(255, 109, 122, 0.12);
+  transform: translateY(-1px);
+}
+
+.process-badge.trend-down {
+  border-color: rgba(82, 212, 152, 0.72);
+  background: rgba(82, 212, 152, 0.13);
+  box-shadow: 0 0 0 1px rgba(82, 212, 152, 0.15), 0 0 18px rgba(82, 212, 152, 0.11);
+  transform: translateY(-1px);
+}
+
+.process-badge.trend-same,
+.process-badge.trend-live {
+  border-color: rgba(98, 181, 244, 0.58);
+  background: rgba(98, 181, 244, 0.1);
+}
+
 .panel {
   overflow: hidden;
   border: 1px solid var(--line);
