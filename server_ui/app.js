@@ -145,6 +145,7 @@ function renderDetails(status) {
     ["Threads", processStats.threadsText || "-"],
     ["TLS", security.tlsMode || "-"],
     ["Auth", security.authMode || (status.requiresToken ? "token" : "none")],
+    ["Watcher updates", watcher.updateCountText || formatNumber(watcher.updateCount)],
     ["Files", counts.filesText || counts.files || "-"],
     ["Symbols", counts.symbolsText || counts.symbols || "-"],
     ["Data", counts.dataText || counts.data || "-"],
@@ -171,6 +172,7 @@ function renderStatus(status) {
   setText("#modulesValue", counts.modulesText || formatNumber(counts.modules));
   setText("#diagnosticsValue", counts.diagnosticsText || formatNumber(counts.diagnostics));
   setText("#watcherValue", watcherText);
+  setText("#updatesValue", watcher.updateCountText || formatNumber(watcher.updateCount));
   setText("#commandValue", commandText);
   renderProcessStats(status);
   setText(

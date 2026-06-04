@@ -1823,6 +1823,7 @@ class ServerIndexWatcher:
         self.last_update_at: str | None = None
         self.last_update_result: str | None = None
         self.last_error: str | None = None
+        self.update_count = 0
         self.last_added = 0
         self.last_modified = 0
         self.last_deleted = 0
@@ -1904,6 +1905,7 @@ class ServerIndexWatcher:
                 "lastChangeAt": self.last_change_at,
                 "lastUpdateAt": self.last_update_at,
                 "lastUpdateResult": self.last_update_result,
+                "updateCount": self.update_count,
                 "lastError": self.last_error,
                 "lastAdded": self.last_added,
                 "lastModified": self.last_modified,
@@ -2102,6 +2104,7 @@ class ServerIndexWatcher:
                         self.last_update_result = (
                             "updated" if index_changed else "no_index_changes"
                         )
+                        self.update_count += 1
                         self.last_error = None
                     if index_changed:
                         self.tools.reload_index_cache_from_disk(
@@ -4464,6 +4467,8 @@ class McpServer:
                 "lockHeld": bool(watcher.get("lockHeld")),
                 "lockText": "held" if watcher.get("lockHeld") else "not-held",
                 "last": watcher.get("lastUpdateResult") or "-",
+                "updateCount": int(watcher.get("updateCount") or 0),
+                "updateCountText": fmt_count(watcher.get("updateCount")),
             },
             "counts": {
                 "files": counts.get("files"),
