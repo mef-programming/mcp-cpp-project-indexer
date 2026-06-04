@@ -4451,6 +4451,12 @@ class McpServer:
                 "pid": server.get("pid") or process.get("pid"),
                 "ramBytes": process.get("rssBytes"),
                 "ramText": fmt_bytes(process.get("rssBytes")),
+                "heapBytes": process.get("heapBytes") or process.get("heapUsedBytes") or process.get("rssBytes"),
+                "heapText": fmt_bytes(
+                    process.get("heapBytes")
+                    or process.get("heapUsedBytes")
+                    or process.get("rssBytes")
+                ),
                 "cpuTimeSeconds": cpu_seconds,
                 "cpuTimeText": f"{cpu_seconds:.1f}s" if cpu_seconds is not None else "-",
                 "cpuCoresAverage": cpu_cores_average,

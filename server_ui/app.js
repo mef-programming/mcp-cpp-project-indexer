@@ -95,6 +95,14 @@ function normalizeProcess(status) {
     pid: server.pid || dashboardServer.pid || process.pid,
     ramBytes: Number.isFinite(Number(dashboardServer.ramBytes)) ? Number(dashboardServer.ramBytes) : Number(process.rssBytes),
     ramText: dashboardServer.ramText || formatBytes(process.rssBytes),
+    heapBytes: Number.isFinite(Number(dashboardServer.heapBytes))
+      ? Number(dashboardServer.heapBytes)
+      : Number.isFinite(Number(process.heapBytes))
+        ? Number(process.heapBytes)
+        : Number.isFinite(Number(process.heapUsedBytes))
+          ? Number(process.heapUsedBytes)
+          : Number(process.rssBytes),
+    heapText: dashboardServer.heapText || formatBytes(process.heapBytes || process.heapUsedBytes || process.rssBytes),
     cpuCores,
     cpuText: dashboardServer.cpuText || (Number.isFinite(cpuCores) ? `${cpuCores.toFixed(2)}c` : "-"),
     cpuTimeSeconds,
@@ -127,11 +135,12 @@ function pulseProcessBadge(key, currentValue) {
 function renderProcessStats(status) {
   const processStats = normalizeProcess(status);
   setText("#ramValue", processStats.ramText || "-");
+  setText("#heapValue", processStats.heapText || "-");
   setText("#cpuValue", processStats.cpuText || "-");
   setText("#cpuTimeValue", processStats.cpuTimeText || "-");
   setText("#uptimeValue", processStats.uptimeText || "-");
   setText("#threadsValue", processStats.threadsText || "-");
-  for (const key of ["ramBytes", "cpuCores", "cpuTimeSeconds", "uptimeSeconds", "threads"]) {
+  for (const key of ["ramBytes", "heapBytes", "cpuCores", "cpuTimeSeconds", "uptimeSeconds", "threads"]) {
     pulseProcessBadge(key, processStats[key]);
   }
   state.previousProcessStats = processStats;
@@ -150,6 +159,7 @@ function renderDetails(status) {
     ["Started", server.startedAt || "-"],
     ["PID", processStats.pid || "-"],
     ["RAM", processStats.ramText || "-"],
+    ["Heap", processStats.heapText || "-"],
     ["CPU", processStats.cpuText || "-"],
     ["CPU time", processStats.cpuTimeText || "-"],
     ["Uptime", processStats.uptimeText || "-"],
