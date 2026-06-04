@@ -329,12 +329,12 @@ CAPABILITY_INTENTS: dict[str, list[str]] = {
     "module_structure": ["module"],
     "source_occurrence": ["search"],
     "change_review": ["change", "source_reader"],
+    "hunk_resolution": ["hunk_resolution"],
     "comment_purpose": ["comment", "locator"],
+    "include_metadata": ["include"],
     "file_orientation": ["metadata"],
     "diagnostics_probe": ["metadata"],
-    "include_analysis": ["include", "source_reader"],
-    "evidence_staleness": ["fingerprint"],
-    "hunk_to_symbol_resolution": ["hunk_resolution"],
+    "state_validation": ["fingerprint"],
     "rethink_resolution": ["rethink"],
 }
 
@@ -386,7 +386,11 @@ CAPABILITY_CATEGORIES: dict[str, list[str]] = {
         "get_data_fingerprint",
         "validate_fingerprints",
     ],
-    "hunk_resolution": ["resolve_hunk_to_indexed_range"],
+    "hunk_resolution": [
+        "get_nearest_symbol_for_line",
+        "resolve_hunk_to_indexed_range",
+        "get_file_change_hunks",
+    ],
     "rethink": ["resolve_code_entity"],
     "admin": ["reload_index_cache"],
 }
