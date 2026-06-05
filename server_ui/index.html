@@ -21,6 +21,7 @@
         <article><span>Symbols</span><strong id="symbolsValue">-</strong></article>
         <article><span>Data</span><strong id="dataValue">-</strong></article>
         <article><span>Modules</span><strong id="modulesValue">-</strong></article>
+        <article><span>Lines</span><strong id="linesValue">-</strong></article>
         <article><span>Diagnostics</span><strong id="diagnosticsValue">-</strong></article>
         <article><span>Watcher</span><strong id="watcherValue">-</strong></article>
         <article><span>Updates</span><strong id="updatesValue">-</strong></article>
@@ -55,7 +56,7 @@
       </section>
 
       <section class="grid">
-        <article class="panel">
+        <article class="panel" id="detailsPanel">
           <div class="panel-header">
             <h2>Details</h2>
             <button id="refreshButton">Refresh</button>
@@ -63,10 +64,19 @@
           <dl class="details" id="detailsList"></dl>
         </article>
 
-        <article class="panel">
+        <article class="panel" id="serverLogPanel">
           <div class="panel-header">
             <h2>Server Log</h2>
-            <button id="clearServerLog">Clear</button>
+            <div class="panel-actions">
+              <select id="serverLogLevelFilter" aria-label="Server log level filter">
+                <option value="all">All</option>
+                <option value="error">Errors</option>
+                <option value="warning">Warnings</option>
+                <option value="info">Info</option>
+              </select>
+              <input id="serverLogTextFilter" type="search" placeholder="Filter" aria-label="Server log text filter" />
+              <button id="clearServerLog">Clear</button>
+            </div>
           </div>
           <pre class="log" id="serverLog"></pre>
         </article>

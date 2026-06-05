@@ -152,6 +152,7 @@ function renderDetails(status) {
   const dashboard = status.dashboard || {};
   const processStats = normalizeProcess(status);
   const counts = dashboard.counts || {};
+  const stats = dashboard.stats || {};
   const watcher = dashboard.watcher || {};
   const details = [
     ["Server", server.name || "mcp-cpp-project-indexer"],
@@ -171,15 +172,30 @@ function renderDetails(status) {
     ["Symbols", counts.symbolsText || counts.symbols || "-"],
     ["Data", counts.dataText || counts.data || "-"],
     ["Modules", counts.modulesText || counts.modules || "-"],
+    ["Code lines", stats.codeLinesText || formatNumber(stats.codeLines)],
+    ["Tokens", stats.tokensText || formatNumber(stats.tokens)],
   ];
   $("#detailsList").innerHTML = details
     .map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`)
     .join("");
+  syncServerLogHeight();
+}
+
+function syncServerLogHeight() {
+  const detailsPanel = $("#detailsPanel");
+  const serverLogPanel = $("#serverLogPanel");
+  if (!detailsPanel || !serverLogPanel) return;
+  if (window.matchMedia("(max-width: 900px)").matches) {
+    serverLogPanel.style.height = "";
+    return;
+  }
+  serverLogPanel.style.height = `${detailsPanel.offsetHeight}px`;
 }
 
 function renderStatus(status) {
   const dashboard = status.dashboard || {};
   const counts = dashboard.counts || {};
+  const stats = dashboard.stats || {};
   const watcher = dashboard.watcher || {};
   const runner = status.runner || {};
   const watcherText = watcher.runningText || (watcher.running ? "running" : "stopped");
@@ -191,6 +207,7 @@ function renderStatus(status) {
   setText("#symbolsValue", counts.symbolsText || formatNumber(counts.symbols));
   setText("#dataValue", counts.dataText || formatNumber(counts.data));
   setText("#modulesValue", counts.modulesText || formatNumber(counts.modules));
+  setText("#linesValue", stats.codeLinesText || formatNumber(stats.codeLines));
   setText("#diagnosticsValue", counts.diagnosticsText || formatNumber(counts.diagnostics));
   setText("#watcherValue", watcherText);
   setText("#updatesValue", watcher.updateCountText || formatNumber(watcher.updateCount));
@@ -222,9 +239,25 @@ function eventLine(event) {
   return `${timestamp}  ${level}  ${message}`;
 }
 
+function matchesServerLogFilters(event) {
+  const levelFilter = $("#serverLogLevelFilter")?.value || "all";
+  const textFilter = ($("#serverLogTextFilter")?.value || "").trim().toLowerCase();
+  const level = String(event.level || event.outcome || "info").toLowerCase();
+  const line = eventLine(event).toLowerCase();
+  if (levelFilter !== "all") {
+    const isWarning = level.includes("warn") || line.includes(" warning ") || line.includes(" 4");
+    const isError = level.includes("error") || line.includes(" error ") || line.includes(" 5");
+    const isInfo = level.includes("info");
+    if (levelFilter === "warning" && !isWarning) return false;
+    if (levelFilter === "error" && !isError) return false;
+    if (levelFilter === "info" && !isInfo) return false;
+  }
+  return !textFilter || line.includes(textFilter);
+}
+
 function renderLogs() {
   $("#commandLog").textContent = state.commandEvents.map(eventLine).join("\n");
-  $("#serverLog").textContent = state.serverEvents.map(eventLine).join("\n");
+  $("#serverLog").textContent = state.serverEvents.filter(matchesServerLogFilters).map(eventLine).join("\n");
 }
 
 async function refreshLogs() {
@@ -294,6 +327,9 @@ $("#clearServerLog").addEventListener("click", () => {
   renderLogs();
 });
 
+$("#serverLogLevelFilter").addEventListener("change", renderLogs);
+$("#serverLogTextFilter").addEventListener("input", renderLogs);
+
 function startPolling() {
   window.clearInterval(state.statusTimer);
   void refreshStatus();
@@ -305,5 +341,6 @@ function startPolling() {
 }
 
 document.addEventListener("visibilitychange", startPolling);
+window.addEventListener("resize", syncServerLogHeight);
 initializeTokenFromHash();
 startPolling();

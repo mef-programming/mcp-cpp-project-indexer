@@ -24,7 +24,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px 12px;
@@ -203,6 +204,16 @@ h2 {
   padding: 12px 14px;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-actions input {
+  width: min(220px, 28vw);
+}
+
 .jobs-control {
   display: flex;
   align-items: center;
@@ -233,6 +244,13 @@ h2 {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
   gap: 14px;
+  align-items: stretch;
+}
+
+.grid > .panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .details {
@@ -264,8 +282,18 @@ h2 {
   white-space: pre-wrap;
 }
 
+.grid .log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .grid > .panel {
+    min-height: 0;
   }
 }
