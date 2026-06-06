@@ -1767,7 +1767,7 @@ class LoadedProjectIndex:
 
     @staticmethod
     def compact_orientation_node(node: dict[str, Any]) -> dict[str, Any]:
-        return {
+        result = {
             "orientationId": node.get("orientationId"),
             "kind": node.get("kind", "folder_orientation"),
             "folder": node.get("folder"),
@@ -1781,6 +1781,11 @@ class LoadedProjectIndex:
             "startHere": node.get("startHere", []),
             "childFolders": node.get("childFolders", []),
         }
+        if node.get("topologyScope"):
+            result["topologyScope"] = node.get("topologyScope")
+        if node.get("navigation"):
+            result["navigation"] = node.get("navigation")
+        return result
 
     @staticmethod
     def _raw_orientation_tokens(text: str) -> list[str]:
@@ -1850,6 +1855,15 @@ class LoadedProjectIndex:
             {"name": "useWhen", "text": " ".join(str(item) for item in node.get("useWhen", []) or []), "boost": 2.2},
             {"name": "startHere", "text": " ".join(str(item) for item in node.get("startHere", []) or []), "boost": 3.0},
             {"name": "map", "text": cls._orientation_map_text(node), "boost": 2.5},
+            {
+                "name": "navigation",
+                "text": " ".join(
+                    f"{entry.get('key', '')} {entry.get('targetRootRelativePath', '')} {entry.get('description', '')}"
+                    for entry in node.get("navigation", []) or []
+                    if isinstance(entry, dict)
+                ),
+                "boost": 3.2,
+            },
             {"name": "headings", "text": " ".join(str(item) for item in node.get("headings", []) or []), "boost": 1.0},
             {"name": "boundaries", "text": str(node.get("boundaries") or ""), "boost": 1.2},
             {
@@ -1979,13 +1993,19 @@ class LoadedProjectIndex:
         selected: list[dict[str, Any]] = []
 
         for node in nodes:
-            if node.get("folder") == ".":
+            if len(selected) >= max_nodes:
+                break
+            if node.get("kind") == "topology" and node.get("topologyScope") == "project":
+                selected.append(node)
+
+        for node in nodes:
+            if node.get("folder") == "." and node.get("kind") == "folder_orientation" and node not in selected:
                 selected.append(node)
                 break
 
         for node in nodes:
             folder = str(node.get("folder") or "")
-            if folder == ".":
+            if folder == "." or node in selected:
                 continue
             if "/" not in folder and "\\" not in folder:
                 selected.append(node)

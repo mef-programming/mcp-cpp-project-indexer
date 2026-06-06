@@ -36,15 +36,10 @@ LABEL_SECTION_NAMES = (
     "Purpose",
     "Use this folder when the question is about",
     "Do not use this folder first when the question is about",
+    "TopologyKind",
+    "TopologyScope",
 )
-STRUCTURED_SECTION_NAMES = (
-    "Purpose",
-    "Use this folder when the question is about",
-    "Do not use this folder first when the question is about",
-    "Map",
-    "Start Here",
-    "Boundaries",
-)
+LABEL_PREFIX = "label:"
 
 
 def stable_orientation_id(relative_path: str) -> str:
@@ -65,6 +60,14 @@ def normalize_root_relative(value: str) -> str:
 
 def read_markdown(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def label_key(name: str) -> str:
+    return f"{LABEL_PREFIX}{name}"
+
+
+def display_heading(heading: str) -> str:
+    return heading[len(LABEL_PREFIX):] if heading.startswith(LABEL_PREFIX) else heading
 
 
 def split_markdown_sections(text: str) -> tuple[str | None, dict[str, str]]:
@@ -116,6 +119,10 @@ def section_by_name(sections: dict[str, str], name: str) -> str:
     return sections.get(name, "")
 
 
+def label_by_name(sections: dict[str, str], name: str) -> str:
+    return sections.get(label_key(name), "")
+
+
 def label_section(line: str) -> tuple[str, str] | None:
     stripped = line.strip()
     match = re.match(r"^([A-Za-z0-9][A-Za-z0-9 /_-]{2,80}):\s*(.*)$", stripped)
@@ -127,7 +134,7 @@ def label_section(line: str) -> tuple[str, str] | None:
     if heading not in LABEL_SECTION_NAMES:
         return None
 
-    return heading, match.group(2).strip()
+    return label_key(heading), match.group(2).strip()
 
 
 def markdown_bullets(text: str, *, limit: int = 30) -> list[str]:
@@ -239,6 +246,39 @@ def markdown_map_entries(root: Path, folder: str, text: str, *, limit: int = 80)
     return result
 
 
+def topology_navigation_entries(root: Path, folder: str, text: str, *, limit: int = 80) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    nav_text = "\n".join(fenced_text_blocks(text))
+    if not nav_text.strip():
+        return result
+
+    for line in nav_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.match(r"^(\S+)\s{2,}(\S+)\s{2,}(.+)$", stripped)
+        if not match:
+            continue
+        key = match.group(1).strip()
+        target = normalize_root_relative(match.group(2).strip())
+        description = match.group(3).strip()
+        if not key or not target or not description:
+            continue
+        path_status, _ = resolve_map_target(root, folder, target)
+        result.append(
+            {
+                "key": key,
+                "targetRootRelativePath": target,
+                "description": description,
+                "pathStatus": path_status,
+            }
+        )
+        if len(result) >= limit:
+            break
+
+    return result
+
+
 def compact_text(text: str, *, max_chars: int) -> str:
     collapsed = re.sub(r"\s+", " ", text).strip()
 
@@ -248,12 +288,17 @@ def compact_text(text: str, *, max_chars: int) -> str:
     return collapsed[: max_chars - 1].rstrip() + "..."
 
 
-def is_topology_document(doc_path: Path, title: str | None) -> bool:
-    return "topology" in doc_path.stem.casefold() or "topology" in (title or "").casefold()
-
-
 def has_exact_orientation_block(sections: dict[str, str]) -> bool:
-    return any(bool(section_by_name(sections, name)) for name in STRUCTURED_SECTION_NAMES)
+    return bool(
+        label_by_name(sections, "Purpose")
+        and label_by_name(sections, "Use this folder when the question is about")
+        and label_by_name(sections, "Do not use this folder first when the question is about")
+        and section_by_name(sections, "Map")
+    )
+
+
+def is_declared_topology(sections: dict[str, str]) -> bool:
+    return label_by_name(sections, "TopologyKind").strip().casefold() == "topology"
 
 
 def build_orientation_node(root: Path, doc_path: Path) -> dict[str, Any] | None:
@@ -261,21 +306,23 @@ def build_orientation_node(root: Path, doc_path: Path) -> dict[str, Any] | None:
     folder = normalize_doc_path(doc_path.parent.relative_to(root)) if doc_path.parent != root else "."
     text = read_markdown(doc_path)
     title, sections = split_markdown_sections(text)
-    document_kind = "topology" if is_topology_document(doc_path, title) else "folder_orientation"
+    is_topology = is_declared_topology(sections)
+    is_folder_orientation = doc_path.name.casefold() == "readme.md" and has_exact_orientation_block(sections)
 
-    if document_kind != "topology" and not has_exact_orientation_block(sections):
+    if not is_topology and not is_folder_orientation:
         return None
 
-    purpose = section_by_name(sections, "Purpose")
-    use_when = section_by_name(sections, "Use this folder when the question is about")
-    do_not_use = section_by_name(sections, "Do not use this folder first when the question is about")
+    purpose = label_by_name(sections, "Purpose")
+    use_when = label_by_name(sections, "Use this folder when the question is about")
+    do_not_use = label_by_name(sections, "Do not use this folder first when the question is about")
     map_section = section_by_name(sections, "Map")
     start_here = section_by_name(sections, "Start Here")
     boundaries = section_by_name(sections, "Boundaries")
+    navigation = topology_navigation_entries(root, folder, section_by_name(sections, "Navigation")) if is_topology else []
 
-    return {
+    node: dict[str, Any] = {
         "orientationId": stable_orientation_id(relative_path),
-        "kind": document_kind,
+        "kind": "topology" if is_topology else "folder_orientation",
         "file": relative_path,
         "folder": folder,
         "rootRelativeFile": relative_path,
@@ -287,10 +334,16 @@ def build_orientation_node(root: Path, doc_path: Path) -> dict[str, Any] | None:
         "map": markdown_map_entries(root, folder, map_section),
         "startHere": markdown_bullets(start_here),
         "boundaries": compact_text(boundaries, max_chars=1200),
-        "headings": [heading for heading in sections.keys() if heading != "__intro__"],
+        "headings": [display_heading(heading) for heading in sections.keys() if heading != "__intro__"],
         "lineCount": len(text.splitlines()),
         "contentHash": hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest(),
     }
+    topology_scope = label_by_name(sections, "TopologyScope").strip()
+    if topology_scope:
+        node["topologyScope"] = topology_scope
+    if navigation:
+        node["navigation"] = navigation
+    return node
 
 
 def discover_orientation_documents(root: Path, *, doc_files: tuple[str, ...] = DEFAULT_ORIENTATION_FILES) -> list[Path]:
