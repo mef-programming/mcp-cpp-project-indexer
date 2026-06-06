@@ -258,6 +258,7 @@ function matchesServerLogFilters(event) {
 function renderLogs() {
   $("#commandLog").textContent = state.commandEvents.map(eventLine).join("\n");
   $("#serverLog").textContent = state.serverEvents.filter(matchesServerLogFilters).map(eventLine).join("\n");
+  syncServerLogHeight();
 }
 
 async function refreshLogs() {

@@ -244,13 +244,17 @@ h2 {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
   gap: 14px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .grid > .panel {
   display: flex;
   min-height: 0;
   flex-direction: column;
+}
+
+#serverLogPanel {
+  overflow: hidden;
 }
 
 .details {
