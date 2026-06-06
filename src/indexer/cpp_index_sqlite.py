@@ -126,6 +126,15 @@ def initialize_index_db(connection: sqlite3.Connection) -> None:
             ordinal INTEGER NOT NULL,
             PRIMARY KEY (name, dataId)
         );
+
+        CREATE TABLE IF NOT EXISTS orientation_nodes (
+            orientationId TEXT PRIMARY KEY,
+            file TEXT NOT NULL,
+            folder TEXT NOT NULL,
+            title TEXT,
+            purpose TEXT,
+            json TEXT NOT NULL
+        );
         """
     )
 
@@ -304,6 +313,29 @@ def insert_data_names(connection: sqlite3.Connection, data_names: dict[str, list
     return len(data_names)
 
 
+def insert_orientation_nodes(connection: sqlite3.Connection, nodes: list[dict[str, Any]]) -> int:
+    rows = [
+        (
+            node["orientationId"],
+            node.get("file") or "",
+            node.get("folder") or "",
+            node.get("title"),
+            node.get("purpose"),
+            json.dumps(node, ensure_ascii=False, separators=(",", ":")),
+        )
+        for node in nodes
+    ]
+    connection.executemany(
+        """
+        INSERT OR REPLACE INTO orientation_nodes(
+            orientationId, file, folder, title, purpose, json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    return len(nodes)
+
+
 def create_lookup_indexes(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -326,6 +358,11 @@ def create_lookup_indexes(connection: sqlite3.Connection) -> None:
             ON data(container);
         CREATE INDEX IF NOT EXISTS idx_data_names_name_order
             ON data_names(name, ordinal);
+
+        CREATE INDEX IF NOT EXISTS idx_orientation_folder
+            ON orientation_nodes(folder);
+        CREATE INDEX IF NOT EXISTS idx_orientation_file
+            ON orientation_nodes(file);
         """
     )
 
@@ -338,6 +375,7 @@ def build_sqlite_index(
     data_items: list[dict[str, Any]],
     data_names: dict[str, list[str]],
     counts: dict[str, int],
+    orientation_nodes: list[dict[str, Any]] | None = None,
 ) -> Path:
     db_path = sqlite_index_path(index_root)
     connection = recreate_index_db(db_path)
@@ -357,6 +395,7 @@ def build_sqlite_index(
             insert_symbol_names(connection, names)
             insert_data(connection, data_items)
             insert_data_names(connection, data_names)
+            insert_orientation_nodes(connection, orientation_nodes or [])
             create_lookup_indexes(connection)
     except Exception:
         connection.close()
@@ -384,7 +423,28 @@ def count_lookup_rows_from_connection(connection: sqlite3.Connection) -> dict[st
         "names": int(connection.execute("SELECT COUNT(DISTINCT name) AS count FROM symbol_names").fetchone()["count"]),
         "data": int(connection.execute("SELECT COUNT(*) AS count FROM data").fetchone()["count"]),
         "dataNames": int(connection.execute("SELECT COUNT(DISTINCT name) AS count FROM data_names").fetchone()["count"]),
+        "orientationNodes": int(connection.execute("SELECT COUNT(*) AS count FROM orientation_nodes").fetchone()["count"]),
     }
+
+
+def replace_orientation_nodes(
+    *,
+    index_root: Path,
+    orientation_nodes: list[dict[str, Any]],
+) -> int:
+    db_path = sqlite_index_path(index_root)
+
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+
+    connection = connect_index_db(db_path)
+
+    try:
+        with connection:
+            connection.execute("DELETE FROM orientation_nodes")
+            return insert_orientation_nodes(connection, orientation_nodes)
+    finally:
+        connection.close()
 
 
 def replace_file_lookup_rows(

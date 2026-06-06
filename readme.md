@@ -140,6 +140,7 @@ Do not infer implementation behavior from metadata alone.
 - [5-Minute Quick Start](#5-minute-quick-start)
 - [Production Scale & Performance](#-production-scale--performance)
 - [TUI Control Center](#tui-control-center)
+- [Repository Layout](#repository-layout)
 - [Why This Tool?](#-why-this-tool)
 - [Before / After](#-before--after)
 - [How It Works](#how-it-works)
@@ -159,6 +160,37 @@ Do not infer implementation behavior from metadata alone.
 - [Development Backstory](#-development-backstory)
 - [Smoke Tests](#smoke-tests)
 - [Maintenance Checklist](#maintenance-checklist)
+
+---
+
+## Repository Layout
+
+The public root `readme.md` is human-facing project documentation. The actual
+Python implementation lives under `src/`:
+
+```text
+src/
+  README.md
+  indexer/
+    build_project_index.py
+    update_project_index.py
+    cpp_project_index.py
+  server/
+    code_index_mcp_server.py
+    server_ui/
+  ui/
+    indexer_tui.py
+    indexer_control.py
+```
+
+Root-level scripts such as `build_project_index.py`, `code_index_mcp_server.py`,
+`indexer_tui.py`, and `update_project_index.py` are compatibility wrappers.
+They keep existing command lines and MCP client configs working while routing
+execution to the implementation package.
+
+Folder-local READMEs under `src/` use the project-indexer orientation format so
+agents can discover where to start without turning the public root README into
+machine-only documentation.
 
 ---
 
@@ -1783,6 +1815,70 @@ Prompt wording matters here. The phrase "debug information" is too broad for
 many AI agents and can be confused with C++ debug-build code such as `DEBUG`,
 `_DEBUG`, `#ifdef DEBUG`, Visual Studio debugging, or logging branches. For
 indexer scanner data, ask for indexer/parser diagnostics explicitly.
+
+### Orientation tools
+
+```text
+get_project_orientation()
+list_orientation_nodes()
+get_orientation_node(path)
+search_orientation(query)
+```
+
+If a project contains folder-level `README.md`, `readme.md`, `AGENTS.md`, or
+Markdown files with `topology` in the filename, the indexer records them as
+optional orientation metadata. This gives an AI agent a cheap project map before
+it reads implementation source. Folder READMEs use `kind:
+"folder_orientation"`; topology documents use `kind: "topology"`.
+
+These tools are exposed dynamically. If the loaded index has no
+orientation/topology nodes, `tools/list` and management capability metadata omit
+the orientation tools.
+
+The orientation layer extracts structured fields only from the binding
+project-indexer orientation README headings:
+
+```text
+Purpose:
+Use this folder when the question is about:
+Do not use this folder first when the question is about:
+## Map
+## Start Here
+## Boundaries
+```
+
+Legacy headings such as `Responsibilities`, `Non-responsibilities`,
+`Use when`, `Current layout`, or `Responsibility Boundaries` remain ordinary
+Markdown text only. They do not populate structured orientation fields.
+
+Use it for architecture and navigation questions:
+
+```json
+{
+  "query": "MCP dispatch",
+  "limit": 10
+}
+```
+
+Then read the selected orientation node:
+
+```json
+{
+  "path": "src/server/core/mcp"
+}
+```
+
+Orientation metadata is not implementation evidence. It answers:
+
+```text
+Where should I start?
+Which subsystem owns this responsibility?
+Which folder should I not inspect first?
+```
+
+It does not answer what a function does, whether code is correct, or whether a
+runtime behavior is guaranteed. For those claims, locate and read source with
+`find_symbol`, `list_file_symbols`, `read_symbol`, or `read_range`.
 
 Good prompts:
 

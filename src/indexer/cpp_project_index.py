@@ -22,6 +22,7 @@ from cpp_index_sqlite import (
     sqlite_index_path,
 )
 from cpp_index_utils import save_json
+from cpp_orientation_index import build_orientation_index
 from cpp_lexer import find_matching_token, tokenize_lines, token_values
 from cpp_structural_scan import extract_function_name
 from cpp_comment_context import extract_file_header_comment, extract_leading_comment
@@ -526,6 +527,7 @@ class ProjectIndexBuildResult:
     data_count: int
     data_names_count: int
     modules_count: int
+    orientation_nodes_count: int
     diagnostics_count: int
     total_code_lines: int
     total_tokens: int
@@ -1415,6 +1417,10 @@ def build_project_index(
                     data_names[alias].append(ref["dataId"])
     finish_phase("aggregate file indexes", phase_started)
 
+    phase_started = start_phase("index orientation docs")
+    orientation = build_orientation_index(root)
+    finish_phase("index orientation docs", phase_started)
+
     phase_started = start_phase("sort manifest files")
     manifest_files.sort(key=lambda item: item["relativePath"].casefold())
     finish_phase("sort manifest files", phase_started)
@@ -1433,6 +1439,7 @@ def build_project_index(
             "data": len(data_items),
             "dataNames": len(data_names),
             "modules": len(modules),
+            "orientationNodes": len(orientation.get("nodes", [])),
             "diagnostics": len(diagnostics),
         },
     }
@@ -1440,6 +1447,7 @@ def build_project_index(
     save_json(output_root / "manifest.json", manifest)
     save_json(output_root / "modules.json", dict(sorted(modules.items(), key=lambda item: item[0].casefold())))
     save_json(output_root / "diagnostics.json", diagnostics)
+    save_json(output_root / "orientation.json", orientation)
     save_update_state_from_file_indexes(
         index_root=output_root,
         root=root,
@@ -1456,6 +1464,7 @@ def build_project_index(
         data_items=data_items,
         data_names=data_names,
         counts=manifest["counts"],
+        orientation_nodes=orientation.get("nodes", []),
     )
     for legacy_name in ("symbols.jsonl", "names.json", "data.jsonl", "data_names.json"):
         legacy_path = output_root / legacy_name
@@ -1473,6 +1482,7 @@ def build_project_index(
         data_count=len(data_items),
         data_names_count=len(data_names),
         modules_count=len(modules),
+        orientation_nodes_count=len(orientation.get("nodes", [])),
         diagnostics_count=len(diagnostics),
         total_code_lines=manifest["stats"]["totalCodeLines"],
         total_tokens=manifest["stats"]["totalTokens"],
@@ -1510,6 +1520,11 @@ class LoadedProjectIndex:
         self.files_dir = index_root / "files"
         self.manifest = json.loads((index_root / "manifest.json").read_text(encoding="utf-8"))
         self.modules: dict[str, list[str]] = json.loads((index_root / "modules.json").read_text(encoding="utf-8"))
+        self.orientation: dict[str, Any] = self._load_json_if_exists(
+            index_root / "orientation.json",
+            {"schema": "cpp.project_orientation.v1", "counts": {"nodes": 0}, "nodes": []},
+        )
+        self.orientation_nodes: list[dict[str, Any]] = list(self.orientation.get("nodes", []))
         self.file_by_id = {item["fileId"]: item for item in self.manifest["files"]}
         self.file_id_by_relative_path = {item["relativePath"]: item["fileId"] for item in self.manifest["files"]}
         self.sqlite_path = sqlite_index_path(index_root)
@@ -1737,6 +1752,112 @@ class LoadedProjectIndex:
             "relativePath": relative_path,
             "returnedIncludes": len(includes),
             "includes": includes,
+        }
+
+    @staticmethod
+    def compact_orientation_node(node: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "orientationId": node.get("orientationId"),
+            "kind": node.get("kind", "folder_orientation"),
+            "folder": node.get("folder"),
+            "file": node.get("file"),
+            "title": node.get("title"),
+            "purpose": node.get("purpose"),
+            "useWhen": node.get("useWhen", []),
+            "doNotUseFirstWhen": node.get("doNotUseFirstWhen", []),
+            "startHere": node.get("startHere", []),
+            "childFolders": node.get("childFolders", []),
+        }
+
+    def get_project_orientation(self, *, max_nodes: int = 12) -> dict[str, Any]:
+        nodes = self.orientation_nodes
+        selected: list[dict[str, Any]] = []
+
+        for node in nodes:
+            if node.get("folder") == ".":
+                selected.append(node)
+                break
+
+        for node in nodes:
+            folder = str(node.get("folder") or "")
+            if folder == ".":
+                continue
+            if "/" not in folder and "\\" not in folder:
+                selected.append(node)
+            if len(selected) >= max_nodes:
+                break
+
+        if not selected:
+            selected = nodes[:max_nodes]
+
+        return {
+            "schema": "cpp.project_orientation.summary.v1",
+            "totalNodes": len(nodes),
+            "returnedNodes": len(selected),
+            "nodes": [self.compact_orientation_node(node) for node in selected],
+        }
+
+    def list_orientation_nodes(self, *, limit: int = 200) -> dict[str, Any]:
+        nodes = self.orientation_nodes[:limit]
+        return {
+            "schema": "cpp.project_orientation.list.v1",
+            "totalNodes": len(self.orientation_nodes),
+            "returnedNodes": len(nodes),
+            "nodes": [self.compact_orientation_node(node) for node in nodes],
+        }
+
+    def get_orientation_node(self, path: str) -> dict[str, Any] | None:
+        normalized = path.strip().replace("\\", "/").strip("/")
+
+        if normalized in {"", "."}:
+            normalized = "."
+
+        for node in self.orientation_nodes:
+            if normalized in {
+                str(node.get("orientationId") or ""),
+                str(node.get("folder") or "").strip("/"),
+                str(node.get("file") or "").strip("/"),
+            }:
+                return node
+
+        return None
+
+    def search_orientation(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+        query_text = query.strip()
+        query_fold = query_text.casefold()
+        matches: list[dict[str, Any]] = []
+
+        for node in self.orientation_nodes:
+            searchable_parts = [
+                node.get("title"),
+                node.get("folder"),
+                node.get("file"),
+                node.get("purpose"),
+                node.get("boundaries"),
+                " ".join(str(item) for item in node.get("useWhen", [])),
+                " ".join(str(item) for item in node.get("doNotUseFirstWhen", [])),
+                " ".join(str(item) for item in node.get("startHere", [])),
+                " ".join(str(item.get("description") or item.get("path") or "") for item in node.get("map", [])),
+                " ".join(str(item) for item in node.get("headings", [])),
+            ]
+            haystack = " ".join(str(part or "") for part in searchable_parts).casefold()
+
+            if query_fold and query_fold not in haystack:
+                continue
+
+            compact = self.compact_orientation_node(node)
+            compact["matchKind"] = "text_substring"
+            matches.append(compact)
+
+            if len(matches) >= limit:
+                break
+
+        return {
+            "schema": "cpp.project_orientation.search.v1",
+            "query": query_text,
+            "totalNodes": len(self.orientation_nodes),
+            "returnedMatches": len(matches),
+            "matches": matches,
         }
 
     def find_symbol(
