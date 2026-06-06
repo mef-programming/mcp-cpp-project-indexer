@@ -419,10 +419,35 @@ CAPABILITY_TOOL_METADATA: dict[str, dict[str, Any]] = {
     "get_symbol_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_data_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "validate_fingerprints": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
-    "get_project_orientation": {"category": "orientation", "claimStrength": "metadata_only", "preFetchAllowed": True},
-    "list_orientation_nodes": {"category": "orientation", "claimStrength": "metadata_only", "preFetchAllowed": True},
-    "get_orientation_node": {"category": "orientation", "claimStrength": "metadata_only", "preFetchAllowed": True},
-    "search_orientation": {"category": "orientation", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_project_orientation": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation",
+        "sourceBehaviorAllowed": False,
+    },
+    "list_orientation_nodes": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation",
+        "sourceBehaviorAllowed": False,
+    },
+    "get_orientation_node": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation",
+        "sourceBehaviorAllowed": False,
+    },
+    "search_orientation": {
+        "category": "orientation",
+        "claimStrength": "routing_hint_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation_routing",
+        "sourceBehaviorAllowed": False,
+        "algorithm": "bm25",
+    },
     "reload_index_cache": {"category": "admin", "claimStrength": "none", "preFetchAllowed": False},
     "find_symbol": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "find_declaration": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
@@ -706,9 +731,10 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         {
             "name": "get_project_orientation",
             "description": (
-                "[Orientation] Return compact project/folder README orientation nodes. "
-                "Use before source navigation when the user asks for architecture, subsystem, "
-                "or where-to-start guidance. Metadata only; does not read implementation source."
+                "[Orientation] Return compact project-level orientation/topology entry points. "
+                "This is an overview surface, not the full folder inventory; compare "
+                "totalNodes/returnedNodes and use list_orientation_nodes or search_orientation "
+                "when more nodes exist. Metadata only; not source behavior evidence."
             ),
             "inputSchema": {
                 "type": "object",
@@ -727,7 +753,8 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_orientation_nodes",
             "description": (
                 "[Orientation] List indexed orientation/topology nodes as compact routing metadata. "
-                "Use to inspect the documented project map before choosing source folders."
+                "Use for complete folder/subsystem discovery when get_project_orientation returns "
+                "only overview nodes. Metadata only; not source behavior evidence."
             ),
             "inputSchema": {
                 "type": "object",
@@ -746,7 +773,8 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_orientation_node",
             "description": (
                 "[Orientation] Return one structured orientation/topology node by folder, file, or orientationId. "
-                "Metadata only: purpose, use-when, do-not-use-first, map, and boundaries."
+                "Its file/folder/map/navigation paths are routing hints; verify or resolve them "
+                "with source-navigation tools before direct source reads or citations."
             ),
             "inputSchema": {
                 "type": "object",
@@ -763,8 +791,12 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         {
             "name": "search_orientation",
             "description": (
-                "[Orientation] Search indexed orientation/topology metadata for subsystem routing terms. "
-                "Use for architecture/navigation questions before reading source code."
+                "[Orientation] Search indexed orientation/topology metadata with BM25 ranking "
+                "for likely navigation entry points. Results use schema "
+                "project.orientation.search.v2.1 and are routing hints only, not source "
+                "behavior evidence, even at high routingConfidence. Expand selected candidates "
+                "with get_orientation_node, respect antiMatchTerms, and verify mapped paths "
+                "before source reads."
             ),
             "inputSchema": {
                 "type": "object",
