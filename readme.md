@@ -1825,11 +1825,11 @@ get_orientation_node(path)
 search_orientation(query)
 ```
 
-If a project contains folder-level `README.md`, `readme.md`, `AGENTS.md`, or
-Markdown files with `topology` in the filename, the indexer records them as
-optional orientation metadata. This gives an AI agent a cheap project map before
-it reads implementation source. Folder READMEs use `kind:
-"folder_orientation"`; topology documents use `kind: "topology"`.
+If a project contains folder-level `README.md` / `readme.md` files with the
+standard orientation block, or Markdown files with `topology` in the filename,
+the indexer records them as optional orientation metadata. This gives an AI
+agent a cheap project map before it reads implementation source. Folder READMEs
+use `kind: "folder_orientation"`; topology documents use `kind: "topology"`.
 
 These tools are exposed dynamically. If the loaded index has no
 orientation/topology nodes, `tools/list` and management capability metadata omit
@@ -1849,7 +1849,15 @@ Do not use this folder first when the question is about:
 
 Legacy headings such as `Responsibilities`, `Non-responsibilities`,
 `Use when`, `Current layout`, or `Responsibility Boundaries` remain ordinary
-Markdown text only. They do not populate structured orientation fields.
+Markdown text only. They do not populate structured orientation fields. `## Map`
+entries are parsed from fenced `text` blocks with at least two spaces between
+entry name and description; resolved entries include `targetRootRelativePath`
+and `pathStatus`.
+
+`search_orientation` uses BM25 routing search and returns `schema:
+"cpp.project_orientation.search.v2.1"`, `algorithm: "bm25"`, query term
+diagnostics, scores, match fields, and anti-match terms. Results are routing
+hints only.
 
 Use it for architecture and navigation questions:
 

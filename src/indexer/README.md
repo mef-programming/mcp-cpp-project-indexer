@@ -32,7 +32,7 @@ cpp_data_emit.py         data/member declaration emitter
 cpp_symbol_emit.py       symbol emitter
 cpp_type_alias_emit.py   type alias/typedef emitter
 cpp_index_sqlite.py      SQLite lookup index writer/reader
-cpp_orientation_index.py README/AGENTS/topology orientation parser
+cpp_orientation_index.py README/topology orientation parser
 cpp_change_tracking.py   git/worktree change and hunk routing helpers
 ```
 

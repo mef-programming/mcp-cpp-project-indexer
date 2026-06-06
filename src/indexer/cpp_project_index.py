@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import os
 import shutil
@@ -1754,6 +1755,16 @@ class LoadedProjectIndex:
             "includes": includes,
         }
 
+    ORIENTATION_SEARCH_STOPWORDS = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does",
+        "for", "from", "how", "in", "into", "is", "it", "look", "of", "on", "or",
+        "should", "that", "the", "this", "to", "was", "what", "when", "where",
+        "which", "who", "why", "with", "would",
+    }
+    ORIENTATION_SEARCH_TECHNICAL_TERMS = {
+        "ai", "api", "db", "go", "id", "io", "js", "jwt", "s3", "ts", "ui", "v1", "v2",
+    }
+
     @staticmethod
     def compact_orientation_node(node: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1761,6 +1772,8 @@ class LoadedProjectIndex:
             "kind": node.get("kind", "folder_orientation"),
             "folder": node.get("folder"),
             "file": node.get("file"),
+            "rootRelativeFolder": node.get("rootRelativeFolder", node.get("folder")),
+            "rootRelativeFile": node.get("rootRelativeFile", node.get("file")),
             "title": node.get("title"),
             "purpose": node.get("purpose"),
             "useWhen": node.get("useWhen", []),
@@ -1768,6 +1781,198 @@ class LoadedProjectIndex:
             "startHere": node.get("startHere", []),
             "childFolders": node.get("childFolders", []),
         }
+
+    @staticmethod
+    def _raw_orientation_tokens(text: str) -> list[str]:
+        return [part.strip().casefold() for part in re.split(r"[^a-zA-Z0-9_#+.:/-]+", text) if part.strip()]
+
+    @classmethod
+    def _keep_orientation_token(cls, token: str) -> bool:
+        if token in cls.ORIENTATION_SEARCH_TECHNICAL_TERMS:
+            return True
+        if any(ch.isdigit() for ch in token):
+            return True
+        if any(ch in token for ch in ("_", "-", ":", "/", ".")):
+            return True
+        if len(token) < 2:
+            return False
+        return token not in cls.ORIENTATION_SEARCH_STOPWORDS
+
+    @classmethod
+    def _orientation_query_terms(cls, text: str) -> dict[str, list[str]]:
+        original = cls._raw_orientation_tokens(text)
+        used: list[str] = []
+        removed_stopwords: list[str] = []
+
+        for token in original:
+            if cls._keep_orientation_token(token):
+                used.append(token)
+            elif token in cls.ORIENTATION_SEARCH_STOPWORDS:
+                removed_stopwords.append(token)
+
+        return {
+            "original": sorted(set(original), key=original.index),
+            "used": sorted(set(used), key=used.index),
+            "removedStopwords": sorted(set(removed_stopwords), key=removed_stopwords.index),
+        }
+
+    @classmethod
+    def _orientation_text_terms(cls, text: str) -> list[str]:
+        return cls._orientation_query_terms(text)["used"]
+
+    @staticmethod
+    def _orientation_map_text(node: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for entry in node.get("map", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            parts.append(
+                " ".join(
+                    str(value or "")
+                    for value in (
+                        entry.get("name"),
+                        entry.get("description"),
+                        entry.get("targetRootRelativePath"),
+                    )
+                )
+            )
+        return " ".join(parts)
+
+    @classmethod
+    def _orientation_search_fields(cls, node: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {"name": "title", "text": str(node.get("title") or ""), "boost": 4.0},
+            {"name": "folder", "text": str(node.get("folder") or ""), "boost": 3.5},
+            {"name": "file", "text": str(node.get("file") or ""), "boost": 3.5},
+            {"name": "rootRelativeFolder", "text": str(node.get("rootRelativeFolder") or ""), "boost": 3.5},
+            {"name": "rootRelativeFile", "text": str(node.get("rootRelativeFile") or ""), "boost": 3.5},
+            {"name": "purpose", "text": str(node.get("purpose") or ""), "boost": 1.4},
+            {"name": "useWhen", "text": " ".join(str(item) for item in node.get("useWhen", []) or []), "boost": 2.2},
+            {"name": "startHere", "text": " ".join(str(item) for item in node.get("startHere", []) or []), "boost": 3.0},
+            {"name": "map", "text": cls._orientation_map_text(node), "boost": 2.5},
+            {"name": "headings", "text": " ".join(str(item) for item in node.get("headings", []) or []), "boost": 1.0},
+            {"name": "boundaries", "text": str(node.get("boundaries") or ""), "boost": 1.2},
+            {
+                "name": "doNotUseFirstWhen",
+                "text": " ".join(str(item) for item in node.get("doNotUseFirstWhen", []) or []),
+                "boost": 0.0,
+                "anti": True,
+            },
+        ]
+
+    @classmethod
+    def _orientation_search_document(cls, node: dict[str, Any]) -> dict[str, Any]:
+        fields = cls._orientation_search_fields(node)
+        weighted_tokens: list[str] = []
+        field_terms: dict[str, set[str]] = {}
+        anti_terms: set[str] = set()
+
+        for field in fields:
+            terms = set(cls._orientation_text_terms(str(field.get("text") or "")))
+            if field.get("anti"):
+                anti_terms.update(terms)
+                continue
+            field_terms[str(field["name"])] = terms
+            repeat = max(1, round(float(field.get("boost") or 0) * 2))
+            for term in terms:
+                weighted_tokens.extend([term] * repeat)
+
+        token_counts: dict[str, int] = {}
+        for token in weighted_tokens:
+            token_counts[token] = token_counts.get(token, 0) + 1
+
+        return {
+            "node": node,
+            "fields": fields,
+            "tokenCounts": token_counts,
+            "fieldTerms": field_terms,
+            "antiTerms": anti_terms,
+            "length": max(1, len(weighted_tokens)),
+        }
+
+    @classmethod
+    def _bm25_search_orientation(cls, nodes: list[dict[str, Any]], query_terms: list[str]) -> list[dict[str, Any]]:
+        if not query_terms:
+            return []
+
+        docs = [cls._orientation_search_document(node) for node in nodes]
+        doc_count = max(1, len(docs))
+        avg_length = sum(doc["length"] for doc in docs) / doc_count if docs else 1.0
+        document_frequency: dict[str, int] = {}
+
+        for term in query_terms:
+            document_frequency[term] = sum(1 for doc in docs if term in doc["tokenCounts"])
+
+        k1 = 1.2
+        b = 0.75
+        matches: list[dict[str, Any]] = []
+
+        for doc in docs:
+            score = 0.0
+            matched_terms: list[str] = []
+            anti_match_terms: list[str] = []
+            match_fields: set[str] = set()
+            token_counts = doc["tokenCounts"]
+
+            for term in query_terms:
+                tf = token_counts.get(term, 0)
+                df = document_frequency.get(term, 0)
+                if term in doc["antiTerms"]:
+                    anti_match_terms.append(term)
+                if tf <= 0 or df <= 0:
+                    continue
+
+                idf = math.log(1 + (doc_count - df + 0.5) / (df + 0.5))
+                denominator = tf + k1 * (1 - b + b * (doc["length"] / avg_length))
+                score += idf * ((tf * (k1 + 1)) / denominator)
+                matched_terms.append(term)
+
+                for field, terms in doc["fieldTerms"].items():
+                    if term in terms:
+                        match_fields.add(field)
+
+            for field in doc["fields"]:
+                if field.get("anti"):
+                    continue
+                terms = doc["fieldTerms"].get(str(field["name"]), set())
+                if query_terms and all(term in terms for term in query_terms):
+                    score += float(field.get("boost") or 0) * 1.25
+                    match_fields.add(str(field["name"]))
+
+            if anti_match_terms:
+                score *= max(0.25, 1 - len(set(anti_match_terms)) * 0.15)
+
+            if score <= 0 or not matched_terms:
+                continue
+
+            compact = cls.compact_orientation_node(doc["node"])
+            compact.update(
+                {
+                    "matchKind": "bm25_routing_match",
+                    "score": round(score, 4),
+                    "matchedTerms": sorted(set(matched_terms)),
+                    "antiMatchTerms": sorted(set(anti_match_terms)),
+                    "matchFields": sorted(match_fields),
+                }
+            )
+            matches.append(compact)
+
+        matches.sort(key=lambda item: (-float(item.get("score") or 0), str(item.get("folder") or "")))
+        return matches
+
+    @staticmethod
+    def _orientation_routing_confidence(matches: list[dict[str, Any]]) -> str:
+        if not matches:
+            return "none"
+        top_score = float(matches[0].get("score") or 0)
+        second_score = float(matches[1].get("score") or 0) if len(matches) > 1 else 0.0
+        gap = top_score / second_score if second_score > 0 else top_score
+
+        if top_score >= 10 and gap >= 1.5:
+            return "high"
+        if top_score >= 5 or gap >= 1.3:
+            return "medium"
+        return "low"
 
     def get_project_orientation(self, *, max_nodes: int = 12) -> dict[str, Any]:
         nodes = self.orientation_nodes
@@ -1817,6 +2022,8 @@ class LoadedProjectIndex:
                 str(node.get("orientationId") or ""),
                 str(node.get("folder") or "").strip("/"),
                 str(node.get("file") or "").strip("/"),
+                str(node.get("rootRelativeFolder") or "").strip("/"),
+                str(node.get("rootRelativeFile") or "").strip("/"),
             }:
                 return node
 
@@ -1824,38 +2031,22 @@ class LoadedProjectIndex:
 
     def search_orientation(self, query: str, *, limit: int = 20) -> dict[str, Any]:
         query_text = query.strip()
-        query_fold = query_text.casefold()
-        matches: list[dict[str, Any]] = []
-
-        for node in self.orientation_nodes:
-            searchable_parts = [
-                node.get("title"),
-                node.get("folder"),
-                node.get("file"),
-                node.get("purpose"),
-                node.get("boundaries"),
-                " ".join(str(item) for item in node.get("useWhen", [])),
-                " ".join(str(item) for item in node.get("doNotUseFirstWhen", [])),
-                " ".join(str(item) for item in node.get("startHere", [])),
-                " ".join(str(item.get("description") or item.get("path") or "") for item in node.get("map", [])),
-                " ".join(str(item) for item in node.get("headings", [])),
-            ]
-            haystack = " ".join(str(part or "") for part in searchable_parts).casefold()
-
-            if query_fold and query_fold not in haystack:
-                continue
-
-            compact = self.compact_orientation_node(node)
-            compact["matchKind"] = "text_substring"
-            matches.append(compact)
-
-            if len(matches) >= limit:
-                break
+        query_terms = self._orientation_query_terms(query_text)
+        all_matches = self._bm25_search_orientation(self.orientation_nodes, query_terms["used"])
+        matches = all_matches[:limit]
 
         return {
-            "schema": "cpp.project_orientation.search.v1",
+            "schema": "cpp.project_orientation.search.v2.1",
+            "evidenceKind": "orientation_routing",
+            "claimStrength": "routing_hint_only",
+            "algorithm": "bm25",
             "query": query_text,
+            "queryTermsOriginal": query_terms["original"],
+            "queryTermsUsed": query_terms["used"],
+            "removedStopwords": query_terms["removedStopwords"],
+            "routingConfidence": self._orientation_routing_confidence(matches),
             "totalNodes": len(self.orientation_nodes),
+            "totalMatches": len(all_matches),
             "returnedMatches": len(matches),
             "matches": matches,
         }

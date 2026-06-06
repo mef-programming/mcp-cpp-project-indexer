@@ -726,7 +726,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         {
             "name": "list_orientation_nodes",
             "description": (
-                "[Orientation] List indexed README/AGENTS orientation nodes as compact routing metadata. "
+                "[Orientation] List indexed orientation/topology nodes as compact routing metadata. "
                 "Use to inspect the documented project map before choosing source folders."
             ),
             "inputSchema": {
@@ -745,7 +745,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         {
             "name": "get_orientation_node",
             "description": (
-                "[Orientation] Return one structured README/AGENTS orientation node by folder, file, or orientationId. "
+                "[Orientation] Return one structured orientation/topology node by folder, file, or orientationId. "
                 "Metadata only: purpose, use-when, do-not-use-first, map, and boundaries."
             ),
             "inputSchema": {
@@ -753,7 +753,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Folder path, README/AGENTS file path, or orientationId.",
+                        "description": "Folder path, orientation/topology file path, or orientationId.",
                     }
                 },
                 "required": ["path"],
@@ -763,7 +763,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         {
             "name": "search_orientation",
             "description": (
-                "[Orientation] Search indexed README/AGENTS orientation metadata for subsystem routing terms. "
+                "[Orientation] Search indexed orientation/topology metadata for subsystem routing terms. "
                 "Use for architecture/navigation questions before reading source code."
             ),
             "inputSchema": {
