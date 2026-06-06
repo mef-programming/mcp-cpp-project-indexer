@@ -1320,6 +1320,8 @@ def build_project_index(
 
     output_root.mkdir(parents=True, exist_ok=True)
     files_dir = output_root / "files"
+    if files_dir.exists():
+        shutil.rmtree(files_dir)
     files_dir.mkdir(parents=True, exist_ok=True)
 
     phase_started = start_phase("discover files")
