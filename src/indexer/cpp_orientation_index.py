@@ -366,12 +366,43 @@ def discover_orientation_documents(root: Path, *, doc_files: tuple[str, ...] = D
     return result
 
 
+
+
+def annotate_orientation_targets(nodes: list[dict[str, Any]]) -> None:
+    node_by_path: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        for key in ("rootRelativeFile", "file", "rootRelativeFolder", "folder"):
+            value = node.get(key)
+            if isinstance(value, str) and value:
+                node_by_path[value] = node
+
+    def annotate(entry: dict[str, Any]) -> None:
+        target = entry.get("targetRootRelativePath")
+        if not isinstance(target, str) or not target or entry.get("pathStatus") != "resolved":
+            entry["targetKind"] = "unresolved"
+            return
+        orientation_node = node_by_path.get(target)
+        if orientation_node is not None:
+            entry["targetKind"] = "orientation_node"
+            entry["targetOrientationId"] = orientation_node.get("orientationId")
+            return
+        entry["targetKind"] = "source_path"
+
+    for node in nodes:
+        for entry in node.get("map", []) or []:
+            if isinstance(entry, dict):
+                annotate(entry)
+        for entry in node.get("navigation", []) or []:
+            if isinstance(entry, dict):
+                annotate(entry)
+
 def build_orientation_index(root: Path) -> dict[str, Any]:
     nodes = [
         node
         for node in (build_orientation_node(root, path) for path in discover_orientation_documents(root))
         if node is not None
     ]
+    annotate_orientation_targets(nodes)
     by_folder = {node["folder"]: node["orientationId"] for node in nodes}
 
     for node in nodes:
