@@ -121,6 +121,15 @@ def path_stat_fingerprint_part(label: str, path: Path) -> str:
     return f"{label}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
+def path_content_fingerprint_part(label: str, path: Path) -> str:
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return f"{label}:missing"
+
+    return f"{label}:sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
 def read_lock_owner(path: Path) -> dict[str, str] | None:
     try:
         raw = path.read_bytes()
@@ -2780,7 +2789,7 @@ class CodeIndexTools:
             path_stat_fingerprint_part("manifest", self.index_root / "manifest.json"),
             path_stat_fingerprint_part("sqlite", self.index_root / "index.sqlite"),
             path_stat_fingerprint_part("modules", self.index_root / "modules.json"),
-            path_stat_fingerprint_part("orientation", self.index_root / "orientation.json"),
+            path_content_fingerprint_part("orientation", self.index_root / "orientation.json"),
             path_stat_fingerprint_part("moduleMap", self.index_root / "module_map.json"),
             path_stat_fingerprint_part("diagnostics", self.index_root / "diagnostics.json"),
             path_stat_fingerprint_part("updateState", self.index_root / "update_state.json"),
