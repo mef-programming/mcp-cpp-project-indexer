@@ -2219,7 +2219,17 @@ class LoadedProjectIndex:
                 findings.append({"severity": "info", "kind": "empty_boundaries", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile")})
             if node.get("parentFolder") and not node.get("parentOrientationId"):
                 counts["parentMissing"] += 1
-                findings.append({"severity": "warning", "kind": "parent_orientation_missing", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile"), "parentFolder": node.get("parentFolder")})
+                ancestor = self._nearest_existing_orientation_ancestor(node)
+                findings.append({
+                    "severity": "info" if ancestor is not None else "warning",
+                    "kind": "parent_orientation_missing",
+                    "orientationId": node.get("orientationId"),
+                    "file": node.get("rootRelativeFile"),
+                    "parentFolder": node.get("parentFolder"),
+                    "nearestAncestorAvailable": ancestor is not None,
+                    "nearestAncestorFolder": ancestor.get("folder") if ancestor is not None else None,
+                    "traversalCanBridge": ancestor is not None,
+                })
             for entry in node.get("map", []):
                 if not isinstance(entry, dict):
                     continue
