@@ -286,6 +286,9 @@ PACKABLE_TOOL_NAMES = {
     "list_orientation_nodes",
     "get_orientation_node",
     "search_orientation",
+    "get_orientation_health",
+    "query_orientation_nodes",
+    "trace_orientation_path",
     "list_changed_files",
     "list_recent_revisions",
     "get_revision_summary",
@@ -394,6 +397,9 @@ CAPABILITY_CATEGORIES: dict[str, list[str]] = {
         "list_orientation_nodes",
         "get_orientation_node",
         "search_orientation",
+        "get_orientation_health",
+        "query_orientation_nodes",
+        "trace_orientation_path",
     ],
     "fingerprint": [
         "get_index_fingerprint",
@@ -447,6 +453,27 @@ CAPABILITY_TOOL_METADATA: dict[str, dict[str, Any]] = {
         "evidenceKind": "orientation_routing",
         "sourceBehaviorAllowed": False,
         "algorithm": "bm25",
+    },
+    "get_orientation_health": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation_health",
+        "sourceBehaviorAllowed": False,
+    },
+    "query_orientation_nodes": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation",
+        "sourceBehaviorAllowed": False,
+    },
+    "trace_orientation_path": {
+        "category": "orientation",
+        "claimStrength": "metadata_only",
+        "preFetchAllowed": True,
+        "evidenceKind": "orientation_navigation_path",
+        "sourceBehaviorAllowed": False,
     },
     "reload_index_cache": {"category": "admin", "claimStrength": "none", "preFetchAllowed": False},
     "find_symbol": {"category": "locator", "claimStrength": "metadata_only", "preFetchAllowed": True},
@@ -594,6 +621,9 @@ ORIENTATION_TOOL_NAMES = {
     "list_orientation_nodes",
     "get_orientation_node",
     "search_orientation",
+    "get_orientation_health",
+    "query_orientation_nodes",
+    "trace_orientation_path",
 }
 
 
@@ -813,6 +843,89 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
                     },
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_orientation_health",
+            "description": (
+                "[Orientation] Return documentation-layer health and coverage signals for indexed "
+                "orientation nodes. Reports only known orientation metadata issues such as "
+                "unresolved targets or missing routing fields; not source correctness evidence."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "query_orientation_nodes",
+            "description": (
+                "[Orientation] Filter indexed orientation nodes by known metadata fields such as "
+                "kind, folder, purpose, useWhen, doNotUseFirstWhen, boundaries, headings, map, "
+                "navigation, targetKind, and pathStatus. Routing metadata only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                    },
+                    "folder": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                    },
+                    "fieldsContain": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
+                        },
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "trace_orientation_path",
+            "description": (
+                "[Orientation] Find a declared navigation path between two orientation nodes using "
+                "only parent/child links, topology navigation, and map targets with targetOrientationId. "
+                "Returns a navigation path, not a dependency path."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "type": "string",
+                        "description": "Start folder path, orientation/topology file path, or orientationId.",
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Target folder path, orientation/topology file path, or orientationId.",
+                    },
+                    "maxDepth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 20,
+                    },
+                },
+                "required": ["from", "to"],
                 "additionalProperties": False,
             },
         },
@@ -2721,6 +2834,24 @@ class CodeIndexTools:
         limit = clamp_int(arguments.get("limit", 20), minimum=1, maximum=100)
         return self.json_result(arguments, self.index.search_orientation(query, limit=limit))
 
+    def get_orientation_health(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.json_result(arguments, self.index.get_orientation_health())
+
+    def query_orientation_nodes(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        limit = clamp_int(arguments.get("limit", 100), minimum=1, maximum=500)
+        return self.json_result(arguments, self.index.query_orientation_nodes(arguments, limit=limit))
+
+    def trace_orientation_path(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        from_path = require_string(arguments, "from")
+        to_path = require_string(arguments, "to")
+        max_depth = clamp_int(arguments.get("maxDepth", 20), minimum=1, maximum=50)
+        result = self.index.trace_orientation_path(from_path, to_path, max_depth=max_depth)
+
+        if result is None:
+            return make_text_result("Orientation start or target node not found.", is_error=True)
+
+        return self.json_result(arguments, result)
+
     def file_fingerprint_payload(self, file: str) -> dict[str, Any]:
         file_item = self.index.get_file_item(file)
 
@@ -4425,6 +4556,9 @@ class McpServer:
             "list_orientation_nodes": self.tools.list_orientation_nodes,
             "get_orientation_node": self.tools.get_orientation_node,
             "search_orientation": self.tools.search_orientation,
+            "get_orientation_health": self.tools.get_orientation_health,
+            "query_orientation_nodes": self.tools.query_orientation_nodes,
+            "trace_orientation_path": self.tools.trace_orientation_path,
             "reload_index_cache": self.tools.reload_index_cache,
 
             # Symbol/source navigation tools

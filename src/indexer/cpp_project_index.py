@@ -2071,6 +2071,248 @@ class LoadedProjectIndex:
             "matches": matches,
         }
 
+    @staticmethod
+    def _orientation_node_keys(node: dict[str, Any]) -> set[str]:
+        values = {
+            str(node.get("orientationId") or ""),
+            str(node.get("folder") or ""),
+            str(node.get("file") or ""),
+            str(node.get("rootRelativeFolder") or ""),
+            str(node.get("rootRelativeFile") or ""),
+        }
+        return {value.replace("\\", "/").strip("/") or "." for value in values if value}
+
+    def _find_orientation_node(self, query: str) -> dict[str, Any] | None:
+        normalized = query.strip().replace("\\", "/").strip("/") or "."
+        for node in self.orientation_nodes:
+            if normalized in self._orientation_node_keys(node):
+                return node
+        return None
+
+    @staticmethod
+    def _orientation_field_text(node: dict[str, Any], field: str) -> str:
+        if field in {
+            "kind",
+            "folder",
+            "file",
+            "rootRelativeFolder",
+            "rootRelativeFile",
+            "title",
+            "purpose",
+            "boundaries",
+        }:
+            return str(node.get(field) or "")
+        if field in {"useWhen", "doNotUseFirstWhen", "headings", "startHere"}:
+            return " ".join(str(item) for item in node.get(field, []) if item)
+        if field == "map":
+            return " ".join(
+                " ".join(
+                    str(entry.get(key) or "")
+                    for key in ("name", "description", "targetRootRelativePath", "pathStatus", "targetKind")
+                )
+                for entry in node.get("map", [])
+                if isinstance(entry, dict)
+            )
+        if field == "navigation":
+            return " ".join(
+                " ".join(
+                    str(entry.get(key) or "")
+                    for key in ("key", "description", "targetRootRelativePath", "pathStatus", "targetKind")
+                )
+                for entry in node.get("navigation", [])
+                if isinstance(entry, dict)
+            )
+        if field == "targetKind":
+            entries = list(node.get("map", [])) + list(node.get("navigation", []))
+            return " ".join(str(entry.get("targetKind") or "") for entry in entries if isinstance(entry, dict))
+        if field == "pathStatus":
+            entries = list(node.get("map", [])) + list(node.get("navigation", []))
+            return " ".join(str(entry.get("pathStatus") or "") for entry in entries if isinstance(entry, dict))
+        return ""
+
+    @staticmethod
+    def _string_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+    def _orientation_node_matches(self, node: dict[str, Any], filters: dict[str, Any]) -> bool:
+        kinds = self._string_list(filters.get("kind"))
+        if kinds and str(node.get("kind") or "") not in kinds:
+            return False
+
+        folders = self._string_list(filters.get("folder"))
+        if folders:
+            folder_text = f"{node.get('folder') or ''} {node.get('rootRelativeFolder') or ''}"
+            if not any(folder in folder_text for folder in folders):
+                return False
+
+        fields_contain = filters.get("fieldsContain")
+        if not isinstance(fields_contain, dict):
+            fields_contain = {}
+        for field, expected in fields_contain.items():
+            values = [value.casefold() for value in self._string_list(expected)]
+            if not values:
+                continue
+            text = self._orientation_field_text(node, str(field)).casefold()
+            if not any(value in text for value in values):
+                return False
+
+        return True
+
+    def get_orientation_health(self) -> dict[str, Any]:
+        counts = {
+            "nodes": len(self.orientation_nodes),
+            "topologyNodes": 0,
+            "folderOrientationNodes": 0,
+            "unresolvedMapTargets": 0,
+            "unresolvedNavigationTargets": 0,
+            "emptyUseWhen": 0,
+            "emptyDoNotUseFirstWhen": 0,
+            "emptyBoundaries": 0,
+            "topologyWithoutNavigation": 0,
+            "parentMissing": 0,
+        }
+        findings: list[dict[str, Any]] = []
+
+        for node in self.orientation_nodes:
+            node_kind = node.get("kind")
+            if node_kind == "topology":
+                counts["topologyNodes"] += 1
+            if node_kind == "folder_orientation":
+                counts["folderOrientationNodes"] += 1
+            if not node.get("useWhen"):
+                counts["emptyUseWhen"] += 1
+                findings.append({"severity": "info", "kind": "empty_use_when", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile")})
+            if not node.get("doNotUseFirstWhen"):
+                counts["emptyDoNotUseFirstWhen"] += 1
+                findings.append({"severity": "info", "kind": "empty_do_not_use_first_when", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile")})
+            if not str(node.get("boundaries") or "").strip():
+                counts["emptyBoundaries"] += 1
+                findings.append({"severity": "info", "kind": "empty_boundaries", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile")})
+            if node.get("parentFolder") and not node.get("parentOrientationId"):
+                counts["parentMissing"] += 1
+                findings.append({"severity": "warning", "kind": "parent_orientation_missing", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile"), "parentFolder": node.get("parentFolder")})
+            for entry in node.get("map", []):
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("pathStatus") != "resolved" or entry.get("targetKind") == "unresolved":
+                    counts["unresolvedMapTargets"] += 1
+                    findings.append({"severity": "warning", "kind": "unresolved_map_target", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile"), "name": entry.get("name"), "targetRootRelativePath": entry.get("targetRootRelativePath")})
+            for entry in node.get("navigation", []):
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("pathStatus") != "resolved" or entry.get("targetKind") == "unresolved":
+                    counts["unresolvedNavigationTargets"] += 1
+                    findings.append({"severity": "warning", "kind": "unresolved_navigation_target", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile"), "key": entry.get("key"), "targetRootRelativePath": entry.get("targetRootRelativePath")})
+            if node_kind == "topology" and node.get("topologyScope") == "project" and not node.get("navigation"):
+                counts["topologyWithoutNavigation"] += 1
+                findings.append({"severity": "warning", "kind": "project_topology_without_navigation", "orientationId": node.get("orientationId"), "file": node.get("rootRelativeFile")})
+
+        return {
+            "schema": "cpp.project_orientation.health.v1",
+            "evidenceKind": "orientation_health",
+            "claimStrength": "metadata_only",
+            "counts": counts,
+            "findings": findings,
+        }
+
+    def query_orientation_nodes(self, filters: dict[str, Any], *, limit: int = 100) -> dict[str, Any]:
+        matches = [node for node in self.orientation_nodes if self._orientation_node_matches(node, filters)]
+        returned = matches[:limit]
+        return {
+            "schema": "cpp.project_orientation.query.v1",
+            "evidenceKind": "orientation",
+            "claimStrength": "metadata_only",
+            "totalNodes": len(self.orientation_nodes),
+            "totalMatches": len(matches),
+            "returnedMatches": len(returned),
+            "nodes": [self.compact_orientation_node(node) for node in returned],
+        }
+
+    def _orientation_edges(self) -> dict[str, list[dict[str, str]]]:
+        edges: dict[str, list[dict[str, str]]] = {}
+
+        def add(from_id: str, to_id: str | None, relation: str, label: str) -> None:
+            if not to_id:
+                return
+            edges.setdefault(from_id, []).append({"to": to_id, "relation": relation, "label": label})
+
+        for node in self.orientation_nodes:
+            from_id = str(node.get("orientationId") or "")
+            if not from_id:
+                continue
+            for child_folder in node.get("childFolders", []):
+                child = self._find_orientation_node(str(child_folder))
+                add(from_id, str(child.get("orientationId")) if child else None, "child", str(child_folder))
+            add(from_id, str(node.get("parentOrientationId")) if node.get("parentOrientationId") else None, "parent", str(node.get("parentFolder") or "parent"))
+            for entry in list(node.get("map", [])) + list(node.get("navigation", [])):
+                if not isinstance(entry, dict):
+                    continue
+                add(
+                    from_id,
+                    str(entry.get("targetOrientationId")) if entry.get("targetOrientationId") else None,
+                    "navigation" if "key" in entry else "map",
+                    str(entry.get("key") or entry.get("name") or ""),
+                )
+        return edges
+
+    def trace_orientation_path(self, from_path: str, to_path: str, *, max_depth: int = 20) -> dict[str, Any] | None:
+        start = self._find_orientation_node(from_path)
+        target = self._find_orientation_node(to_path)
+        if start is None or target is None:
+            return None
+
+        target_id = str(target.get("orientationId") or "")
+        edges = self._orientation_edges()
+        queue: list[tuple[str, list[dict[str, Any]]]] = [(
+            str(start.get("orientationId") or ""),
+            [{"orientationId": start.get("orientationId"), "folder": start.get("folder"), "file": start.get("rootRelativeFile"), "relation": "start"}],
+        )]
+        seen = {str(start.get("orientationId") or "")}
+
+        while queue:
+            current_id, current_path = queue.pop(0)
+            if current_id == target_id:
+                return {
+                    "schema": "cpp.project_orientation.path.v1",
+                    "evidenceKind": "orientation_navigation_path",
+                    "claimStrength": "metadata_only",
+                    "pathFound": True,
+                    "from": start.get("orientationId"),
+                    "to": target.get("orientationId"),
+                    "pathLength": len(current_path),
+                    "path": current_path,
+                }
+            if len(current_path) > max_depth:
+                continue
+            for edge in edges.get(current_id, []):
+                next_id = edge["to"]
+                if next_id in seen:
+                    continue
+                next_node = next((node for node in self.orientation_nodes if node.get("orientationId") == next_id), None)
+                if next_node is None:
+                    continue
+                seen.add(next_id)
+                queue.append((next_id, current_path + [{
+                    "orientationId": next_node.get("orientationId"),
+                    "folder": next_node.get("folder"),
+                    "file": next_node.get("rootRelativeFile"),
+                    "relation": edge["relation"],
+                    "label": edge["label"],
+                }]))
+
+        return {
+            "schema": "cpp.project_orientation.path.v1",
+            "evidenceKind": "orientation_navigation_path",
+            "claimStrength": "metadata_only",
+            "pathFound": False,
+            "from": start.get("orientationId"),
+            "to": target.get("orientationId"),
+        }
+
     def find_symbol(
         self,
         query: str,
