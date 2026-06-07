@@ -2160,6 +2160,31 @@ class LoadedProjectIndex:
             if not any(value in text for value in values):
                 return False
 
+        any_fields_contain = filters.get("anyFieldsContain")
+        if not isinstance(any_fields_contain, dict):
+            any_fields_contain = {}
+        if any_fields_contain:
+            any_matched = False
+            for field, expected in any_fields_contain.items():
+                values = [value.casefold() for value in self._string_list(expected)]
+                if not values:
+                    continue
+                text = self._orientation_field_text(node, str(field)).casefold()
+                if any(value in text for value in values):
+                    any_matched = True
+                    break
+            if not any_matched:
+                return False
+
+        if filters.get("excludeAntiMatches") is True:
+            query_terms: list[str] = []
+            for expected in list(fields_contain.values()) + list(any_fields_contain.values()):
+                for value in self._string_list(expected):
+                    query_terms.extend(self._orientation_query_terms(value)["used"])
+            anti_text = self._orientation_field_text(node, "doNotUseFirstWhen").casefold()
+            if any(term.casefold() in anti_text for term in query_terms):
+                return False
+
         return True
 
     def get_orientation_health(self) -> dict[str, Any]:
@@ -2232,6 +2257,23 @@ class LoadedProjectIndex:
             "nodes": [self.compact_orientation_node(node) for node in returned],
         }
 
+    def _nearest_existing_orientation_ancestor(self, node: dict[str, Any]) -> dict[str, Any] | None:
+        folder = str(node.get("folder") or "")
+        if folder in {"", "."}:
+            return None
+
+        current = Path(folder).parent.as_posix()
+        while current:
+            normalized = current or "."
+            for candidate in self.orientation_nodes:
+                if str(candidate.get("folder") or "") == normalized:
+                    return candidate
+            if normalized == ".":
+                return None
+            current = Path(normalized).parent.as_posix()
+
+        return None
+
     def _orientation_edges(self) -> dict[str, list[dict[str, str]]]:
         edges: dict[str, list[dict[str, str]]] = {}
 
@@ -2257,6 +2299,10 @@ class LoadedProjectIndex:
                     "navigation" if "key" in entry else "map",
                     str(entry.get("key") or entry.get("name") or ""),
                 )
+            ancestor = self._nearest_existing_orientation_ancestor(node)
+            if ancestor is not None and ancestor.get("orientationId") != node.get("parentOrientationId"):
+                add(str(ancestor.get("orientationId") or ""), from_id, "ancestor_child", str(node.get("folder") or ""))
+                add(from_id, str(ancestor.get("orientationId") or ""), "ancestor_parent", str(ancestor.get("folder") or ""))
         return edges
 
     def trace_orientation_path(self, from_path: str, to_path: str, *, max_depth: int = 20) -> dict[str, Any] | None:

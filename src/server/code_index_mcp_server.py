@@ -899,6 +899,20 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
                             ],
                         },
                     },
+                    "anyFieldsContain": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
+                        },
+                    },
+                    "excludeAntiMatches": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Exclude nodes whose doNotUseFirstWhen terms match the query/filter terms.",
+                    },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
