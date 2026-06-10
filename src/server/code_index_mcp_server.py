@@ -641,7 +641,11 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         # Project/cache tools
         {
             "name": "get_project_summary",
-            "description": "[Project] Return high-level counts for the loaded C++ routing index. This does not analyze code.",
+            "description": (
+                "[Project] Return high-level counts for the loaded C++ routing index. "
+                "Returns JSON counts for files, symbols, names, modules, diagnostics, lines/tokens, "
+                "data declarations, index paths, jobs, and state fingerprint. Metadata only; does not analyze code or read source."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -771,6 +775,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_project_orientation",
             "description": (
                 "[Orientation] Return compact project-level orientation/topology entry points. "
+                "Returns JSON with schema, totalNodes, returnedNodes, root/topology/overview nodes, and index metadata. "
                 "This is an overview surface, not the full folder inventory; compare "
                 "totalNodes/returnedNodes and use list_orientation_nodes or search_orientation "
                 "when more nodes exist. Metadata only; not source behavior evidence."
@@ -792,6 +797,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_orientation_nodes",
             "description": (
                 "[Orientation] List indexed orientation/topology nodes as compact routing metadata. "
+                "Returns JSON with totalNodes, returnedNodes, and nodes[] containing orientationId, kind, folder, file, title, purpose, useWhen, doNotUseFirstWhen, startHere, and childFolders. "
                 "Use for complete folder/subsystem discovery when get_project_orientation returns "
                 "only overview nodes. Metadata only; not source behavior evidence."
             ),
@@ -812,6 +818,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_orientation_node",
             "description": (
                 "[Orientation] Return one structured orientation/topology node by folder, file, or orientationId. "
+                "Returns one node with parentFolder, childFolders, headings, map/navigation entries, contentHash, and routing fields. If the node is not found, returns an error. "
                 "Its file/folder/map/navigation paths are routing hints; verify or resolve them "
                 "with source-navigation tools before direct source reads or citations."
             ),
@@ -832,7 +839,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "description": (
                 "[Orientation] Search indexed orientation/topology metadata with BM25 ranking "
                 "for likely navigation entry points. Results use schema "
-                "project.orientation.search.v2.1 and are routing hints only, not source "
+                "project.orientation.search.v2.1 with queryTermsOriginal, queryTermsUsed, removedStopwords, routingConfidence, totalMatches, and results[] containing score, matchedTerms, antiMatchTerms, matchFields, orientationId, folder, file, title, and purpose. Results are routing hints only, not source "
                 "behavior evidence, even at high routingConfidence. Expand selected candidates "
                 "with get_orientation_node, respect antiMatchTerms, and verify mapped paths "
                 "before source reads."
@@ -859,7 +866,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_orientation_health",
             "description": (
                 "[Orientation] Return documentation-layer health and coverage signals for indexed "
-                "orientation nodes. Reports only known orientation metadata issues such as "
+                "orientation nodes. Returns JSON with counts, findings[], findingsTruncated, and maxFindings. Reports only known orientation metadata issues such as "
                 "unresolved targets or missing routing fields; not source correctness evidence."
             ),
             "inputSchema": {
@@ -873,7 +880,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "description": (
                 "[Orientation] Filter indexed orientation nodes by known metadata fields such as "
                 "kind, folder, purpose, useWhen, doNotUseFirstWhen, boundaries, headings, map, "
-                "navigation, targetKind, and pathStatus. Routing metadata only."
+                "navigation, targetKind, and pathStatus. Returns JSON with totalNodes, totalMatches, returnedMatches, and nodes[]. fieldsContain is AND across fields; anyFieldsContain is an OR group. Example: {\"folder\":\"src/server\",\"fieldsContain\":{\"useWhen\":\"management\"}}. Routing metadata only."
             ),
             "inputSchema": {
                 "type": "object",
@@ -928,7 +935,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "description": (
                 "[Orientation] Find a declared navigation path between two orientation nodes using "
                 "only parent/child links, topology navigation, and map targets with targetOrientationId. "
-                "Returns a navigation path, not a dependency path."
+                "Returns JSON with pathFound, from, to, pathLength, and path[] entries when found; if no declared path exists, pathFound is false. Returns a navigation path, not a dependency path."
             ),
             "inputSchema": {
                 "type": "object",
@@ -981,6 +988,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_symbol",
             "description": (
                 "[Symbol] Find C++ project symbols by name metadata. "
+                "Returns JSON results[] with symbolId, kind, name/qualifiedName, relativePath, startLine, endLine, matchKind, and optional signature/container fields. If nothing matches, results is an empty array. "
                 "Use when the user names a function, method, type, namespace, operator, "
                 "constructor, destructor, or declaration-like symbol. "
                 "Use this for functions, methods, classes, structs, enums, constructors, "
@@ -1058,6 +1066,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_declaration",
             "description": (
                 "[Symbol] Find likely declaration/container symbols for a C++ symbol query. "
+                "Returns JSON results[] with symbol routing metadata; if nothing matches, results is an empty array. "
                 "Use this when the user specifically asks for a declaration. "
                 "The required argument is 'query'. "
                 "This is still metadata-only and does not read source code. "
@@ -1092,6 +1101,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "read_symbol",
             "description": (
                 "[Source] Read original source lines for a symbolId, with absolute line numbers. "
+                "Returns JSON with symbol metadata, file path, startLine/endLine, lines/source, and truncation metadata when capped. If symbolId is unknown, returns an error. "
                 "Use startOffset/endOffset to read only a slice of a large symbol body, "
                 "for example startOffset:0,endOffset:20 for the first 21 lines. "
                 "This is a read-only range operation."
@@ -1139,6 +1149,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "read_range",
             "description": (
                 "[Source] Read original source lines from a fileId or project-relative path. "
+                "Returns JSON with file metadata, startLine/endLine, and source lines. If file/range is invalid, returns an error. "
                 "Use startLine/endLine for explicit ranges, or line with beforeLines/afterLines "
                 "for compact context around diagnostics, hunks, and search matches."
             ),
@@ -1191,6 +1202,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_nearest_symbol_for_line",
             "description": (
                 "[Symbol] Return indexed symbol/data ranges that contain or are nearest to one file line. "
+                "Returns JSON with containing/nearest candidates, distances, symbolId/dataId when available, and source ranges. "
                 "Use when a diagnostic, hunk, build output, Visual Studio location, or IDA note gives "
                 "you a file and line number. This is metadata-only and intended for diagnostics, "
                 "hunks, build output, and IDE/binary handoff."
@@ -1226,6 +1238,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "resolve_hunk_to_indexed_range",
             "description": (
                 "[Change] Map a changed file line/range to indexed symbol/data ranges in that file. "
+                "Returns JSON with primary target plus overlapping indexed ranges and valid symbolId/dataId values when available. "
                 "Use after hunk metadata gives a file plus new-line range and you need valid symbolId/dataId "
                 "routing targets. Metadata only: this does not inspect diff/source meaning or judge correctness."
             ),
@@ -1281,7 +1294,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         # File navigation tools
         {
             "name": "list_file_symbols",
-            "description": "[File] List routing symbols for one fileId or project-relative path. Does not read source code.",
+            "description": "[File] List routing symbols for one fileId or project-relative path. Returns JSON symbols[] with ids, names, kinds, containers, signatures when requested, and line ranges. If the file has no symbols, symbols is empty. Does not read source code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1323,6 +1336,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_file_includes",
             "description": (
                 "[File] List lexical #include directives for one fileId or project-relative path. "
+                "Returns JSON includes[] with source line, raw include text, include kind, target text, and optional resolved project file when available. If none exist, includes is empty. "
                 "Use for classic include-based C++ questions like 'which headers does this file include?'. "
                 "This is metadata-only and best-effort path routing; it does not evaluate #if/#ifdef, "
                 "compiler include directories, generated headers, or macro expansion."
@@ -1355,6 +1369,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_module",
             "description": (
                 "[Module] Find files that define a C++20 module or module partition. "
+                "Returns JSON files[]/matches with module definition metadata; if nothing matches, results are empty. "
                 "Use when the user gives a C++20 module name and asks where it is defined. "
                 "This is metadata-only; do not pass C++ namespaces with '::'."
             ),
@@ -1379,6 +1394,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_module_files",
             "description": (
                 "[Module] Return files that define a C++20 module or module partition. "
+                "Returns JSON files[] with relative paths and module declaration metadata; if the module is unknown, files is empty. "
                 "The input must be a module name using C++20 module syntax, e.g. "
                 "'SmartFTP.TextEditor:View.Controls.Editor'. "
                 "Do not pass C++ namespaces such as 'SmartFTP::TextEditor::View::Controls'. "
@@ -1406,6 +1422,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_files",
             "description": (
                 "[File] Find indexed files by glob pattern over project-relative paths. "
+                "Returns JSON files[]/results[] and count; if no files match, the array is empty. "
                 "Use this when you know a filename or path pattern. "
                 "This does not search source contents."
             ),
@@ -1431,7 +1448,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_symbols_glob",
             "description": (
                 "[Symbol] Find symbols by glob pattern over shortName, qualifiedName, container, "
-                "signature, and relativePath. This searches index metadata only, not source code."
+                "signature, and relativePath. Returns JSON results[] with symbol routing metadata; if no symbols match, results is empty. This searches index metadata only, not source code."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1457,6 +1474,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "search_modules",
             "description": (
                 "[Module] Find C++20 modules by glob pattern over module names. "
+                "Returns JSON modules[]/results[] with module routing metadata; if none match, the array is empty. "
                 "Use C++20 module syntax, e.g. '*.TextEditor:*'. "
                 "Do not pass C++ namespaces with '::'."
             ),
@@ -1480,7 +1498,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         },
         {
             "name": "get_module_map_summary",
-            "description": "[Module] Return summary counts for module_map.json. Metadata only; no source code is read.",
+            "description": "[Module] Return summary counts for module_map.json. Returns module/file/import counts and map metadata. Metadata only; no source code is read.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -1491,7 +1509,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_module_info",
             "description": (
                 "[Module] Return module metadata for one exact C++20 module name, including files, "
-                "direct imports, re-exports, and modules that directly import it. "
+                "direct imports, re-exports, and modules that directly import it. Returns JSON with moduleName, files[], imports[], importedBy[], and flags such as isExported when available. "
                 "Use for module structure questions. Metadata only; do not pass C++ namespaces with '::'."
             ),
             "inputSchema": {
@@ -1515,7 +1533,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_module_imports",
             "description": (
                 "[Module] List direct outgoing imports of one exact C++20 module. "
-                "Use for questions like 'What does module A import?'. Metadata only."
+                "Returns JSON imports[] with imported module name, source file/line, import kind, and export/re-export flag when available. Use for questions like 'What does module A import?'. Metadata only."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1538,7 +1556,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_module_imported_by",
             "description": (
                 "[Module] List modules that directly import one exact C++20 module. "
-                "Use for reverse questions like 'Who imports module B?'. Metadata only."
+                "Returns JSON importedBy[] with importing module, source file/line, and import kind when available. Use for reverse questions like 'Who imports module B?'. Metadata only."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1559,7 +1577,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
         },
         {
             "name": "get_module_tree",
-            "description": "[Module] Return a bounded C++20 module name tree from module_map.json. Metadata only.",
+            "description": "[Module] Return a bounded C++20 module name tree from module_map.json. Returns JSON tree nodes; metadata only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1579,6 +1597,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "find_data",
             "description": (
                 "[Data] Find indexed C++ data/value declarations by metadata. "
+                "Returns JSON results[] with dataId, kind, name/qualifiedName, container, typeText, signature, file, and line range. If nothing matches, results is an empty array. "
                 "Use this for class/struct fields, static data members, globals, "
                 "namespace constants, enum values, variable templates, and concepts. "
                 "This is metadata-only and does not resolve types. "
@@ -1620,6 +1639,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "list_type_members",
             "description": (
                 "[Data] List indexed data/value declarations directly contained by a class, struct, or namespace. "
+                "Returns JSON members[]/results[] with dataId, name, kind, typeText, signature, and source range. If no members match, the array is empty. "
                 "Use this to inspect member fields/constants after reading a method body. "
                 "Returns metadata only: name, typeText, signature and source range. "
                 "typeText is source text, not resolved type information."
@@ -1651,6 +1671,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "read_data",
             "description": (
                 "[Data] Read original source lines for an indexed data/value declaration by dataId. "
+                "Returns JSON with data metadata, file path, startLine/endLine, and source lines. If dataId is unknown, returns an error. "
                 "This is a read-only range operation."
             ),
             "inputSchema": {
@@ -1669,7 +1690,8 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "resolve_code_entity",
             "description": (
                 "[Entity] Classify a code name across indexed symbols and data declarations using optional "
-                "file/line/container context. Use when a read source range contains an identifier and it is "
+                "file/line/container context. Returns JSON with resolvedKind, confidence, candidates[], usageContext, and recommendedNextTools. If many candidates exist, results are limited and output includes count/truncation hints when available. "
+                "Use when a read source range contains an identifier and it is "
                 "unclear whether the next step should be symbol lookup or data/member lookup. "
                 "This is metadata/orientation only: it ranks candidates and recommends read_symbol or read_data, "
                 "but it does not perform compiler name lookup, macro expansion, type resolution, overload "
@@ -1725,6 +1747,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_symbol_leading_comment",
             "description": (
                 "[Comment] Extract the exact leading comment range immediately before an indexed symbol. "
+                "Returns JSON with hasComment/comment range/text when present; if no leading comment exists, returns hasComment false or an empty comment result. "
                 "This reads the original source file on demand and does not use a comment index. "
                 "read_symbol remains clean and returns only the exact symbol range."
             ),
@@ -1755,6 +1778,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_data_leading_comment",
             "description": (
                 "[Comment] Extract the exact leading comment range immediately before an indexed data/value declaration. "
+                "Returns JSON with hasComment/comment range/text when present; if no leading comment exists, returns hasComment false or an empty comment result. "
                 "Use this for fields, globals, enum values, variable templates, and concepts."
             ),
             "inputSchema": {
@@ -1783,6 +1807,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_file_header_comment",
             "description": (
                 "[Comment] Extract the initial file header comment from a file. "
+                "Returns JSON with comment range/text when present; if no header exists, returns an empty comment result. "
                 "This only inspects the start of the file and stops at the first code line."
             ),
             "inputSchema": {
@@ -1807,6 +1832,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_module_header_comment",
             "description": (
                 "[Comment] Extract file-header comments from files that define a C++20 module or module partition. "
+                "Returns JSON results[] with one entry per module file and comment range/text when present. "
                 "Returns one result per module file and does not guess a single canonical file when several exist."
             ),
             "inputSchema": {
@@ -1833,6 +1859,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "get_file_structure",
             "description": (
                 "[File] Return a structured overview of one indexed source file using index metadata only. "
+                "Returns JSON with file metadata, symbol/data/import/include counts, optional outline[], imports/includes, diagnostics, sections, and truncation flags. "
                 "Use for first-pass orientation in large files, with includeOutline:false when counts/sections are enough. "
                 "This includes module metadata, include counts, symbol counts, data declaration counts, "
                 "diagnostics, section ranges, and an ordered outline. This does not analyze code semantics."
@@ -1979,6 +2006,7 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
             "name": "search_source",
             "description": (
                 "[Search] Search raw source text in indexed files. This is a plain line-based text search, "
+                "Returns JSON matches[] with file, line, column/text/context fields and truncated/count metadata. If no lexical matches are found, matches is empty. "
                 "not semantic C++ reference resolution. It searches comments and strings too. "
                 "Use when metadata lookup is not enough and you need lexical source-text occurrences. "
                 "Use symbolId to search only inside one already-located symbol body; prefer symbolId, "
