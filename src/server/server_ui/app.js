@@ -293,6 +293,43 @@ async function runCommand(command) {
   }
 }
 
+function reportHostHeight() {
+  if (window.parent === window) return;
+  const body = document.body;
+  const root = document.documentElement;
+  const height = Math.max(
+    body?.scrollHeight || 0,
+    body?.offsetHeight || 0,
+    root?.scrollHeight || 0,
+    root?.offsetHeight || 0,
+    root?.clientHeight || 0,
+  );
+  if (!height) return;
+  window.parent.postMessage(
+    {
+      type: "managed-mcp-ui-height",
+      height,
+      contentHeight: height,
+      scrollHeight: height,
+    },
+    "*",
+  );
+}
+
+function installHostResizeReporter() {
+  reportHostHeight();
+  if (typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(reportHostHeight);
+    observer.observe(document.body);
+    observer.observe(document.documentElement);
+  }
+  window.addEventListener("load", reportHostHeight);
+  window.addEventListener("resize", reportHostHeight);
+  for (const delay of [100, 300, 800, 1500, 3000]) {
+    window.setTimeout(reportHostHeight, delay);
+  }
+}
+
 window.addEventListener("message", (event) => {
   const data = event.data || {};
   if (
@@ -345,3 +382,4 @@ document.addEventListener("visibilitychange", startPolling);
 window.addEventListener("resize", syncServerLogHeight);
 initializeTokenFromHash();
 startPolling();
+installHostResizeReporter();
