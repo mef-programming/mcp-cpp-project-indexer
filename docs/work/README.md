@@ -16,6 +16,7 @@ This folder records implemented or prepared work slices for active workplans.
 - [P09 Resolution Improvements](P09-resolution-improvements.md) - Step 9 using/alias/local type hint and overload scoring improvements.
 - [P10 Optional Vector Sidecar Deferred](P10-optional-vector-sidecar-deferred.md) - Step 10 explicit future-work deferral, no runtime implementation.
 - [P11 Data and Control-Flow Edges](P11-data-control-flow-edges.md) - graph edge expansion for data access and control-flow markers.
+- [P12 Real Index MCP Smoke](P12-real-index-mcp-smoke.md) - persisted real-index CodeIndexTools smoke for graph/cache/xref edges.
 
 ## Completed Logs
 
