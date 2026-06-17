@@ -11,7 +11,7 @@ from cpp_function_graph_model import (
 )
 
 
-RESOLVER_VERSION = "cpp-function-graph-resolver-v0.1"
+RESOLVER_VERSION = "cpp-function-graph-resolver-v0.2"
 EXTERNAL_QUALIFIER_PREFIXES = ("std::", "wil::", "ATL::", "Microsoft::WRL::")
 
 
@@ -19,6 +19,8 @@ def resolve_function_graph_edges(
     *,
     ast_extract: FunctionAstExtract,
     visibility: FunctionVisibilityContext,
+    include_control_flow: bool = True,
+    include_data_access: bool = True,
     include_external: bool = True,
     max_edges: int = 200,
 ) -> tuple[FunctionGraphEdge, ...]:
@@ -30,6 +32,19 @@ def resolve_function_graph_edges(
         edges.append(edge)
         if len(edges) >= max_edges:
             break
+
+    if include_data_access and len(edges) < max_edges:
+        for access in ast_extract.member_accesses:
+            edges.append(resolve_data_access(access, visibility=visibility))
+            if len(edges) >= max_edges:
+                break
+
+    if include_control_flow and len(edges) < max_edges:
+        for marker in ast_extract.control_flow:
+            edges.append(resolve_control_flow_marker(marker, visibility=visibility))
+            if len(edges) >= max_edges:
+                break
+
     return tuple(edges)
 
 
@@ -111,6 +126,51 @@ def resolve_call(
         resolution_status="external",
         confidence=0.0,
         basis=("not_in_project_symbol_index",),
+        claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
+        behavior_claims_allowed=BEHAVIOR_CLAIMS_ALLOWED,
+    )
+
+
+def resolve_data_access(
+    access: dict[str, Any],
+    *,
+    visibility: FunctionVisibilityContext,
+) -> FunctionGraphEdge:
+    text = str(access.get("text") or "")
+    access_kind = str(access.get("accessKind") or "")
+    edge_kind = "writes_data_candidate" if access_kind == "write_candidate" else "reads_data_candidate"
+    candidates = _data_candidates(text, visibility)
+    status = "probable" if candidates else "unresolved"
+    basis = _merge_data_basis(candidates, ("member_access", access_kind or "read_candidate"))
+    return FunctionGraphEdge(
+        from_symbol_id=visibility.function_symbol_id,
+        edge_kind=edge_kind,
+        to_text=text,
+        to_symbol_id=None,
+        resolution_status=status,
+        confidence=0.74 if candidates else 0.0,
+        basis=basis,
+        candidates=tuple(_data_candidate_ref(candidate) for candidate in candidates),
+        claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
+        behavior_claims_allowed=BEHAVIOR_CLAIMS_ALLOWED,
+    )
+
+
+def resolve_control_flow_marker(
+    marker: dict[str, Any],
+    *,
+    visibility: FunctionVisibilityContext,
+) -> FunctionGraphEdge:
+    text = str(marker.get("marker") or marker.get("text") or "")
+    return FunctionGraphEdge(
+        from_symbol_id=visibility.function_symbol_id,
+        edge_kind="control_flow_marker",
+        to_text=text,
+        to_symbol_id=None,
+        resolution_status="exact",
+        confidence=1.0,
+        basis=("raw_syntax", "control_flow_marker"),
+        candidates=(),
         claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
         behavior_claims_allowed=BEHAVIOR_CLAIMS_ALLOWED,
     )
@@ -213,6 +273,25 @@ def _all_project_symbols(visibility: FunctionVisibilityContext) -> tuple[dict[st
     return tuple(visibility.same_file_symbols) + tuple(visibility.visible_exported_symbols)
 
 
+def _all_indexed_data(visibility: FunctionVisibilityContext) -> tuple[dict[str, Any], ...]:
+    return tuple(visibility.member_data) + tuple(visibility.same_file_data)
+
+
+def _data_candidates(text: str, visibility: FunctionVisibilityContext) -> tuple[dict[str, Any], ...]:
+    tail = _member_tail(text)
+    result: list[dict[str, Any]] = []
+    for item in _all_indexed_data(visibility):
+        if _data_name(item) != tail:
+            continue
+        candidate = dict(item)
+        if item in visibility.member_data:
+            candidate["_basis"] = ("indexed_member_data",)
+        else:
+            candidate["_basis"] = ("indexed_same_file_data",)
+        result.append(candidate)
+    return _dedupe_data_candidates(result)
+
+
 def _dedupe_candidates(candidates: Any) -> tuple[dict[str, Any], ...]:
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -221,6 +300,18 @@ def _dedupe_candidates(candidates: Any) -> tuple[dict[str, Any], ...]:
         if not symbol_id or symbol_id in seen:
             continue
         seen.add(symbol_id)
+        result.append(dict(candidate))
+    return tuple(result)
+
+
+def _dedupe_data_candidates(candidates: Any) -> tuple[dict[str, Any], ...]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        data_id = str(candidate.get("dataId") or "")
+        if not data_id or data_id in seen:
+            continue
+        seen.add(data_id)
         result.append(dict(candidate))
     return tuple(result)
 
@@ -292,6 +383,29 @@ def _candidate_ref(candidate: dict[str, Any]) -> dict[str, Any]:
     }
     if "_score" in candidate:
         result["score"] = round(float(candidate["_score"]), 3)
+    basis = _candidate_basis(candidate, ())
+    if basis:
+        result["basis"] = list(basis)
+    return result
+
+
+def _data_candidate_ref(candidate: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: candidate.get(key)
+        for key in (
+            "dataId",
+            "name",
+            "shortName",
+            "qualifiedName",
+            "container",
+            "typeText",
+            "relativePath",
+            "startLine",
+            "endLine",
+            "signature",
+        )
+        if key in candidate
+    }
     basis = _candidate_basis(candidate, ())
     if basis:
         result["basis"] = list(basis)
@@ -410,6 +524,26 @@ def _signature_arity(signature: str) -> int | None:
 
 def _callee_tail(callee: str) -> str:
     return callee.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _member_tail(text: str) -> str:
+    return text.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _data_name(item: dict[str, Any]) -> str:
+    return str(item.get("shortName") or item.get("name") or "").rsplit("::", 1)[-1]
+
+
+def _merge_data_basis(candidates: tuple[dict[str, Any], ...], fallback: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    for item in fallback:
+        if item and item not in result:
+            result.append(item)
+    for candidate in candidates:
+        for item in _candidate_basis(candidate, ()):
+            if item and item not in result:
+                result.append(item)
+    return tuple(result)
 
 
 def _call_kind(callee: str) -> str:

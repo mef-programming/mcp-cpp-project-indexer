@@ -390,6 +390,88 @@ class FunctionGraphResolverTests(unittest.TestCase):
         self.assertEqual(edges[0].to_symbol_id, "fn-renderer-draw")
         self.assertIn("local_type_hint", edges[0].basis)
 
+    def test_data_access_and_control_flow_markers_are_structural_edges(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id="cls-1",
+            current_class_name="App::Painter",
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(),
+            same_file_data=(),
+            member_data=(
+                {
+                    "dataId": "data-overlay",
+                    "name": "_OverlayPosition",
+                    "shortName": "_OverlayPosition",
+                    "qualifiedName": "App::Painter::_OverlayPosition",
+                    "container": "App::Painter",
+                    "typeText": "int",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            member_accesses=(
+                {
+                    "text": "_OverlayPosition",
+                    "accessKind": "write_candidate",
+                },
+            ),
+            control_flow=(
+                {
+                    "marker": "if",
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual([edge.edge_kind for edge in edges], ["writes_data_candidate", "control_flow_marker"])
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].candidates[0]["dataId"], "data-overlay")
+        self.assertIn("indexed_member_data", edges[0].basis)
+        self.assertEqual(edges[1].resolution_status, "exact")
+        self.assertEqual(edges[1].to_text, "if")
+        self.assertFalse(edges[1].behavior_claims_allowed)
+
+    def test_data_and_control_flow_edges_can_be_disabled(self) -> None:
+        visibility = visibility_with_symbols()
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            member_accesses=(
+                {
+                    "text": "_OverlayPosition",
+                    "accessKind": "read_candidate",
+                },
+            ),
+            control_flow=(
+                {
+                    "marker": "return",
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(
+            ast_extract=ast,
+            visibility=visibility,
+            include_data_access=False,
+            include_control_flow=False,
+        )
+
+        self.assertEqual(edges, ())
+
 
 if __name__ == "__main__":
     unittest.main()

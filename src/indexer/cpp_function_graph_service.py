@@ -194,6 +194,7 @@ class FunctionGraphSourceService:
             else request_or_symbol_id
         )
         source = self.extract_function_source(request.symbol_id)
+        cache_resolver_version = _cache_resolver_version(request)
         graph_key = FunctionGraphCacheKey(
             function_symbol_id=source.symbol_id,
             function_body_fingerprint=source.function_body_fingerprint,
@@ -202,7 +203,7 @@ class FunctionGraphSourceService:
             module_visibility_fingerprint=module_visibility_fingerprint,
             parser_id=self.parser.parser_id,
             parser_version=self.parser.parser_version,
-            resolver_version=RESOLVER_VERSION,
+            resolver_version=cache_resolver_version,
         )
 
         if self.storage is not None and request.mode != "refresh":
@@ -227,6 +228,7 @@ class FunctionGraphSourceService:
                             "functionBodyFingerprint": source.function_body_fingerprint,
                             "parser": self.parser.parser_id,
                             "resolver": RESOLVER_VERSION,
+                            "cacheResolver": cache_resolver_version,
                         }
                     ),
                     file=file_fingerprint,
@@ -266,6 +268,8 @@ class FunctionGraphSourceService:
         edges = resolve_function_graph_edges(
             ast_extract=ast_extract,
             visibility=visibility,
+            include_control_flow=request.include_control_flow,
+            include_data_access=request.include_data_access,
             include_external=request.include_external,
             max_edges=request.max_edges,
         )
@@ -279,6 +283,7 @@ class FunctionGraphSourceService:
                     "version": ast_extract.parser_version,
                 },
                 "resolverVersion": RESOLVER_VERSION,
+                "cacheResolverVersion": cache_resolver_version,
                 "edges": [asdict(edge) for edge in edges],
             }
         )
@@ -488,3 +493,13 @@ def _unique_edge_symbol_ids(edges: tuple[dict[str, Any], ...], *, key: str) -> t
         seen.add(value)
         result.append(value)
     return tuple(result)
+
+
+def _cache_resolver_version(request: FunctionGraphRequest) -> str:
+    return (
+        f"{RESOLVER_VERSION};"
+        f"cf={int(request.include_control_flow)};"
+        f"da={int(request.include_data_access)};"
+        f"ex={int(request.include_external)};"
+        f"max={request.max_edges}"
+    )

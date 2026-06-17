@@ -15,6 +15,7 @@ This folder records implemented or prepared work slices for active workplans.
 - [P08 Xrefs and Neighborhood](P08-xrefs-neighborhood.md) - Step 8 persisted caller/callee xrefs and compact symbol neighborhood.
 - [P09 Resolution Improvements](P09-resolution-improvements.md) - Step 9 using/alias/local type hint and overload scoring improvements.
 - [P10 Optional Vector Sidecar Deferred](P10-optional-vector-sidecar-deferred.md) - Step 10 explicit future-work deferral, no runtime implementation.
+- [P11 Data and Control-Flow Edges](P11-data-control-flow-edges.md) - graph edge expansion for data access and control-flow markers.
 
 ## Completed Logs
 
