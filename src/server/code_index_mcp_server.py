@@ -39,6 +39,12 @@ from cpp_index_lock import (
     index_http_server_lock,
     index_watcher_lock,
 )
+from cpp_function_graph_model import FunctionGraphRequest
+from cpp_function_graph_service import (
+    FunctionGraphSourceError,
+    FunctionGraphSourceService,
+    function_graph_result_to_api,
+)
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
 from indexer_control import (
     fmt_bytes,
@@ -290,6 +296,10 @@ PACKABLE_TOOL_NAMES = {
     "get_file_fingerprint",
     "get_symbol_fingerprint",
     "get_data_fingerprint",
+    "get_function_body_graph",
+    "get_call_xrefs_from",
+    "get_call_xrefs_to",
+    "get_symbol_neighborhood",
     "validate_fingerprints",
     "get_project_orientation",
     "list_orientation_nodes",
@@ -373,6 +383,10 @@ CAPABILITY_CATEGORIES: dict[str, list[str]] = {
     "metadata": [
         "get_project_summary",
         "get_file_structure",
+        "get_function_body_graph",
+        "get_call_xrefs_from",
+        "get_call_xrefs_to",
+        "get_symbol_neighborhood",
         "list_file_symbols",
         "get_nearest_symbol_for_line",
     ],
@@ -433,6 +447,34 @@ CAPABILITY_TOOL_METADATA: dict[str, dict[str, Any]] = {
     "get_file_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_symbol_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_data_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
+    "get_function_body_graph": {
+        "category": "metadata",
+        "claimStrength": "source_structure_allowed",
+        "preFetchAllowed": False,
+        "evidenceKind": "function_body_graph",
+        "sourceBehaviorAllowed": False,
+    },
+    "get_call_xrefs_from": {
+        "category": "metadata",
+        "claimStrength": "source_structure_allowed",
+        "preFetchAllowed": False,
+        "evidenceKind": "function_graph_xrefs",
+        "sourceBehaviorAllowed": False,
+    },
+    "get_call_xrefs_to": {
+        "category": "metadata",
+        "claimStrength": "source_structure_allowed",
+        "preFetchAllowed": False,
+        "evidenceKind": "function_graph_xrefs",
+        "sourceBehaviorAllowed": False,
+    },
+    "get_symbol_neighborhood": {
+        "category": "metadata",
+        "claimStrength": "source_structure_allowed",
+        "preFetchAllowed": False,
+        "evidenceKind": "function_graph_neighborhood",
+        "sourceBehaviorAllowed": False,
+    },
     "validate_fingerprints": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_project_orientation": {
         "category": "orientation",
@@ -718,6 +760,134 @@ def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]
                     }
                 },
                 "required": ["dataId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_function_body_graph",
+            "description": (
+                "[FunctionGraph] Return on-demand direct function-body relation edges for one indexed C++ function. "
+                "This is structural navigation evidence only: claimStrength is source_structure_allowed and "
+                "behaviorClaimsAllowed is false. It may compute/cache parser and resolver output, but it does not "
+                "read arbitrary source ranges, resolve external APIs semantically, or support behavior claims."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Callable symbol id returned by find_symbol/list_file_symbols.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["cache_only", "compute_if_missing", "refresh"],
+                        "default": "compute_if_missing",
+                        "description": "cache_only never computes, compute_if_missing computes on miss, refresh recomputes.",
+                    },
+                    "includeControlFlow": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Reserved structural filter for control-flow markers when exposed by the graph.",
+                    },
+                    "includeDataAccess": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Reserved structural filter for data/member access edges when exposed by the graph.",
+                    },
+                    "includeExternal": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include calls marked external/unresolved outside the project symbol index.",
+                    },
+                    "maxEdges": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "default": 200,
+                    },
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_call_xrefs_from",
+            "description": (
+                "[FunctionGraph] Return persisted outgoing call edges from one indexed symbol. "
+                "Reads only stored function graph edges; it does not compute missing graphs. "
+                "Structural navigation only: behaviorClaimsAllowed is false."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Caller function symbol id.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "default": 200,
+                    },
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_call_xrefs_to",
+            "description": (
+                "[FunctionGraph] Return persisted incoming call edges to one indexed symbol. "
+                "Reads only stored function graph edges; callers appear after their function graphs have been computed. "
+                "Structural navigation only: behaviorClaimsAllowed is false."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Target callee symbol id.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "default": 200,
+                    },
+                },
+                "required": ["symbolId"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "get_symbol_neighborhood",
+            "description": (
+                "[FunctionGraph] Return a compact persisted function graph neighborhood for one symbol: "
+                "target metadata, callers, callees, and incoming/outgoing edges. "
+                "Reads only stored edges and does not compute missing graphs. Structural navigation only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Target symbol id.",
+                    },
+                    "incomingLimit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "default": 100,
+                    },
+                    "outgoingLimit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                        "default": 100,
+                    },
+                },
+                "required": ["symbolId"],
                 "additionalProperties": False,
             },
         },
@@ -3026,6 +3196,172 @@ class CodeIndexTools:
         data_id = require_string(arguments, "dataId")
         return self.json_result(arguments, self.data_fingerprint_payload(data_id))
 
+    def function_graph_symbol_index_fingerprint(
+        self,
+        *,
+        symbol_id: str,
+        symbol_fingerprint: dict[str, Any],
+    ) -> str:
+        symbol = self.index.symbol_by_id.get(symbol_id) or {}
+        file_id = str(symbol.get("fileId") or "")
+        return stable_hash_payload(
+            {
+                "kind": "function_graph_symbol_index",
+                "schema": self.index.manifest.get("schema"),
+                "createdAt": self.index.manifest.get("createdUtc") or self.index.manifest.get("createdAt"),
+                "symbolCount": len(getattr(self.index, "symbols", [])),
+                "dataCount": len(getattr(self.index, "data", [])),
+                "fileCount": len(getattr(self.index, "files", [])),
+                "symbolId": symbol_id,
+                "symbolFingerprint": symbol_fingerprint.get("fingerprint"),
+                "fileId": file_id,
+            }
+        )
+
+    def function_graph_module_visibility_fingerprint(self, *, symbol_id: str) -> str:
+        symbol = self.index.symbol_by_id.get(symbol_id) or {}
+        file_id = str(symbol.get("fileId") or "")
+        file_item = self.index.file_by_id.get(file_id) or {}
+        return stable_hash_payload(
+            {
+                "kind": "function_graph_module_visibility",
+                "schema": self.index.manifest.get("schema"),
+                "symbolId": symbol_id,
+                "fileId": file_id,
+                "relativePath": file_item.get("relativePath"),
+                "modules": getattr(self.index, "modules", {}),
+            }
+        )
+
+    def get_function_body_graph(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        mode = arguments.get("mode", "compute_if_missing")
+
+        if mode not in {"cache_only", "compute_if_missing", "refresh"}:
+            raise McpError(-32602, "mode must be cache_only, compute_if_missing, or refresh")
+
+        include_control_flow = optional_bool(arguments, "includeControlFlow", True)
+        include_data_access = optional_bool(arguments, "includeDataAccess", True)
+        include_external = optional_bool(arguments, "includeExternal", True)
+        max_edges = clamp_int(arguments.get("maxEdges", 200), minimum=0, maximum=1000)
+        symbol_fingerprint = self.symbol_fingerprint_payload(symbol_id)
+
+        if not symbol_fingerprint.get("valid"):
+            return self.json_result(
+                arguments,
+                {
+                    "code": "symbol_not_found",
+                    "message": f"Symbol {symbol_id!r} was not found in the loaded index.",
+                    "symbolId": symbol_id,
+                },
+                is_error=True,
+            )
+
+        request = FunctionGraphRequest(
+            symbol_id=symbol_id,
+            mode=mode,
+            include_control_flow=include_control_flow,
+            include_data_access=include_data_access,
+            include_external=include_external,
+            max_edges=max_edges,
+        )
+        service = FunctionGraphSourceService(
+            project_root=self.project_root,
+            index=self.index,
+            index_root=self.index_root,
+        )
+
+        try:
+            result = service.get_function_body_graph(
+                request,
+                file_fingerprint=str(symbol_fingerprint.get("fileFingerprint") or ""),
+                symbol_index_fingerprint=self.function_graph_symbol_index_fingerprint(
+                    symbol_id=symbol_id,
+                    symbol_fingerprint=symbol_fingerprint,
+                ),
+                module_visibility_fingerprint=self.function_graph_module_visibility_fingerprint(
+                    symbol_id=symbol_id,
+                ),
+            )
+        except FunctionGraphSourceError as exc:
+            return self.json_result(arguments, exc.to_dict(), is_error=True)
+
+        payload = function_graph_result_to_api(result)
+        payload["request"] = {
+            "mode": mode,
+            "includeControlFlow": include_control_flow,
+            "includeDataAccess": include_data_access,
+            "includeExternal": include_external,
+            "maxEdges": max_edges,
+        }
+        return self.json_result(arguments, payload)
+
+    def get_call_xrefs_from(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        limit = clamp_int(arguments.get("limit", 200), minimum=0, maximum=1000)
+        service = FunctionGraphSourceService(
+            project_root=self.project_root,
+            index=self.index,
+            index_root=self.index_root,
+        )
+
+        try:
+            result = service.get_call_xrefs_from(symbol_id, limit=limit)
+        except FunctionGraphSourceError as exc:
+            return self.json_result(arguments, exc.to_dict(), is_error=True)
+
+        result["request"] = {
+            "symbolId": symbol_id,
+            "limit": limit,
+        }
+        return self.json_result(arguments, result)
+
+    def get_call_xrefs_to(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        limit = clamp_int(arguments.get("limit", 200), minimum=0, maximum=1000)
+        service = FunctionGraphSourceService(
+            project_root=self.project_root,
+            index=self.index,
+            index_root=self.index_root,
+        )
+
+        try:
+            result = service.get_call_xrefs_to(symbol_id, limit=limit)
+        except FunctionGraphSourceError as exc:
+            return self.json_result(arguments, exc.to_dict(), is_error=True)
+
+        result["request"] = {
+            "symbolId": symbol_id,
+            "limit": limit,
+        }
+        return self.json_result(arguments, result)
+
+    def get_symbol_neighborhood(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol_id = require_string(arguments, "symbolId")
+        incoming_limit = clamp_int(arguments.get("incomingLimit", 100), minimum=0, maximum=1000)
+        outgoing_limit = clamp_int(arguments.get("outgoingLimit", 100), minimum=0, maximum=1000)
+        service = FunctionGraphSourceService(
+            project_root=self.project_root,
+            index=self.index,
+            index_root=self.index_root,
+        )
+
+        try:
+            result = service.get_symbol_neighborhood(
+                symbol_id,
+                incoming_limit=incoming_limit,
+                outgoing_limit=outgoing_limit,
+            )
+        except FunctionGraphSourceError as exc:
+            return self.json_result(arguments, exc.to_dict(), is_error=True)
+
+        result["request"] = {
+            "symbolId": symbol_id,
+            "incomingLimit": incoming_limit,
+            "outgoingLimit": outgoing_limit,
+        }
+        return self.json_result(arguments, result)
+
     def validate_fingerprints(self, arguments: dict[str, Any]) -> dict[str, Any]:
         items = arguments.get("items")
 
@@ -4602,6 +4938,10 @@ class McpServer:
             "get_file_fingerprint": self.tools.get_file_fingerprint,
             "get_symbol_fingerprint": self.tools.get_symbol_fingerprint,
             "get_data_fingerprint": self.tools.get_data_fingerprint,
+            "get_function_body_graph": self.tools.get_function_body_graph,
+            "get_call_xrefs_from": self.tools.get_call_xrefs_from,
+            "get_call_xrefs_to": self.tools.get_call_xrefs_to,
+            "get_symbol_neighborhood": self.tools.get_symbol_neighborhood,
             "validate_fingerprints": self.tools.validate_fingerprints,
             "get_project_orientation": self.tools.get_project_orientation,
             "list_orientation_nodes": self.tools.list_orientation_nodes,
