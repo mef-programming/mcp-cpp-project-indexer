@@ -1,0 +1,4 @@
+# Optional Function Graph parser adapter dependencies.
+# Normal indexer and MCP usage does not require these packages.
+tree-sitter
+tree-sitter-cpp

@@ -143,16 +143,85 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         parser = TreeSitterCppFunctionBodyParser()
         parser_status = parser.parser_status()
         self.assertTrue(parser_status.available)
-        self.assertIn("tree_sitter_parse_probe", parser_status.capabilities)
+        self.assertIn("member_calls", parser_status.capabilities)
         extract = parser.parse_function(
             symbol_id="fn",
             source_fingerprint="sha256:source",
-            function_text="void f()\n{\n    Helper();\n}\n",
+            function_text="\n".join(
+                [
+                    "void f()",
+                    "{",
+                    "    auto widget = MakeWidget<App::Widget>();",
+                    "    auto fn = [&]() { widget.Draw(); return Helper(widget); };",
+                    "    renderer.GetBrush().Reset();",
+                    "    if (widget.IsReady()) {",
+                    "        return;",
+                    "    }",
+                    "    ASSERT_TRUE(widget.IsReady());",
+                    "}",
+                ]
+            ),
             base_line=1,
             base_byte=0,
         )
         self.assertEqual(extract.parser_id, parser.parser_id)
-        self.assertEqual(extract.calls[0]["callee"], "Helper")
+        calls = {item["callee"]: item for item in extract.calls}
+        self.assertIn("MakeWidget", calls)
+        self.assertIn("widget.Draw", calls)
+        self.assertIn("Helper", calls)
+        self.assertIn("renderer.GetBrush", calls)
+        self.assertIn("renderer.GetBrush().Reset", calls)
+        self.assertNotIn("ASSERT_TRUE", calls)
+        self.assertEqual(calls["MakeWidget"]["argumentCount"], 0)
+        locals_by_name = {item["name"]: item for item in extract.local_declarations}
+        self.assertEqual(locals_by_name["widget"]["typeText"], "auto")
+        markers = {item["marker"] for item in extract.control_flow}
+        self.assertIn("if", markers)
+        self.assertIn("return", markers)
+
+    def test_tree_sitter_skips_macro_wrapped_try_block_false_calls(self) -> None:
+        status = tree_sitter_cpp_dependency_status()
+        if not status["available"]:
+            self.skipTest("Tree-sitter optional dependencies are not installed.")
+
+        parser = TreeSitterCppFunctionBodyParser()
+        extract = parser.parse_function(
+            symbol_id="fn",
+            source_fingerprint="sha256:source",
+            function_text="\n".join(
+                [
+                    "HRESULT Task::_Run() noexcept",
+                    "{",
+                    "    _COM_EXCEPTION_BEGIN",
+                    "    {",
+                    "        try",
+                    "        {",
+                    "            Client activationClient{ m_Host, m_Path, m_ProxyOption };",
+                    "            m_Response = activationClient.Activate(m_Request);",
+                    "            return S_OK;",
+                    "        }",
+                    "        catch (ClientException& e)",
+                    "        {",
+                    "            if (const auto response{ e.GetResponse() })",
+                    "            {",
+                    "                return Util::HttpResponseCodeToHRESULT(response->GetStatusCode());",
+                    "            }",
+                    "        }",
+                    "    }",
+                    "    _COM_EXCEPTION_END",
+                    "}",
+                ]
+            ),
+            base_line=1,
+            base_byte=0,
+        )
+
+        calls = {item["callee"] for item in extract.calls}
+        self.assertIn("activationClient.Activate", calls)
+        self.assertIn("e.GetResponse", calls)
+        self.assertIn("Util::HttpResponseCodeToHRESULT", calls)
+        self.assertIn("response->GetStatusCode", calls)
+        self.assertFalse(any("try{" in call for call in calls))
 
 
 if __name__ == "__main__":
