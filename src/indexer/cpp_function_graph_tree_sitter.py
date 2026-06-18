@@ -133,6 +133,8 @@ class _TreeSitterFunctionAstExtractor:
             function_node = _child_by_field_name(node, "function")
             if function_node is None or _has_macro_call_ancestor(node, self.source_bytes):
                 continue
+            if function_node.type not in _SUPPORTED_CALL_FUNCTION_NODE_TYPES:
+                continue
 
             callee = _normalise_callee(_node_text(function_node, self.source_bytes))
             if not callee:
@@ -281,6 +283,12 @@ _CONTROL_FLOW_NODE_MARKERS = {
     "co_await_expression": "co_await",
 }
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*")
+_SUPPORTED_CALL_FUNCTION_NODE_TYPES = {
+    "identifier",
+    "field_expression",
+    "qualified_identifier",
+    "template_function",
+}
 
 
 def _new_parser(language: Any) -> Any:
@@ -319,6 +327,7 @@ def _normalise_callee(text: str) -> str:
     callee = re.sub(r"\s+", "", text.strip())
     if not callee:
         return ""
+    callee = callee.removeprefix("::")
     return _strip_trailing_template_args(callee)
 
 

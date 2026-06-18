@@ -179,6 +179,50 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         self.assertIn("if", markers)
         self.assertIn("return", markers)
 
+    def test_tree_sitter_skips_macro_wrapped_try_block_false_calls(self) -> None:
+        status = tree_sitter_cpp_dependency_status()
+        if not status["available"]:
+            self.skipTest("Tree-sitter optional dependencies are not installed.")
+
+        parser = TreeSitterCppFunctionBodyParser()
+        extract = parser.parse_function(
+            symbol_id="fn",
+            source_fingerprint="sha256:source",
+            function_text="\n".join(
+                [
+                    "HRESULT Task::_Run() noexcept",
+                    "{",
+                    "    _COM_EXCEPTION_BEGIN",
+                    "    {",
+                    "        try",
+                    "        {",
+                    "            Client activationClient{ m_Host, m_Path, m_ProxyOption };",
+                    "            m_Response = activationClient.Activate(m_Request);",
+                    "            return S_OK;",
+                    "        }",
+                    "        catch (ClientException& e)",
+                    "        {",
+                    "            if (const auto response{ e.GetResponse() })",
+                    "            {",
+                    "                return Util::HttpResponseCodeToHRESULT(response->GetStatusCode());",
+                    "            }",
+                    "        }",
+                    "    }",
+                    "    _COM_EXCEPTION_END",
+                    "}",
+                ]
+            ),
+            base_line=1,
+            base_byte=0,
+        )
+
+        calls = {item["callee"] for item in extract.calls}
+        self.assertIn("activationClient.Activate", calls)
+        self.assertIn("e.GetResponse", calls)
+        self.assertIn("Util::HttpResponseCodeToHRESULT", calls)
+        self.assertIn("response->GetStatusCode", calls)
+        self.assertFalse(any("try{" in call for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
