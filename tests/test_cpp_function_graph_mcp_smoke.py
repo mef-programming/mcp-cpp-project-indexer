@@ -59,6 +59,27 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (project_root / "blend.cpp").write_text(
+                "\n".join(
+                    [
+                        "namespace App {",
+                        "void Helper();",
+                        "class Renderer {",
+                        "public:",
+                        "    void Draw();",
+                        "};",
+                        "void Blend(Renderer& renderer)",
+                        "{",
+                        "    renderer.Draw();",
+                        "    Helper();",
+                        "    std::move(renderer);",
+                        "}",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             subprocess.run(
                 [
                     sys.executable,
@@ -80,6 +101,7 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
             tools = CodeIndexTools(project_root=project_root, index_root=index_root)
             try:
                 paint_symbol_id = self._definition_symbol_id(tools, "Paint")
+                blend_symbol_id = self._definition_symbol_id(tools, "Blend")
 
                 graph = self._call_json(
                     tools.get_function_body_graph(
@@ -103,6 +125,31 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                     tools.get_call_xrefs_from(
                         {
                             "symbolId": paint_symbol_id,
+                            "responseFormat": "minified",
+                        }
+                    )
+                )
+                blend_graph = self._call_json(
+                    tools.get_function_body_graph(
+                        {
+                            "symbolId": blend_symbol_id,
+                            "mode": "compute_if_missing",
+                            "responseFormat": "minified",
+                        }
+                    )
+                )
+                blend_xrefs = self._call_json(
+                    tools.get_call_xrefs_from(
+                        {
+                            "symbolId": blend_symbol_id,
+                            "responseFormat": "minified",
+                        }
+                    )
+                )
+                blend_neighborhood = self._call_json(
+                    tools.get_symbol_neighborhood(
+                        {
+                            "symbolId": blend_symbol_id,
                             "responseFormat": "minified",
                         }
                     )
@@ -139,6 +186,13 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
         self.assertEqual(cache_only["fingerprints"]["graph"], graph["fingerprints"]["graph"])
         self.assertGreaterEqual(xrefs["returnedEdges"], 3)
         self.assertFalse(xrefs["behaviorClaimsAllowed"])
+        blend_statuses = {edge["toText"]: edge["resolutionStatus"] for edge in blend_graph["edges"]}
+        self.assertIn(blend_statuses["renderer.Draw"], {"probable", "unresolved"})
+        self.assertIn(blend_statuses["Helper"], {"exact", "probable", "ambiguous"})
+        self.assertEqual(blend_statuses["std::move"], "external")
+        self.assertGreaterEqual(blend_xrefs["returnedEdges"], 2)
+        self.assertEqual(blend_neighborhood["target"]["symbolId"], blend_symbol_id)
+        self.assertFalse(blend_neighborhood["behaviorClaimsAllowed"])
         self.assertNotIn("reads_data_candidate", filtered_edge_kinds)
         self.assertNotIn("writes_data_candidate", filtered_edge_kinds)
         self.assertNotIn("control_flow_marker", filtered_edge_kinds)

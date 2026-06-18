@@ -11,7 +11,7 @@ from cpp_function_graph_model import (
 )
 
 
-RESOLVER_VERSION = "cpp-function-graph-resolver-v0.2"
+RESOLVER_VERSION = "cpp-function-graph-resolver-v0.3"
 EXTERNAL_QUALIFIER_PREFIXES = ("std::", "wil::", "ATL::", "Microsoft::WRL::")
 
 
@@ -330,14 +330,14 @@ def _score_candidates(candidates: Any, call: dict[str, Any]) -> tuple[dict[str, 
             "qualified_name": 0.35,
             "this_scope": 0.35,
             "current_class": 0.3,
-            "same_class": 0.25,
-            "same_namespace": 0.18,
+            "same_class": 0.28,
+            "same_namespace": 0.22,
             "using_declaration": 0.16,
             "using_namespace": 0.1,
             "local_type_hint": 0.22,
             "member_call": 0.08,
-            "same_file": 0.08,
-            "module_visible": 0.05,
+            "same_file": 0.05,
+            "module_visible": 0.03,
             "namespace_alias": 0.04,
         }
         for item in basis:

@@ -339,6 +339,68 @@ class FunctionGraphResolverTests(unittest.TestCase):
         self.assertGreater(edges[0].candidates[0]["score"], edges[0].candidates[1]["score"])
         self.assertIn("arity_match", edges[0].candidates[0]["basis"])
 
+    def test_unqualified_lookup_prefers_same_namespace_over_fallbacks(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id=None,
+            current_class_name=None,
+            imported_modules=("App.Core",),
+            visible_exported_symbols=(
+                {
+                    "symbolId": "fn-module-helper",
+                    "type": "function",
+                    "shortName": "Helper",
+                    "qualifiedName": "Shared::Helper",
+                    "container": "Shared",
+                },
+            ),
+            same_file_symbols=(
+                {
+                    "symbolId": "fn-app-helper",
+                    "type": "function",
+                    "shortName": "Helper",
+                    "qualifiedName": "App::Helper",
+                    "container": "App",
+                },
+                {
+                    "symbolId": "fn-other-helper",
+                    "type": "function",
+                    "shortName": "Helper",
+                    "qualifiedName": "Other::Helper",
+                    "container": "Other",
+                },
+            ),
+            same_file_data=(),
+            member_data=(),
+            using_directives=(
+                {
+                    "namespace": "Other",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {
+                    "callee": "Helper",
+                    "callKind": "unqualified",
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].to_symbol_id, "fn-app-helper")
+        self.assertIn("same_namespace", edges[0].basis)
+
     def test_member_call_uses_local_type_hint_as_probable_candidate(self) -> None:
         visibility = FunctionVisibilityContext(
             file_id="file-1",
