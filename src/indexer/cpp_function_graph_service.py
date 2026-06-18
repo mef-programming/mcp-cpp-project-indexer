@@ -10,7 +10,6 @@ from typing import Any
 from cpp_function_graph_cache import (
     FunctionAstCacheKey,
     FunctionGraphCacheKey,
-    ast_cache_key_for_extract,
     graph_cache_options_fingerprint,
     graph_cache_options_for_request,
     graph_cache_options_payload,
@@ -26,6 +25,12 @@ from cpp_function_graph_model import (
     FunctionGraphRequest,
     FunctionGraphResult,
     FunctionSourceSlice,
+)
+from cpp_function_graph_parser import (
+    parser_cache_version,
+    parser_capability_status,
+    parser_status_fingerprint,
+    parser_status_payload,
 )
 from cpp_function_graph_resolver import RESOLVER_VERSION, resolve_function_graph_edges
 from cpp_function_graph_storage import FunctionGraphStorage
@@ -197,9 +202,12 @@ class FunctionGraphSourceService:
             else request_or_symbol_id
         )
         source = self.extract_function_source(request.symbol_id)
+        parser_status = parser_capability_status(self.parser)
+        cache_parser_version = parser_cache_version(self.parser)
+        parser_status_hash = parser_status_fingerprint(parser_status)
         cache_options = graph_cache_options_for_request(request)
         cache_options_fingerprint = graph_cache_options_fingerprint(cache_options)
-        cache_resolver_version = _cache_resolver_version(request)
+        cache_resolver_version = _cache_resolver_version(request, parser_status_hash=parser_status_hash)
         graph_key = FunctionGraphCacheKey(
             function_symbol_id=source.symbol_id,
             function_body_fingerprint=source.function_body_fingerprint,
@@ -207,7 +215,7 @@ class FunctionGraphSourceService:
             symbol_index_fingerprint=symbol_index_fingerprint,
             module_visibility_fingerprint=module_visibility_fingerprint,
             parser_id=self.parser.parser_id,
-            parser_version=self.parser.parser_version,
+            parser_version=cache_parser_version,
             resolver_version=cache_resolver_version,
         )
 
@@ -234,6 +242,7 @@ class FunctionGraphSourceService:
                             "parser": self.parser.parser_id,
                             "resolver": RESOLVER_VERSION,
                             "cacheResolver": cache_resolver_version,
+                            "parserStatusFingerprint": parser_status_hash,
                             "graphOptionsFingerprint": cache_options_fingerprint,
                         }
                     ),
@@ -244,16 +253,15 @@ class FunctionGraphSourceService:
             )
 
         ast_extract = None
+        ast_key = FunctionAstCacheKey(
+            function_symbol_id=source.symbol_id,
+            function_body_fingerprint=source.function_body_fingerprint,
+            parser_id=self.parser.parser_id,
+            parser_version=cache_parser_version,
+            extractor_version=EXTRACTOR_VERSION,
+        )
         if self.storage is not None and request.mode != "refresh":
-            ast_extract = self.storage.load_ast_extract(
-                FunctionAstCacheKey(
-                    function_symbol_id=source.symbol_id,
-                    function_body_fingerprint=source.function_body_fingerprint,
-                    parser_id=self.parser.parser_id,
-                    parser_version=self.parser.parser_version,
-                    extractor_version=EXTRACTOR_VERSION,
-                )
-            )
+            ast_extract = self.storage.load_ast_extract(ast_key)
 
         if ast_extract is None:
             ast_extract = self.parser.parse_function(
@@ -264,7 +272,7 @@ class FunctionGraphSourceService:
                 base_byte=source.base_byte,
             )
             if self.storage is not None:
-                self.storage.store_ast_extract(ast_cache_key_for_extract(ast_extract), ast_extract)
+                self.storage.store_ast_extract(ast_key, ast_extract)
 
         visibility = build_function_visibility_context(
             index=self.index,
@@ -290,6 +298,8 @@ class FunctionGraphSourceService:
                 },
                 "resolverVersion": RESOLVER_VERSION,
                 "cacheResolverVersion": cache_resolver_version,
+                "parserStatus": parser_status_payload(parser_status),
+                "parserStatusFingerprint": parser_status_hash,
                 "graphOptions": graph_cache_options_payload(cache_options),
                 "graphOptionsFingerprint": cache_options_fingerprint,
                 "edges": [asdict(edge) for edge in edges],
@@ -503,6 +513,9 @@ def _unique_edge_symbol_ids(edges: tuple[dict[str, Any], ...], *, key: str) -> t
     return tuple(result)
 
 
-def _cache_resolver_version(request: FunctionGraphRequest) -> str:
+def _cache_resolver_version(request: FunctionGraphRequest, *, parser_status_hash: str) -> str:
     options = graph_cache_options_for_request(request)
-    return f"{RESOLVER_VERSION};options={graph_cache_options_fingerprint(options)}"
+    return (
+        f"{RESOLVER_VERSION};options={graph_cache_options_fingerprint(options)}"
+        f";parserStatus={parser_status_hash}"
+    )

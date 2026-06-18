@@ -32,3 +32,8 @@ This folder records implemented or prepared work slices for function graph workp
 - [P25 Real Project Smoke Expansion](P25-real-project-smoke-expansion.md) - multi-file real-index MCP smoke with multiple computed graphs.
 - [P26 Resolver Ranking v0.3](P26-resolver-ranking-v03.md) - resolver version bump and priority coverage.
 - [P27 Cache Maintenance UX](P27-cache-maintenance-ux.md) - internal cache maintenance documented without MCP tool expansion.
+- [P28 Runtime Quality Baseline](P28-runtime-quality-baseline.md) - active workplan setup and realistic parser accuracy baseline.
+- [P29 Parser Adapter Contract vNext](P29-parser-adapter-contract-vnext.md) - parser status/capability metadata and cache-version helpers.
+- [P30 Tree-sitter Parity Spike](P30-tree-sitter-parity-spike.md) - optional dependency-gated parse probe through the existing parser protocol.
+- [P31 Runtime Accuracy Smoke Matrix](P31-runtime-accuracy-smoke-matrix.md) - expanded real-index Function Graph smoke coverage.
+- [P32 Resolver Cache Guardrails](P32-resolver-cache-guardrails.md) - parser status/capability cache compatibility guardrails.

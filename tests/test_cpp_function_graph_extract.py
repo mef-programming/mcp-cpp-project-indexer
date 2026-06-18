@@ -12,6 +12,7 @@ if str(INDEXER_SRC) not in sys.path:
     sys.path.insert(0, str(INDEXER_SRC))
 
 from cpp_function_graph_extract import LightweightFunctionBodyParser, extract_raw_function_ast
+from cpp_function_graph_parser import parser_cache_version, parser_capability_status
 from cpp_function_graph_tree_sitter import (
     TreeSitterCppFunctionBodyParser,
     TreeSitterUnavailableError,
@@ -92,6 +93,7 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
                 "    renderer.GetBrush().Reset();",
                 "    this->_State.Reset();",
                 "    ASSERT_TRUE(widget.IsReady());",
+                "#define CALL_THROUGH_MACRO(x) x()",
                 "}",
             ]
         )
@@ -112,19 +114,45 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         self.assertIn("Reset", calls)
         self.assertIn("this->_State.Reset", calls)
         self.assertNotIn("ASSERT_TRUE", calls)
+        self.assertNotIn("define", calls)
         self.assertEqual(calls["MakeWidget"]["argumentCount"], 0)
         self.assertEqual(calls["Reset"]["callKind"], "member")
 
         locals_by_name = {item["name"]: item for item in extract.local_declarations}
         self.assertEqual(locals_by_name["widget"]["typeText"], "auto")
 
-    def test_tree_sitter_adapter_is_isolated_until_dependency_exists(self) -> None:
+    def test_lightweight_parser_reports_capability_status(self) -> None:
+        parser = LightweightFunctionBodyParser()
+        status = parser_capability_status(parser)
+
+        self.assertTrue(status.available)
+        self.assertEqual(status.parser_id, parser.parser_id)
+        self.assertIn("calls", status.capabilities)
+        self.assertIn("status=sha256:", parser_cache_version(parser))
+
+    def test_tree_sitter_adapter_is_optional_and_status_gated(self) -> None:
         status = tree_sitter_cpp_dependency_status()
         self.assertIn(status["available"], {True, False})
         self.assertIn("reason", status)
 
-        with self.assertRaises(TreeSitterUnavailableError):
-            TreeSitterCppFunctionBodyParser()
+        if not status["available"]:
+            with self.assertRaises(TreeSitterUnavailableError):
+                TreeSitterCppFunctionBodyParser()
+            return
+
+        parser = TreeSitterCppFunctionBodyParser()
+        parser_status = parser.parser_status()
+        self.assertTrue(parser_status.available)
+        self.assertIn("tree_sitter_parse_probe", parser_status.capabilities)
+        extract = parser.parse_function(
+            symbol_id="fn",
+            source_fingerprint="sha256:source",
+            function_text="void f()\n{\n    Helper();\n}\n",
+            base_line=1,
+            base_byte=0,
+        )
+        self.assertEqual(extract.parser_id, parser.parser_id)
+        self.assertEqual(extract.calls[0]["callee"], "Helper")
 
 
 if __name__ == "__main__":
