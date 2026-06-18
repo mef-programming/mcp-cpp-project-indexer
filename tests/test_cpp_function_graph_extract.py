@@ -82,6 +82,42 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         self.assertEqual(extract.calls[0]["callee"], "foo")
         self.assertEqual(extract.calls[0]["line"], 12)
 
+    def test_extracts_templates_lambdas_chains_and_ignores_macro_noise(self) -> None:
+        function_text = "\n".join(
+            [
+                "void Paint()",
+                "{",
+                "    auto widget = MakeWidget<App::Widget>();",
+                "    auto fn = [&]() { widget.Draw(); return Helper(widget); };",
+                "    renderer.GetBrush().Reset();",
+                "    this->_State.Reset();",
+                "    ASSERT_TRUE(widget.IsReady());",
+                "}",
+            ]
+        )
+
+        extract = extract_raw_function_ast(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            function_text=function_text,
+            base_line=20,
+            base_byte=0,
+        )
+
+        calls = {item["callee"]: item for item in extract.calls}
+        self.assertIn("MakeWidget", calls)
+        self.assertIn("widget.Draw", calls)
+        self.assertIn("Helper", calls)
+        self.assertIn("renderer.GetBrush", calls)
+        self.assertIn("Reset", calls)
+        self.assertIn("this->_State.Reset", calls)
+        self.assertNotIn("ASSERT_TRUE", calls)
+        self.assertEqual(calls["MakeWidget"]["argumentCount"], 0)
+        self.assertEqual(calls["Reset"]["callKind"], "member")
+
+        locals_by_name = {item["name"]: item for item in extract.local_declarations}
+        self.assertEqual(locals_by_name["widget"]["typeText"], "auto")
+
     def test_tree_sitter_adapter_is_isolated_until_dependency_exists(self) -> None:
         status = tree_sitter_cpp_dependency_status()
         self.assertIn(status["available"], {True, False})

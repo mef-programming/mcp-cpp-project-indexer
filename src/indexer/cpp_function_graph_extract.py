@@ -5,9 +5,9 @@ import re
 from cpp_function_graph_model import FunctionAstExtract
 
 
-EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.1"
+EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.2"
 LIGHTWEIGHT_PARSER_ID = "cpp-lightweight-function-parser"
-LIGHTWEIGHT_PARSER_VERSION = "v0.1"
+LIGHTWEIGHT_PARSER_VERSION = "v0.2"
 
 CONTROL_FLOW_WORDS = {
     "if",
@@ -33,15 +33,19 @@ CALL_EXCLUDE_WORDS = CONTROL_FLOW_WORDS | {
 }
 
 CALL_RE = re.compile(
-    r"(?P<callee>\b[A-Za-z_]\w*(?:(?:::|->|\.)[A-Za-z_]\w*)*)\s*\(",
+    r"(?P<callee>\b[A-Za-z_]\w*(?:(?:::|->|\.)[A-Za-z_]\w*)*)"
+    r"(?:\s*<[^;{}()]*>)?\s*\(",
+)
+CHAINED_RESULT_CALL_RE = re.compile(
+    r"(?:\)|\])\s*(?:->|\.)\s*(?P<callee>[A-Za-z_]\w*)\s*\(",
 )
 CONTROL_RE = re.compile(r"\b(if|switch|for|while|return|throw|try|catch|co_await|co_return)\b")
 LOCAL_DECL_RE = re.compile(
-    r"^\s*(?P<type>(?:const\s+)?(?:auto|[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)(?:\s*[*&])?)\s+"
+    r"^\s*(?P<type>(?:const\s+)?(?:auto|[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)(?:\s*<[^;=(){}]*>)?(?:\s*[*&])?)\s+"
     r"(?P<name>[A-Za-z_]\w*)\s*(?:[=;({])"
 )
-MEMBER_TOKEN_RE = re.compile(r"\b(?P<member>this->\w+|[A-Za-z_]\w*\.\w+|_\w+)\b")
-ASSIGNMENT_RE = re.compile(r"(?P<lhs>this->\w+|[A-Za-z_]\w*\.\w+|_\w+)\s*=")
+MEMBER_TOKEN_RE = re.compile(r"\b(?P<member>this->\w+(?:(?:->|\.)\w+)*|[A-Za-z_]\w*(?:(?:->|\.)\w+)+|_\w+)\b")
+ASSIGNMENT_RE = re.compile(r"(?P<lhs>this->\w+(?:(?:->|\.)\w+)*|[A-Za-z_]\w*(?:(?:->|\.)\w+)+|_\w+)\s*=")
 
 
 def extract_raw_function_ast(
@@ -91,17 +95,41 @@ def extract_raw_function_ast(
 
 def _extract_calls(line: str, *, line_number: int, byte_cursor: int) -> list[dict]:
     result: list[dict] = []
-    for match in CALL_RE.finditer(_strip_line_comment(line)):
+    stripped = _strip_line_comment(line)
+    seen: set[tuple[str, int]] = set()
+    for match in CALL_RE.finditer(stripped):
+        if match.start("callee") > 0 and stripped[match.start("callee") - 1] in {".", ">"}:
+            continue
         callee = match.group("callee")
         tail = callee.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
-        if tail in CALL_EXCLUDE_WORDS:
+        if tail in CALL_EXCLUDE_WORDS or _looks_like_macro_invocation(tail):
             continue
 
+        seen.add((callee, match.start("callee")))
         result.append(
             {
                 "callee": callee,
                 "callKind": _call_kind(callee),
                 "argumentCount": _argument_count(line, match.end() - 1),
+                "line": line_number,
+                "column": match.start("callee"),
+                "byte": byte_cursor + len(line[:match.start("callee")].encode("utf-8")),
+                "kind": "call_expression",
+            }
+        )
+
+    for match in CHAINED_RESULT_CALL_RE.finditer(stripped):
+        callee = match.group("callee")
+        if callee in CALL_EXCLUDE_WORDS or _looks_like_macro_invocation(callee):
+            continue
+        key = (callee, match.start("callee"))
+        if key in seen:
+            continue
+        result.append(
+            {
+                "callee": callee,
+                "callKind": "member",
+                "argumentCount": _argument_count(stripped, match.end() - 1),
                 "line": line_number,
                 "column": match.start("callee"),
                 "byte": byte_cursor + len(line[:match.start("callee")].encode("utf-8")),
@@ -225,6 +253,10 @@ def _find_close_paren(line: str, open_paren_index: int) -> int | None:
 def _strip_line_comment(line: str) -> str:
     index = line.find("//")
     return line if index < 0 else line[:index]
+
+
+def _looks_like_macro_invocation(name: str) -> bool:
+    return name.isupper() or name.startswith(("ASSERT_", "VERIFY_", "TRACE_"))
 
 
 class LightweightFunctionBodyParser:

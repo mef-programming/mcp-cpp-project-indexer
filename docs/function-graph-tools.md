@@ -28,6 +28,10 @@ The response includes parser/resolver versions, cache status, fingerprints, edge
 
 Graph cache compatibility includes source fingerprints, parser/resolver versions, visibility fingerprints, and graph options such as data/control/external edge flags and `maxEdges`.
 
+## Cache Maintenance
+
+Normal users should prefer rebuilding the project index when scanner inputs change and `refresh` when one function graph must be recomputed. Internal storage exposes cache stats and parser/resolver-version pruning for maintenance code, but no separate public MCP cache-maintenance tool is required.
+
 ## Claim Contract
 
 Function graph output may say a source structure was observed or a project-local candidate was found. It must not claim runtime behavior, side effects, alias certainty, dynamic dispatch certainty, or external API semantics.

@@ -27,3 +27,8 @@ This folder records implemented or prepared work slices for function graph workp
 - [P20 Tree-sitter Adapter Spike Decision](P20-tree-sitter-adapter-spike-decision.md) - optional adapter remains gated without hard dependency.
 - [P21 Resolver Candidate Quality](P21-resolver-candidate-quality.md) - improved member and data candidate quality without behavior claims.
 - [P22 Cache Storage Maintenance](P22-cache-storage-maintenance.md) - graph cache stats and version pruning.
+- [P23 PR 6 Ready and Merge](P23-pr6-ready-merge.md) - PR #6 ready, merged, and local main synchronized.
+- [P24 Parser Fixture Coverage](P24-parser-fixture-coverage.md) - lightweight parser coverage for templates, lambdas, chained calls, and macro noise.
+- [P25 Real Project Smoke Expansion](P25-real-project-smoke-expansion.md) - multi-file real-index MCP smoke with multiple computed graphs.
+- [P26 Resolver Ranking v0.3](P26-resolver-ranking-v03.md) - resolver version bump and priority coverage.
+- [P27 Cache Maintenance UX](P27-cache-maintenance-ux.md) - internal cache maintenance documented without MCP tool expansion.
