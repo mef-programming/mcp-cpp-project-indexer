@@ -250,6 +250,61 @@ class FunctionGraphSourceServiceTests(unittest.TestCase):
         self.assertEqual(neighborhood["callers"][0]["symbolId"], "fn-paint")
         self.assertFalse(neighborhood["behaviorClaimsAllowed"])
 
+    def test_graph_cache_options_change_causes_cache_miss(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            index_root = project_root / ".mcp-cpp-project-indexer"
+            (project_root / "sample.cpp").write_text(
+                "\n".join(
+                    [
+                        "#include <windows.h>",
+                        "",
+                        "int add(int lhs, int rhs)",
+                        "{",
+                        "    return lhs + rhs;",
+                        "}",
+                        "",
+                        "void Helper();",
+                        "",
+                        "void Paint()",
+                        "{",
+                        "    Helper();",
+                        "    SendMessageW();",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            service = FunctionGraphSourceService(
+                project_root=project_root,
+                index=FakeIndex(),
+                index_root=index_root,
+            )
+
+            first = service.get_function_body_graph(
+                FunctionGraphRequest(
+                    symbol_id="fn-paint",
+                    mode="compute_if_missing",
+                    include_external=False,
+                ),
+                file_fingerprint="sha256:file",
+                symbol_index_fingerprint="sha256:symbols",
+                module_visibility_fingerprint="sha256:modules",
+            )
+            second = service.get_function_body_graph(
+                FunctionGraphRequest(symbol_id="fn-paint", mode="cache_only"),
+                file_fingerprint="sha256:file",
+                symbol_index_fingerprint="sha256:symbols",
+                module_visibility_fingerprint="sha256:modules",
+            )
+
+        self.assertEqual(first.status, "computed")
+        self.assertFalse(first.from_cache)
+        self.assertEqual({edge.to_text for edge in first.edges}, {"Helper"})
+        self.assertEqual(second.status, "cache_miss")
+        self.assertFalse(second.from_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

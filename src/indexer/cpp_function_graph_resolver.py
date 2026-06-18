@@ -284,10 +284,14 @@ def _data_candidates(text: str, visibility: FunctionVisibilityContext) -> tuple[
         if _data_name(item) != tail:
             continue
         candidate = dict(item)
+        basis: list[str] = []
+        if "::" in text and _qualified_data_matches(text, item):
+            basis.append("qualified_data_name")
         if item in visibility.member_data:
-            candidate["_basis"] = ("indexed_member_data",)
+            basis.append("indexed_member_data")
         else:
-            candidate["_basis"] = ("indexed_same_file_data",)
+            basis.append("indexed_same_file_data")
+        candidate["_basis"] = tuple(basis)
         result.append(candidate)
     return _dedupe_data_candidates(result)
 
@@ -420,7 +424,13 @@ def _same_container(symbol: dict[str, Any], container: str | None) -> bool:
     if not container:
         return False
     symbol_container = str(symbol.get("container") or "")
-    return symbol_container.casefold() == container.casefold()
+    symbol_container_folded = symbol_container.casefold()
+    container_folded = container.casefold()
+    return (
+        symbol_container_folded == container_folded
+        or symbol_container_folded.endswith("::" + container_folded)
+        or container_folded.endswith("::" + symbol_container_folded)
+    )
 
 
 def _same_namespace(symbol: dict[str, Any], visibility: FunctionVisibilityContext) -> bool:
@@ -454,7 +464,11 @@ def _matches_using_directive(symbol: dict[str, Any], visibility: FunctionVisibil
     container_folded = container.casefold()
     for item in visibility.using_directives:
         namespace = str(item.get("namespace") or item.get("target") or item.get("targetName") or "")
-        if namespace and container_folded == namespace.casefold():
+        namespace_folded = namespace.casefold()
+        if namespace and (
+            container_folded == namespace_folded
+            or container_folded.endswith("::" + namespace_folded)
+        ):
             return True
     return False
 
@@ -499,6 +513,9 @@ def _local_type_for_object(object_name: str, visibility: FunctionVisibilityConte
 
 def _normalize_type_name(type_text: str) -> str | None:
     text = type_text.replace("const ", "").replace("*", "").replace("&", "").strip()
+    for prefix in ("class ", "struct "):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
     return text or None
 
 
@@ -532,6 +549,15 @@ def _member_tail(text: str) -> str:
 
 def _data_name(item: dict[str, Any]) -> str:
     return str(item.get("shortName") or item.get("name") or "").rsplit("::", 1)[-1]
+
+
+def _qualified_data_matches(text: str, item: dict[str, Any]) -> bool:
+    qualified_name = str(item.get("qualifiedName") or "")
+    if qualified_name and qualified_name.casefold() == text.casefold():
+        return True
+    container = str(item.get("container") or "")
+    name = _data_name(item)
+    return bool(container and name and f"{container}::{name}".casefold() == text.casefold())
 
 
 def _merge_data_basis(candidates: tuple[dict[str, Any], ...], fallback: tuple[str, ...]) -> tuple[str, ...]:

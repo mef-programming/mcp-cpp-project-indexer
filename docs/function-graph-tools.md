@@ -1,0 +1,33 @@
+# Function Graph MCP Tools
+
+The function graph tools expose project-local source structure from indexed C++ function bodies. They are for navigation and structural review, not behavior proof.
+
+## `get_function_body_graph`
+
+Use this first when you need the calls, data accesses, and control-flow markers inside one indexed callable symbol.
+
+Important arguments:
+
+- `symbolId`: indexed callable symbol id.
+- `mode`: `compute_if_missing`, `cache_only`, or `refresh`.
+- `includeDataAccess`: include read/write data candidate edges.
+- `includeControlFlow`: include syntax markers such as `if`, `return`, and loops.
+- `includeExternal`: include unresolved non-project calls as `external`.
+
+The response includes parser/resolver versions, cache status, fingerprints, edges, `claimStrength=source_structure_allowed`, and `behaviorClaimsAllowed=false`.
+
+## Xrefs And Neighborhood
+
+`get_call_xrefs_from`, `get_call_xrefs_to`, and `get_symbol_neighborhood` read persisted graph edges only. They do not compute missing graphs. Compute or refresh `get_function_body_graph` for relevant callers before relying on xref completeness.
+
+## Cache Modes
+
+- `compute_if_missing`: reuse a compatible cached graph or compute it.
+- `cache_only`: return only compatible cached graphs; otherwise return `cache_miss`.
+- `refresh`: recompute and replace persisted edges for that symbol.
+
+Graph cache compatibility includes source fingerprints, parser/resolver versions, visibility fingerprints, and graph options such as data/control/external edge flags and `maxEdges`.
+
+## Claim Contract
+
+Function graph output may say a source structure was observed or a project-local candidate was found. It must not claim runtime behavior, side effects, alias certainty, dynamic dispatch certainty, or external API semantics.

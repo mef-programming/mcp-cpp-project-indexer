@@ -73,6 +73,12 @@ def initialize_function_graph_storage(connection: sqlite3.Connection) -> None:
             evidence_json TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS function_graph_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_function_graph_cache_lookup
             ON function_graph_cache(
                 function_symbol_id,
@@ -161,6 +167,15 @@ class FunctionGraphStorage:
     def store_graph_result(self, key: FunctionGraphCacheKey, result: FunctionGraphResult) -> None:
         graph_fingerprint = result.fingerprints.graph
         with self.connect() as connection:
+            self._store_metadata(
+                connection,
+                {
+                    "schema": FUNCTION_GRAPH_STORAGE_SCHEMA,
+                    "lastParserId": key.parser_id,
+                    "lastParserVersion": key.parser_version,
+                    "lastResolverVersion": key.resolver_version,
+                },
+            )
             connection.execute(
                 """
                 INSERT OR REPLACE INTO function_graph_cache(
@@ -288,6 +303,88 @@ class FunctionGraphStorage:
 
         return tuple(_edge_row_to_dict(row) for row in rows)
 
+    def cache_stats(self) -> dict[str, int]:
+        with self.connect() as connection:
+            return {
+                "astExtracts": _count_rows(connection, "function_ast_extract_cache"),
+                "graphResults": _count_rows(connection, "function_graph_cache"),
+                "graphEdges": _count_rows(connection, "function_graph_edges"),
+            }
+
+    def prune_cache_versions(
+        self,
+        *,
+        keep_parser_versions: set[str] | None = None,
+        keep_resolver_versions: set[str] | None = None,
+    ) -> dict[str, int]:
+        keep_parser_versions = set(keep_parser_versions or ())
+        keep_resolver_versions = set(keep_resolver_versions or ())
+
+        with self.connect() as connection:
+            before = self._cache_counts(connection)
+            stale_graphs = connection.execute(
+                """
+                SELECT graph_fingerprint
+                FROM function_graph_cache
+                WHERE (? = 1 OR parser_version NOT IN (%s))
+                   OR (? = 1 OR resolver_version NOT IN (%s))
+                """
+                % (
+                    _placeholders(keep_parser_versions),
+                    _placeholders(keep_resolver_versions),
+                ),
+                (
+                    1 if not keep_parser_versions else 0,
+                    *sorted(keep_parser_versions),
+                    1 if not keep_resolver_versions else 0,
+                    *sorted(keep_resolver_versions),
+                ),
+            ).fetchall()
+            stale_fingerprints = [str(row["graph_fingerprint"]) for row in stale_graphs]
+
+            if stale_fingerprints:
+                connection.execute(
+                    "DELETE FROM function_graph_edges WHERE graph_fingerprint IN (%s)"
+                    % _placeholders(stale_fingerprints),
+                    stale_fingerprints,
+                )
+                connection.execute(
+                    "DELETE FROM function_graph_cache WHERE graph_fingerprint IN (%s)"
+                    % _placeholders(stale_fingerprints),
+                    stale_fingerprints,
+                )
+
+            if keep_parser_versions:
+                connection.execute(
+                    "DELETE FROM function_ast_extract_cache WHERE parser_version NOT IN (%s)"
+                    % _placeholders(keep_parser_versions),
+                    sorted(keep_parser_versions),
+                )
+
+            after = self._cache_counts(connection)
+
+        return {
+            "astExtractsPruned": before["astExtracts"] - after["astExtracts"],
+            "graphResultsPruned": before["graphResults"] - after["graphResults"],
+            "graphEdgesPruned": before["graphEdges"] - after["graphEdges"],
+        }
+
+    def _cache_counts(self, connection: sqlite3.Connection) -> dict[str, int]:
+        return {
+            "astExtracts": _count_rows(connection, "function_ast_extract_cache"),
+            "graphResults": _count_rows(connection, "function_graph_cache"),
+            "graphEdges": _count_rows(connection, "function_graph_edges"),
+        }
+
+    def _store_metadata(self, connection: sqlite3.Connection, values: dict[str, Any]) -> None:
+        connection.executemany(
+            """
+            INSERT OR REPLACE INTO function_graph_metadata(key, value, updated_at)
+            VALUES(?, ?, CURRENT_TIMESTAMP)
+            """,
+            [(key, _json_dump(value)) for key, value in values.items()],
+        )
+
 
 def _ast_extract_from_payload(payload: dict[str, Any]) -> FunctionAstExtract:
     return FunctionAstExtract(
@@ -365,3 +462,15 @@ def _edge_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 def _json_dump(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _count_rows(connection: sqlite3.Connection, table: str) -> int:
+    if table not in {"function_ast_extract_cache", "function_graph_cache", "function_graph_edges"}:
+        raise ValueError("Invalid function graph storage table.")
+    return int(connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
+
+
+def _placeholders(values: set[str] | list[str]) -> str:
+    if not values:
+        return "NULL"
+    return ",".join("?" for _ in values)

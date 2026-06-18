@@ -12,7 +12,11 @@ if str(INDEXER_SRC) not in sys.path:
     sys.path.insert(0, str(INDEXER_SRC))
 
 from cpp_function_graph_extract import LightweightFunctionBodyParser, extract_raw_function_ast
-from cpp_function_graph_tree_sitter import TreeSitterCppFunctionBodyParser, TreeSitterUnavailableError
+from cpp_function_graph_tree_sitter import (
+    TreeSitterCppFunctionBodyParser,
+    TreeSitterUnavailableError,
+    tree_sitter_cpp_dependency_status,
+)
 
 
 class FunctionGraphRawExtractionTests(unittest.TestCase):
@@ -79,6 +83,10 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         self.assertEqual(extract.calls[0]["line"], 12)
 
     def test_tree_sitter_adapter_is_isolated_until_dependency_exists(self) -> None:
+        status = tree_sitter_cpp_dependency_status()
+        self.assertIn(status["available"], {True, False})
+        self.assertIn("reason", status)
+
         with self.assertRaises(TreeSitterUnavailableError):
             TreeSitterCppFunctionBodyParser()
 
