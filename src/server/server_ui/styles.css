@@ -250,7 +250,9 @@ h2 {
 .grid > .panel {
   display: flex;
   min-height: 0;
+  max-height: 520px;
   flex-direction: column;
+  overflow: hidden;
 }
 
 #serverLogPanel {
@@ -287,9 +289,10 @@ h2 {
 }
 
 .grid .log {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: none;
+  max-height: 520px;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 900px) {

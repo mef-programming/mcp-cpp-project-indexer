@@ -1,5 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const MANAGEMENT_TOKEN_STORAGE_KEY = "managedMcp.managementToken";
+const SERVER_LOG_PANEL_MIN_HEIGHT = 260;
+const SERVER_LOG_PANEL_MAX_HEIGHT = 520;
 
 const state = {
   statusTimer: null,
@@ -181,6 +183,12 @@ function renderDetails(status) {
   syncServerLogHeight();
 }
 
+function clampServerLogPanelHeight(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return SERVER_LOG_PANEL_MAX_HEIGHT;
+  return Math.max(SERVER_LOG_PANEL_MIN_HEIGHT, Math.min(SERVER_LOG_PANEL_MAX_HEIGHT, Math.ceil(numeric)));
+}
+
 function syncServerLogHeight() {
   const detailsPanel = $("#detailsPanel");
   const serverLogPanel = $("#serverLogPanel");
@@ -189,7 +197,12 @@ function syncServerLogHeight() {
     serverLogPanel.style.height = "";
     return;
   }
-  serverLogPanel.style.height = `${detailsPanel.offsetHeight}px`;
+  if (window.parent !== window) {
+    serverLogPanel.style.height = `${SERVER_LOG_PANEL_MAX_HEIGHT}px`;
+    window.setTimeout(reportHostHeight, 0);
+    return;
+  }
+  serverLogPanel.style.height = `${clampServerLogPanelHeight(detailsPanel.offsetHeight)}px`;
 }
 
 function renderStatus(status) {
@@ -293,17 +306,20 @@ async function runCommand(command) {
   }
 }
 
+function measureHostContentHeight() {
+  const HOST_HEIGHT_EXTRA_PADDING = 16;
+  const shell = document.querySelector(".shell") || document.querySelector("main") || document.body;
+  const shellRect = shell.getBoundingClientRect();
+  return Math.ceil(Math.max(
+    shell?.offsetHeight || 0,
+    shellRect.height || 0,
+    shellRect.bottom + window.scrollY,
+  ) + HOST_HEIGHT_EXTRA_PADDING);
+}
+
 function reportHostHeight() {
   if (window.parent === window) return;
-  const body = document.body;
-  const root = document.documentElement;
-  const height = Math.max(
-    body?.scrollHeight || 0,
-    body?.offsetHeight || 0,
-    root?.scrollHeight || 0,
-    root?.offsetHeight || 0,
-    root?.clientHeight || 0,
-  );
+  const height = measureHostContentHeight();
   if (!height) return;
   window.parent.postMessage(
     {
@@ -322,6 +338,8 @@ function installHostResizeReporter() {
     const observer = new ResizeObserver(reportHostHeight);
     observer.observe(document.body);
     observer.observe(document.documentElement);
+    const shell = document.querySelector(".shell") || document.querySelector("main");
+    if (shell) observer.observe(shell);
   }
   window.addEventListener("load", reportHostHeight);
   window.addEventListener("resize", reportHostHeight);
