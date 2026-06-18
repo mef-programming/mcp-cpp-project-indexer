@@ -289,18 +289,64 @@ class FunctionGraphStorageTests(unittest.TestCase):
                 )
 
             before = storage.cache_stats()
+            dry_run_pruned = storage.prune_cache_versions(
+                keep_parser_versions={"parser-current"},
+                keep_resolver_versions={"resolver-current"},
+                dry_run=True,
+            )
+            after_dry_run = storage.cache_stats()
             pruned = storage.prune_cache_versions(
                 keep_parser_versions={"parser-current"},
                 keep_resolver_versions={"resolver-current"},
+                dry_run=False,
             )
             after = storage.cache_stats()
 
         self.assertEqual(before["graphResults"], 2)
         self.assertEqual(before["graphEdges"], 2)
+        self.assertEqual(before["astExtracts"], 0)
+        self.assertIsNotNone(before["oldestUpdatedAt"])
+        self.assertIsNotNone(before["newestUpdatedAt"])
+        self.assertEqual(
+            {item["version"] for item in before["parserVersions"]},
+            {"parser-old", "parser-current"},
+        )
+        self.assertEqual(
+            {item["version"] for item in before["resolverVersions"]},
+            {"resolver-old", "resolver-current"},
+        )
+        self.assertEqual(
+            {item["graphFingerprint"]: item["edgeCount"] for item in before["edgeCountsByGraph"]},
+            {"sha256:graph-a": 1, "sha256:graph-b": 1},
+        )
+        self.assertEqual(dry_run_pruned["graphResultsPruned"], 1)
+        self.assertEqual(dry_run_pruned["graphEdgesPruned"], 1)
+        self.assertEqual(after_dry_run["graphResults"], 2)
+        self.assertEqual(after_dry_run["graphEdges"], 2)
         self.assertEqual(pruned["graphResultsPruned"], 1)
         self.assertEqual(pruned["graphEdgesPruned"], 1)
         self.assertEqual(after["graphResults"], 1)
         self.assertEqual(after["graphEdges"], 1)
+
+    def test_cache_stats_include_ast_only_parser_versions(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            storage = FunctionGraphStorage.from_index_root(Path(temp_dir) / ".mcp-cpp-project-indexer")
+            extract = FunctionAstExtract(
+                symbol_id="fn-paint",
+                source_fingerprint="sha256:source",
+                parser_id="fixture",
+                parser_version="parser-ast-only",
+                extractor_version="extractor-v1",
+            )
+            storage.store_ast_extract(ast_cache_key_for_extract(extract), extract)
+
+            stats = storage.cache_stats()
+
+        self.assertEqual(stats["astExtracts"], 1)
+        self.assertEqual(stats["graphResults"], 0)
+        self.assertEqual(stats["parserVersions"][0]["version"], "parser-ast-only")
+        self.assertEqual(stats["parserVersions"][0]["astExtracts"], 1)
+        self.assertEqual(stats["parserVersions"][0]["graphResults"], 0)
 
 
 if __name__ == "__main__":

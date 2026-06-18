@@ -32,6 +32,35 @@ Graph cache compatibility includes source fingerprints, parser/resolver versions
 
 Normal users should prefer rebuilding the project index when scanner inputs change and `refresh` when one function graph must be recomputed. Internal storage exposes cache stats and parser/resolver-version pruning for maintenance code, but no separate public MCP cache-maintenance tool is required.
 
+Management API operators can use the existing management command endpoint for cache maintenance:
+
+- `function_graph_cache_stats`: returns cache counts, parser/resolver version breakdowns, oldest/newest cache timestamps, and edge counts per stored graph.
+- `function_graph_cache_prune_versions`: prunes stale parser/resolver cache versions through the management plane only.
+
+Recommended workflow:
+
+1. Call `function_graph_cache_stats` and inspect version breakdowns.
+2. Call `function_graph_cache_prune_versions` with `dryRun=true` or omit `dryRun`, plus `keepParserVersions`, `keepResolverVersions`, or `keepCurrent=true`.
+3. If the dry-run counts are expected, call the same command with `dryRun=false`.
+
+Example management command payloads:
+
+```json
+{"command":"function_graph_cache_stats"}
+```
+
+```json
+{"command":"function_graph_cache_prune_versions","keepCurrent":true}
+```
+
+```json
+{"command":"function_graph_cache_prune_versions","keepCurrent":true,"dryRun":false}
+```
+
+Prune requests without explicit keep versions and without `keepCurrent=true` are rejected.
+
+The bundled Management UI exposes the same workflow in the Function Graph Cache panel. It uses `keepCurrent=true` by default and enables the destructive prune button only after a successful dry-run preview.
+
 ## Claim Contract
 
 Function graph output may say a source structure was observed or a project-local candidate was found. It must not claim runtime behavior, side effects, alias certainty, dynamic dispatch certainty, or external API semantics.

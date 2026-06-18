@@ -2,7 +2,7 @@
 
 ## Active
 
-- [Tree-sitter Function Graph Adapter](tree-sitter-function-graph-adapter.md) - active follow-up for the real optional Tree-sitter AST adapter.
+- [Function Graph Resolver Precision + Cache Maintenance UX](function-graph-resolver-precision-cache-maintenance.md) - active follow-up for resolver v0.4 precision and management-only cache maintenance UX.
 
 ## Completed
 
@@ -12,3 +12,4 @@
 - [Function Graph Accuracy and Maintenance](completed/function-graph-accuracy-maintenance.md) - completed next slices for hardening finalization, using-scope precision, adapter spike decision, resolver candidates, and cache maintenance, 2026-06-18.
 - [Function Graph Parser and Ranking](completed/function-graph-parser-ranking.md) - completed slices for PR #6 merge, parser fixtures, real-project smoke expansion, resolver ranking, and cache UX docs, 2026-06-18.
 - [Function Graph Runtime Quality / Parser Adapter vNext](completed/function-graph-runtime-quality-parser-adapter-vnext.md) - completed parser status, cache guardrails, and runtime smoke coverage, 2026-06-18.
+- [Tree-sitter Function Graph Adapter](completed/tree-sitter-function-graph-adapter.md) - completed optional Tree-sitter AST adapter integration, 2026-06-18.

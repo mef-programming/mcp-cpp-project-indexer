@@ -42,3 +42,13 @@ This folder records implemented or prepared work slices for function graph workp
 - [P35 Tree-sitter AST Extractor](P35-tree-sitter-ast-extractor.md) - AST traversal extraction for calls, member access, locals, and control flow.
 - [P36 Tree-sitter Parser Selection Gate](P36-tree-sitter-parser-selection-gate.md) - explicit parser injection only; Lightweight remains default.
 - [P37 Tree-sitter Parity And Accuracy](P37-tree-sitter-parity-and-accuracy.md) - dependency-gated Tree-sitter parity and accuracy coverage.
+- [P38 Resolver Cache Preflight](P38-resolver-cache-preflight.md) - resolver/cache workplan setup and Tree-sitter workplan closure.
+- [P39 Overload Template Ranking](P39-overload-template-ranking.md) - resolver v0.4 template normalization and overload ranking hints.
+- [P40 Auto Type Local Initializer Hints](P40-auto-type-local-initializer-hints.md) - parser initializer metadata and project-local auto type hints.
+- [P41 Nested Inherited Member Context](P41-nested-inherited-member-context.md) - nested/base type visibility context and resolver basis.
+- [P42 Operator Call Structural Edges](P42-operator-call-structural-edges.md) - structural operator call extraction and resolver candidates.
+- [P43 Cache Maintenance Admin UX](P43-cache-maintenance-admin-ux.md) - management-only Function Graph cache stats/prune commands.
+- [P44 Real Project Resolver Cache Smoke](P44-real-project-resolver-cache-smoke.md) - resolver/cache smoke coverage and SmartFTP follow-up note.
+- [P45 Cache Maintenance Stats Breakdown](P45-cache-maintenance-stats-breakdown.md) - richer management cache stats with version and edge breakdowns.
+- [P46 Cache Maintenance Dry-Run Prune](P46-cache-maintenance-dry-run-prune.md) - dry-run-first prune flow with keep-current support.
+- [P47 Management UI Function Graph Cache](P47-management-ui-function-graph-cache.md) - Management UI panel for cache stats, dry-run prune, and commit prune.

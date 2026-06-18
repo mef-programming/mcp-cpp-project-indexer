@@ -35,7 +35,31 @@ class FakeVisibilityIndex:
                 "container": "App",
                 "startLine": 3,
                 "endLine": 20,
-                "signature": "class Painter",
+                "signature": "class Painter : public BasePainter",
+            },
+            "cls-base": {
+                "symbolId": "cls-base",
+                "fileId": "file-1",
+                "relativePath": "paint.cpp",
+                "type": "class",
+                "shortName": "BasePainter",
+                "qualifiedName": "App::BasePainter",
+                "container": "App",
+                "startLine": 1,
+                "endLine": 2,
+                "signature": "class BasePainter",
+            },
+            "cls-worker": {
+                "symbolId": "cls-worker",
+                "fileId": "file-1",
+                "relativePath": "paint.cpp",
+                "type": "class",
+                "shortName": "Worker",
+                "qualifiedName": "App::Painter::Worker",
+                "container": "App::Painter",
+                "startLine": 7,
+                "endLine": 9,
+                "signature": "class Worker",
             },
             "fn-paint": {
                 "symbolId": "fn-paint",
@@ -217,6 +241,8 @@ class FunctionGraphVisibilityTests(unittest.TestCase):
 
         local_names = {item["name"] for item in context.local_declarations}
         self.assertEqual(local_names, {"opacity"})
+        self.assertEqual({item["symbolId"] for item in context.nested_type_symbols}, {"cls-worker"})
+        self.assertEqual({item["symbolId"] for item in context.base_type_symbols}, {"cls-base"})
         self.assertEqual(context.using_declarations[0]["target"], "App::Theme::Draw")
         self.assertEqual(context.using_directives[0]["namespace"], "App::Theme")
         self.assertEqual(context.namespace_aliases[0]["alias"], "Theme")

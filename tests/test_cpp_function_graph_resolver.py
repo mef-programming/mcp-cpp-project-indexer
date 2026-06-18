@@ -339,6 +339,38 @@ class FunctionGraphResolverTests(unittest.TestCase):
         self.assertGreater(edges[0].candidates[0]["score"], edges[0].candidates[1]["score"])
         self.assertIn("arity_match", edges[0].candidates[0]["basis"])
 
+    def test_template_call_name_is_normalized_for_project_candidates(self) -> None:
+        visibility = visibility_with_symbols(
+            {
+                "symbolId": "fn-make",
+                "type": "function",
+                "shortName": "Make",
+                "qualifiedName": "App::Make",
+                "container": "App",
+                "signature": "Widget Make()",
+            }
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {
+                    "callee": "Make<App::Widget>",
+                    "callKind": "unqualified",
+                    "argumentCount": 0,
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].to_symbol_id, "fn-make")
+        self.assertIn("template_name_normalized", edges[0].basis)
+
     def test_unqualified_lookup_prefers_same_namespace_over_fallbacks(self) -> None:
         visibility = FunctionVisibilityContext(
             file_id="file-1",
@@ -502,6 +534,196 @@ class FunctionGraphResolverTests(unittest.TestCase):
         self.assertEqual(edges[0].resolution_status, "probable")
         self.assertEqual(edges[0].to_symbol_id, "fn-widget-draw")
         self.assertIn("local_type_hint", edges[0].basis)
+
+    def test_auto_initializer_return_type_hints_member_candidate(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id=None,
+            current_class_name=None,
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(
+                {
+                    "symbolId": "fn-make-client",
+                    "type": "function",
+                    "shortName": "MakeClient",
+                    "qualifiedName": "App::MakeClient",
+                    "container": "App",
+                    "signature": "App::Client MakeClient()",
+                },
+                {
+                    "symbolId": "fn-client-run",
+                    "type": "method",
+                    "shortName": "Run",
+                    "qualifiedName": "App::Client::Run",
+                    "container": "App::Client",
+                    "signature": "void Run()",
+                },
+            ),
+            same_file_data=(),
+            member_data=(),
+            local_declarations=(
+                {
+                    "name": "client",
+                    "typeText": "auto",
+                    "initializerCallee": "MakeClient",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {
+                    "callee": "client.Run",
+                    "callKind": "member",
+                    "argumentCount": 0,
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].to_symbol_id, "fn-client-run")
+        self.assertIn("auto_initializer_call_hint", edges[0].basis)
+        self.assertIn("return_type_hint", edges[0].basis)
+
+    def test_base_and_nested_member_context_rank_candidates_structurally(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id="cls-painter",
+            current_class_name="App::Painter",
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(
+                {
+                    "symbolId": "fn-base-reset",
+                    "type": "method",
+                    "shortName": "Reset",
+                    "qualifiedName": "App::BasePainter::Reset",
+                    "container": "App::BasePainter",
+                    "signature": "void Reset()",
+                },
+                {
+                    "symbolId": "fn-nested-run",
+                    "type": "method",
+                    "shortName": "Run",
+                    "qualifiedName": "App::Painter::Worker::Run",
+                    "container": "App::Painter::Worker",
+                    "signature": "void Run()",
+                },
+            ),
+            same_file_data=(),
+            member_data=(),
+            nested_type_symbols=(
+                {
+                    "symbolId": "cls-worker",
+                    "type": "class",
+                    "shortName": "Worker",
+                    "qualifiedName": "App::Painter::Worker",
+                    "container": "App::Painter",
+                },
+            ),
+            base_type_symbols=(
+                {
+                    "symbolId": "cls-base",
+                    "type": "class",
+                    "shortName": "BasePainter",
+                    "qualifiedName": "App::BasePainter",
+                    "container": "App",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {"callee": "Reset", "callKind": "unqualified", "argumentCount": 0},
+                {"callee": "Run", "callKind": "unqualified", "argumentCount": 0},
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].to_symbol_id, "fn-base-reset")
+        self.assertIn("base_class_context", edges[0].basis)
+        self.assertEqual(edges[1].to_symbol_id, "fn-nested-run")
+        self.assertIn("nested_type_context", edges[1].basis)
+
+    def test_operator_call_syntax_resolves_project_operator_candidates(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id=None,
+            current_class_name=None,
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(
+                {
+                    "symbolId": "fn-client-call",
+                    "type": "method",
+                    "shortName": "operator()",
+                    "qualifiedName": "App::Client::operator()",
+                    "container": "App::Client",
+                    "signature": "void operator()()",
+                },
+                {
+                    "symbolId": "fn-client-subscript",
+                    "type": "method",
+                    "shortName": "operator[]",
+                    "qualifiedName": "App::Client::operator[]",
+                    "container": "App::Client",
+                    "signature": "Item operator[](int index)",
+                },
+            ),
+            same_file_data=(),
+            member_data=(),
+            local_declarations=(
+                {
+                    "name": "client",
+                    "typeText": "App::Client",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {"callee": "client", "callKind": "unqualified", "argumentCount": 0},
+                {
+                    "callee": "client.operator[]",
+                    "callKind": "member",
+                    "argumentCount": 1,
+                    "operatorKind": "operator[]",
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].to_text, "client.operator()")
+        self.assertEqual(edges[0].to_symbol_id, "fn-client-call")
+        self.assertIn("operator_call_syntax", edges[0].basis)
+        self.assertEqual(edges[1].to_symbol_id, "fn-client-subscript")
+        self.assertIn("operator_call_syntax", edges[1].basis)
 
     def test_data_access_and_control_flow_markers_are_structural_edges(self) -> None:
         visibility = FunctionVisibilityContext(

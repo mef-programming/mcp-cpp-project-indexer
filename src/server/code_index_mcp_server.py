@@ -45,6 +45,9 @@ from cpp_function_graph_service import (
     FunctionGraphSourceService,
     function_graph_result_to_api,
 )
+from cpp_function_graph_storage import FunctionGraphStorage
+from cpp_function_graph_parser import parser_cache_version
+from cpp_function_graph_resolver import RESOLVER_VERSION
 from cpp_project_index import LoadedProjectIndex, normalize_jobs
 from indexer_control import (
     fmt_bytes,
@@ -2663,6 +2666,8 @@ class ManagementCommandRunner:
                     "fast_update",
                     "module_map",
                     "reload_index",
+                    "function_graph_cache_stats",
+                    "function_graph_cache_prune_versions",
                     "start_watcher",
                     "stop_watcher",
                     "stop_command",
@@ -3540,6 +3545,69 @@ class CodeIndexTools:
         return make_json_text_result(
             self.reload_index_cache_from_disk(reason=reason)
         )
+
+    def function_graph_cache_stats(self) -> dict[str, Any]:
+        storage = FunctionGraphStorage.from_index_root(self.index_root)
+        return {
+            "indexRoot": self.index_root.as_posix(),
+            "stats": storage.cache_stats(),
+        }
+
+    def function_graph_cache_prune_versions(
+        self,
+        *,
+        keep_parser_versions: set[str],
+        keep_resolver_versions: set[str],
+        dry_run: bool = True,
+        keep_current: bool = False,
+    ) -> dict[str, Any]:
+        storage = FunctionGraphStorage.from_index_root(self.index_root)
+        if keep_current:
+            current_versions = self._function_graph_current_cache_versions(storage)
+            keep_parser_versions = set(keep_parser_versions) | set(current_versions["parserVersions"])
+            keep_resolver_versions = set(keep_resolver_versions) | set(current_versions["resolverVersions"])
+        else:
+            current_versions = {"parserVersions": (), "resolverVersions": ()}
+
+        if not keep_parser_versions and not keep_resolver_versions:
+            raise McpError(
+                -32602,
+                "function graph cache prune requires keepParserVersions, keepResolverVersions, or keepCurrent=true",
+            )
+        before = storage.cache_stats()
+        pruned = storage.prune_cache_versions(
+            keep_parser_versions=keep_parser_versions,
+            keep_resolver_versions=keep_resolver_versions,
+            dry_run=dry_run,
+        )
+        after = before if dry_run else storage.cache_stats()
+        return {
+            "indexRoot": self.index_root.as_posix(),
+            "dryRun": dry_run,
+            "keepCurrent": keep_current,
+            "keepParserVersions": sorted(keep_parser_versions),
+            "keepResolverVersions": sorted(keep_resolver_versions),
+            "currentVersions": {
+                "parserVersions": list(current_versions["parserVersions"]),
+                "resolverVersions": list(current_versions["resolverVersions"]),
+            },
+            "before": before,
+            "pruned": pruned,
+            "after": after,
+        }
+
+    def _function_graph_current_cache_versions(self, storage: FunctionGraphStorage) -> dict[str, tuple[str, ...]]:
+        service = FunctionGraphSourceService(
+            project_root=self.project_root,
+            index=self.index,
+            index_root=self.index_root,
+        )
+        parser_versions = (parser_cache_version(service.parser),)
+        resolver_versions = tuple(sorted(storage.resolver_versions_with_prefix(RESOLVER_VERSION)))
+        return {
+            "parserVersions": parser_versions,
+            "resolverVersions": resolver_versions,
+        }
 
     def require_change_tracker(self) -> ChangeTracker:
         if self.change_tracker is None:
@@ -5247,6 +5315,25 @@ class McpServer:
             )
             self.management_runner.append_event("Index cache reloaded by management API.")
             return {"reloaded": result, "management": self.management_runner.status()}
+
+        if command == "function_graph_cache_stats":
+            result = self.tools.function_graph_cache_stats()
+            self.management_runner.append_event("Function graph cache stats requested by management API.")
+            return {"functionGraphCache": result, "management": self.management_runner.status()}
+
+        if command == "function_graph_cache_prune_versions":
+            keep_parser_versions = optional_string_set(payload, "keepParserVersions") or set()
+            keep_resolver_versions = optional_string_set(payload, "keepResolverVersions") or set()
+            dry_run = optional_bool(payload, "dryRun", True)
+            keep_current = optional_bool(payload, "keepCurrent", False)
+            result = self.tools.function_graph_cache_prune_versions(
+                keep_parser_versions=keep_parser_versions,
+                keep_resolver_versions=keep_resolver_versions,
+                dry_run=dry_run,
+                keep_current=keep_current,
+            )
+            self.management_runner.append_event("Function graph cache version prune requested by management API.")
+            return {"functionGraphCache": result, "management": self.management_runner.status()}
 
         if command == "start_watcher":
             self.tools.start_index_watcher(

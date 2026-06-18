@@ -61,6 +61,7 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
 
         locals_by_name = {item["name"]: item for item in extract.local_declarations}
         self.assertEqual(locals_by_name["opacity"]["typeText"], "auto")
+        self.assertEqual(locals_by_name["opacity"]["initializerCallee"], "_CalculatePulseOpacity")
         self.assertEqual(locals_by_name["opacity"]["line"], 42)
 
         markers = [(item["marker"], item["line"]) for item in extract.control_flow]
@@ -89,6 +90,7 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
                 "void Paint()",
                 "{",
                 "    auto widget = MakeWidget<App::Widget>();",
+                "    widget[0].Draw();",
                 "    auto fn = [&]() { widget.Draw(); return Helper(widget); };",
                 "    renderer.GetBrush().Reset();",
                 "    this->_State.Reset();",
@@ -108,6 +110,7 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
 
         calls = {item["callee"]: item for item in extract.calls}
         self.assertIn("MakeWidget", calls)
+        self.assertIn("widget.operator[]", calls)
         self.assertIn("widget.Draw", calls)
         self.assertIn("Helper", calls)
         self.assertIn("renderer.GetBrush", calls)
@@ -116,10 +119,12 @@ class FunctionGraphRawExtractionTests(unittest.TestCase):
         self.assertNotIn("ASSERT_TRUE", calls)
         self.assertNotIn("define", calls)
         self.assertEqual(calls["MakeWidget"]["argumentCount"], 0)
+        self.assertEqual(calls["widget.operator[]"]["operatorKind"], "operator[]")
         self.assertEqual(calls["Reset"]["callKind"], "member")
 
         locals_by_name = {item["name"]: item for item in extract.local_declarations}
         self.assertEqual(locals_by_name["widget"]["typeText"], "auto")
+        self.assertEqual(locals_by_name["widget"]["initializerCallee"], "MakeWidget")
 
     def test_lightweight_parser_reports_capability_status(self) -> None:
         parser = LightweightFunctionBodyParser()
