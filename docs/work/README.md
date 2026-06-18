@@ -1,8 +1,8 @@
 # Work Logs
 
-This folder records implemented or prepared work slices for active workplans.
+This folder records implemented or prepared work slices for function graph workplans.
 
-## Active Logs
+## Completed Logs
 
 - [P00 Function Graph Preflight](P00-function-graph-preflight.md) - preflight for `docs/workplans/on-demand-cpp-function-body-relation-graph.md`.
 - [P01 Function Source Extraction](P01-function-source-extraction.md) - Step 1 runtime slice for indexed function source extraction.
@@ -17,7 +17,13 @@ This folder records implemented or prepared work slices for active workplans.
 - [P10 Optional Vector Sidecar Deferred](P10-optional-vector-sidecar-deferred.md) - Step 10 explicit future-work deferral, no runtime implementation.
 - [P11 Data and Control-Flow Edges](P11-data-control-flow-edges.md) - graph edge expansion for data access and control-flow markers.
 - [P12 Real Index MCP Smoke](P12-real-index-mcp-smoke.md) - persisted real-index CodeIndexTools smoke for graph/cache/xref edges.
-
-## Completed Logs
-
-- Function graph workplan logs P00-P10 are complete for the initial implementation.
+- [P13 Function Graph Workplan Hygiene](P13-function-graph-workplan-hygiene.md) - follow-up workplan closure and worklog README cleanup.
+- [P14 Tree-sitter Adapter Gate](P14-tree-sitter-adapter-gate.md) - optional dependency status gate while preserving lightweight parser fallback.
+- [P15 Indexed Using Visibility](P15-indexed-using-visibility.md) - file-index using declarations/directives and namespace alias visibility input.
+- [P16 Cache Fingerprint Hardening](P16-cache-fingerprint-hardening.md) - structured graph option cache fingerprints.
+- [P17 Function Graph Operator Docs](P17-function-graph-operator-docs.md) - compact MCP tool usage documentation.
+- [P18 Hardening Patch Finalization](P18-hardening-patch-finalization.md) - dedicated branch and review-ready Function Graph scope.
+- [P19 Using Scope Precision](P19-using-scope-precision.md) - scope-bounded using/alias candidates and relative namespace expansion.
+- [P20 Tree-sitter Adapter Spike Decision](P20-tree-sitter-adapter-spike-decision.md) - optional adapter remains gated without hard dependency.
+- [P21 Resolver Candidate Quality](P21-resolver-candidate-quality.md) - improved member and data candidate quality without behavior claims.
+- [P22 Cache Storage Maintenance](P22-cache-storage-maintenance.md) - graph cache stats and version pruning.

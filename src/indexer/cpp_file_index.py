@@ -372,6 +372,9 @@ def build_file_index(
         "exports": exports,
         "symbols": symbols,
         "data": data_items,
+        "usingDeclarations": structural_scan.using_declarations,
+        "usingDirectives": structural_scan.using_directives,
+        "namespaceAliases": structural_scan.namespace_aliases,
         "diagnostics": diagnostics_to_json(diagnostics),
     }
 
@@ -425,5 +428,8 @@ def summarize_file_index(file_index: dict[str, Any]) -> dict[str, Any]:
         "scopeIntervals": len(file_index.get("scopeIntervals", [])),
         "structuralEvents": len(file_index.get("structuralEvents", [])),
         "functionBodyRanges": len(file_index.get("functionBodyRanges", [])),
+        "usingDeclarations": len(file_index.get("usingDeclarations", [])),
+        "usingDirectives": len(file_index.get("usingDirectives", [])),
+        "namespaceAliases": len(file_index.get("namespaceAliases", [])),
         "diagnostics": len(file_index.get("diagnostics", [])),
     }

@@ -4,6 +4,7 @@ import sys
 import unittest
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(INDEXER_SRC) not in sys.path:
 
 from cpp_function_graph_model import FunctionAstExtract, FunctionSourceSlice
 from cpp_function_graph_visibility import build_function_visibility_context
+from cpp_file_index import build_file_index
 
 
 class FakeVisibilityIndex:
@@ -130,6 +132,38 @@ class FakeVisibilityIndex:
 
 
 class FunctionGraphVisibilityTests(unittest.TestCase):
+    def test_file_index_records_relative_using_namespace_with_scope_range(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            source_path = project_root / "sample.cpp"
+            source_path.write_text(
+                "\n".join(
+                    [
+                        "namespace App {",
+                        "namespace Theme { void Draw(); }",
+                        "using namespace Theme;",
+                        "void Paint()",
+                        "{",
+                        "}",
+                        "}",
+                        "void Outside()",
+                        "{",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            file_index = build_file_index(path=source_path, project_root=project_root)
+
+        directives = file_index["usingDirectives"]
+        self.assertEqual(len(directives), 1)
+        self.assertEqual(directives[0]["namespace"], "App::Theme")
+        self.assertEqual(directives[0]["scope"], "App")
+        self.assertEqual(directives[0]["activeFromLine"], 4)
+        self.assertEqual(directives[0]["activeToLine"], 7)
+
     def test_visibility_context_includes_same_file_class_module_and_member_data(self) -> None:
         index = FakeVisibilityIndex()
         source = FunctionSourceSlice(
@@ -186,6 +220,69 @@ class FunctionGraphVisibilityTests(unittest.TestCase):
         self.assertEqual(context.using_declarations[0]["target"], "App::Theme::Draw")
         self.assertEqual(context.using_directives[0]["namespace"], "App::Theme")
         self.assertEqual(context.namespace_aliases[0]["alias"], "Theme")
+
+    def test_visibility_context_loads_using_scope_items_from_file_index(self) -> None:
+        index = FakeVisibilityIndex()
+        index.using_declarations = []
+        index.using_directives = []
+        index.namespace_aliases = []
+
+        def load_file_index(file_id: str) -> dict:
+            self.assertEqual(file_id, "file-1")
+            return {
+                "usingDeclarations": [
+                    {
+                        "name": "Draw",
+                        "target": "App::Theme::Draw",
+                        "startLine": 2,
+                        "endLine": 2,
+                        "activeFromLine": 3,
+                        "activeToLine": 50,
+                    },
+                ],
+                "usingDirectives": [
+                    {
+                        "namespace": "App::Theme",
+                        "startLine": 3,
+                        "endLine": 3,
+                        "activeFromLine": 4,
+                        "activeToLine": 50,
+                    },
+                ],
+                "namespaceAliases": [
+                    {
+                        "alias": "Theme",
+                        "target": "App::Theme",
+                        "startLine": 4,
+                        "endLine": 4,
+                        "activeFromLine": 5,
+                        "activeToLine": 50,
+                    },
+                ],
+            }
+
+        index.load_file_index = load_file_index
+        source = FunctionSourceSlice(
+            symbol_id="fn-paint",
+            function_name="Paint",
+            qualified_name="App::Painter::Paint",
+            symbol_type="method",
+            file_id="file-1",
+            relative_path="paint.cpp",
+            start_line=10,
+            end_line=15,
+            base_line=10,
+            base_byte=100,
+            text="void Painter::Paint() {}",
+            function_body_fingerprint="sha256:source",
+        )
+
+        context = build_function_visibility_context(index=index, source=source)
+
+        self.assertEqual(context.using_declarations[0]["fileId"], "file-1")
+        self.assertEqual(context.using_declarations[0]["target"], "App::Theme::Draw")
+        self.assertEqual(context.using_directives[0]["namespace"], "App::Theme")
+        self.assertEqual(context.namespace_aliases[0]["target"], "App::Theme")
 
 
 if __name__ == "__main__":

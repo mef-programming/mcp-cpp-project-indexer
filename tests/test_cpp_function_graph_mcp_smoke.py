@@ -29,6 +29,8 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                 "\n".join(
                     [
                         "namespace App {",
+                        "namespace Theme { void Draw(); }",
+                        "using namespace App::Theme;",
                         "void Helper();",
                         "class Painter {",
                         "    int _OverlayPosition;",
@@ -36,11 +38,17 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                         "};",
                         "void Painter::Paint()",
                         "{",
+                        "    Draw();",
                         "    Helper();",
                         "    if (_OverlayPosition > 0) {",
                         "        _OverlayPosition = 1;",
                         "    }",
                         "    SendMessageW();",
+                        "}",
+                        "namespace Theme {",
+                        "void Draw()",
+                        "{",
+                        "}",
                         "}",
                         "void Helper()",
                         "{",
@@ -122,6 +130,7 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
         self.assertFalse(graph["fromCache"])
         self.assertFalse(graph["behaviorClaimsAllowed"])
         self.assertIn(edge_statuses["Helper"], {"exact", "probable", "ambiguous"})
+        self.assertIn(edge_statuses["Draw"], {"exact", "probable", "ambiguous"})
         self.assertEqual(edge_statuses["SendMessageW"], "external")
         self.assertIn("reads_data_candidate", edge_kinds)
         self.assertIn("writes_data_candidate", edge_kinds)

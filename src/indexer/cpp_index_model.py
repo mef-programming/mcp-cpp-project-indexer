@@ -7,7 +7,7 @@ from typing import Any
 SCHEMA_NAME = "cpp.file_index.v1"
 INDEXER_NAME = "vs-project-indexer"
 INDEXER_VERSION = "0.1"
-SCANNER_VERSION = "cpp-structural-scan.v1"
+SCANNER_VERSION = "cpp-structural-scan.v2"
 
 
 MODULE_UNIT_KINDS = {

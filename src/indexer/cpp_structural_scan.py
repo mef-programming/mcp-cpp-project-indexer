@@ -33,6 +33,9 @@ class StructuralScanResult:
     scope_map: list[list[ScopeFrame]]
     scope_intervals: list[dict[str, Any]]
     function_body_ranges: list[dict[str, Any]]
+    using_declarations: list[dict[str, Any]]
+    using_directives: list[dict[str, Any]]
+    namespace_aliases: list[dict[str, Any]]
     diagnostics: list[Diagnostic]
     token_count: int
 
@@ -840,6 +843,147 @@ def is_inside_non_declaration_body(brace_stack: list[BraceRecord]) -> bool:
     )
 
 
+def _scope_qualified_name(scope_stack: list[ScopeFrame]) -> str:
+    for frame in reversed(scope_stack):
+        if frame.kind in {"namespace", "class", "struct"} and (frame.qualified_name or frame.name):
+            return frame.qualified_name or frame.name
+    return ""
+
+
+def _active_to_line(scope_stack: list[ScopeFrame], total_lines: int) -> int:
+    return total_lines
+
+
+EXTERNAL_NAMESPACE_ROOTS = {"std", "boost", "ATL", "wil", "Microsoft", "Windows"}
+
+
+def _normalize_qualified_text(tokens: list[Token]) -> str:
+    text = tokens_to_text(tokens)
+    return (
+        text
+        .replace(" :: ", "::")
+        .replace(":: ", "::")
+        .replace(" ::", "::")
+        .strip()
+    )
+
+
+def _scope_relative_name(name: str, scope_stack: list[ScopeFrame]) -> str:
+    if not name:
+        return ""
+    if name.startswith("::"):
+        return name.lstrip(":")
+    if not scope_stack:
+        return name
+
+    root = name.split("::", 1)[0]
+    if root in EXTERNAL_NAMESPACE_ROOTS:
+        return name
+
+    scope = _scope_qualified_name(scope_stack)
+    if not scope:
+        return name
+    if name == scope or name.startswith(scope + "::"):
+        return name
+    return f"{scope}::{name}"
+
+
+def classify_using_statement(
+    segment: list[Token],
+    *,
+    scope_stack: list[ScopeFrame],
+    total_lines: int,
+) -> tuple[str, dict[str, Any]] | None:
+    values = token_values(segment)
+
+    if not values:
+        return None
+
+    if values[0] == "namespace" and len(values) >= 4 and values[2] == "=":
+        alias = values[1]
+        target = _scope_relative_name(_normalize_qualified_text(segment[3:]), scope_stack)
+        if alias and target:
+            return "namespace_alias", {
+                "alias": alias,
+                "target": target,
+                "qualifiedName": build_qualified_name(scope_stack, alias),
+                "scope": _scope_qualified_name(scope_stack),
+                "startLine": segment[0].line,
+                "endLine": segment[-1].line,
+                "activeFromLine": segment[-1].line + 1,
+                "activeToLine": _active_to_line(scope_stack, total_lines),
+            }
+
+    if values[0] != "using":
+        return None
+
+    if len(values) >= 3 and values[1] == "namespace":
+        namespace = _scope_relative_name(_normalize_qualified_text(segment[2:]), scope_stack)
+        if namespace:
+            return "using_directive", {
+                "namespace": namespace,
+                "scope": _scope_qualified_name(scope_stack),
+                "startLine": segment[0].line,
+                "endLine": segment[-1].line,
+                "activeFromLine": segment[-1].line + 1,
+                "activeToLine": _active_to_line(scope_stack, total_lines),
+            }
+
+    target = _scope_relative_name(_normalize_qualified_text(segment[1:]), scope_stack)
+    if target and "=" not in values:
+        return "using_declaration", {
+            "name": target.rsplit("::", 1)[-1],
+            "target": target,
+            "scope": _scope_qualified_name(scope_stack),
+            "startLine": segment[0].line,
+            "endLine": segment[-1].line,
+            "activeFromLine": segment[-1].line + 1,
+            "activeToLine": _active_to_line(scope_stack, total_lines),
+        }
+
+    return None
+
+
+def apply_using_scope_ranges(
+    items: list[dict[str, Any]],
+    *,
+    scope_intervals: list[dict[str, Any]],
+    total_lines: int,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in items:
+        scoped = dict(item)
+        scope = str(scoped.get("scope") or "")
+        if not scope:
+            scoped["activeToLine"] = total_lines
+            result.append(scoped)
+            continue
+
+        start_line = int(scoped.get("startLine") or scoped.get("activeFromLine") or 1)
+        candidates: list[dict[str, Any]] = []
+        for interval in scope_intervals:
+            if str(interval.get("qualifiedName") or "") != scope:
+                continue
+            range_item = interval.get("range") or {}
+            interval_start = int(range_item.get("startLine") or 0)
+            interval_end = int(range_item.get("endLine") or 0)
+            if interval_start <= start_line <= interval_end:
+                candidates.append(interval)
+
+        if candidates:
+            candidates.sort(
+                key=lambda interval: (
+                    int((interval.get("range") or {}).get("endLine") or total_lines)
+                    - int((interval.get("range") or {}).get("startLine") or 1)
+                )
+            )
+            scoped["activeToLine"] = int((candidates[0].get("range") or {}).get("endLine") or total_lines)
+        else:
+            scoped["activeToLine"] = total_lines
+        result.append(scoped)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main structure scan
 # ---------------------------------------------------------------------------
@@ -852,6 +996,9 @@ def scan_structure(
     tokens = tokenize_lines(lines)
     events: list[StructuralEvent] = []
     diagnostics: list[Diagnostic] = []
+    using_declarations: list[dict[str, Any]] = []
+    using_directives: list[dict[str, Any]] = []
+    namespace_aliases: list[dict[str, Any]] = []
 
     scope_stack: list[ScopeFrame] = []
     brace_stack: list[BraceRecord] = []
@@ -1141,6 +1288,22 @@ def scan_structure(
             raw_segment = tokens[statement_start:index]
             template_prefixes, segment = parse_template_prefixes(raw_segment, lines)
 
+            using_statement = classify_using_statement(
+                segment,
+                scope_stack=scope_stack,
+                total_lines=len(lines),
+            )
+            if using_statement is not None:
+                kind, item = using_statement
+                if kind == "using_declaration":
+                    using_declarations.append(item)
+                elif kind == "using_directive":
+                    using_directives.append(item)
+                elif kind == "namespace_alias":
+                    namespace_aliases.append(item)
+                statement_start = index + 1
+                continue
+
             if should_skip_declaration_statement(segment):
                 statement_start = index + 1
                 continue
@@ -1266,12 +1429,30 @@ def scan_structure(
     scope_map = build_scope_map_from_events(events=events, total_lines=len(lines))
     scope_intervals = build_scope_intervals(events)
     function_body_ranges = build_function_body_ranges(events)
+    using_declarations = apply_using_scope_ranges(
+        using_declarations,
+        scope_intervals=scope_intervals,
+        total_lines=len(lines),
+    )
+    using_directives = apply_using_scope_ranges(
+        using_directives,
+        scope_intervals=scope_intervals,
+        total_lines=len(lines),
+    )
+    namespace_aliases = apply_using_scope_ranges(
+        namespace_aliases,
+        scope_intervals=scope_intervals,
+        total_lines=len(lines),
+    )
 
     return StructuralScanResult(
         events=events,
         scope_map=scope_map,
         scope_intervals=scope_intervals,
         function_body_ranges=function_body_ranges,
+        using_declarations=using_declarations,
+        using_directives=using_directives,
+        namespace_aliases=namespace_aliases,
         diagnostics=diagnostics,
         token_count=len(tokens),
     )

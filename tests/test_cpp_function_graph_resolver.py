@@ -390,6 +390,57 @@ class FunctionGraphResolverTests(unittest.TestCase):
         self.assertEqual(edges[0].to_symbol_id, "fn-renderer-draw")
         self.assertIn("local_type_hint", edges[0].basis)
 
+    def test_member_call_local_type_hint_matches_container_tail(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id=None,
+            current_class_name=None,
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(
+                {
+                    "symbolId": "fn-widget-draw",
+                    "type": "method",
+                    "shortName": "Draw",
+                    "qualifiedName": "App::Widget::Draw",
+                    "container": "App::Widget",
+                    "signature": "void Draw()",
+                },
+            ),
+            same_file_data=(),
+            member_data=(),
+            local_declarations=(
+                {
+                    "name": "widget",
+                    "typeText": "Widget *",
+                },
+            ),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            calls=(
+                {
+                    "callee": "widget->Draw",
+                    "callKind": "member",
+                    "argumentCount": 0,
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].edge_kind, "calls_candidate")
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].to_symbol_id, "fn-widget-draw")
+        self.assertIn("local_type_hint", edges[0].basis)
+
     def test_data_access_and_control_flow_markers_are_structural_edges(self) -> None:
         visibility = FunctionVisibilityContext(
             file_id="file-1",
@@ -471,6 +522,49 @@ class FunctionGraphResolverTests(unittest.TestCase):
         )
 
         self.assertEqual(edges, ())
+
+    def test_qualified_data_access_records_qualified_basis(self) -> None:
+        visibility = FunctionVisibilityContext(
+            file_id="file-1",
+            file_path="paint.cpp",
+            function_symbol_id="fn-paint",
+            current_namespace=("App",),
+            current_class_symbol_id=None,
+            current_class_name=None,
+            imported_modules=(),
+            visible_exported_symbols=(),
+            same_file_symbols=(),
+            same_file_data=(
+                {
+                    "dataId": "data-count",
+                    "name": "g_count",
+                    "qualifiedName": "App::g_count",
+                    "container": "App",
+                    "typeText": "int",
+                },
+            ),
+            member_data=(),
+        )
+        ast = FunctionAstExtract(
+            symbol_id="fn-paint",
+            source_fingerprint="sha256:source",
+            parser_id="fixture",
+            parser_version="v1",
+            extractor_version="v1",
+            member_accesses=(
+                {
+                    "text": "App::g_count",
+                    "accessKind": "read_candidate",
+                },
+            ),
+        )
+
+        edges = resolve_function_graph_edges(ast_extract=ast, visibility=visibility)
+
+        self.assertEqual(edges[0].edge_kind, "reads_data_candidate")
+        self.assertEqual(edges[0].resolution_status, "probable")
+        self.assertEqual(edges[0].candidates[0]["dataId"], "data-count")
+        self.assertIn("qualified_data_name", edges[0].basis)
 
 
 if __name__ == "__main__":

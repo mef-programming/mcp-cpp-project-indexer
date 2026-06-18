@@ -235,6 +235,73 @@ class FunctionGraphStorageTests(unittest.TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0]["toText"], "NewHelper")
 
+    def test_cache_stats_and_prune_versions(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            storage = FunctionGraphStorage.from_index_root(Path(temp_dir) / ".mcp-cpp-project-indexer")
+
+            def make_result(graph_fingerprint: str, parser_version: str, resolver_version: str) -> FunctionGraphResult:
+                return FunctionGraphResult(
+                    schema=FUNCTION_GRAPH_SCHEMA,
+                    status="computed",
+                    from_cache=False,
+                    symbol_id=f"fn-{graph_fingerprint[-1]}",
+                    function_name="Paint",
+                    qualified_name="App::Painter::Paint",
+                    file="paint.cpp",
+                    start_line=10,
+                    end_line=15,
+                    parser_id="fixture",
+                    parser_version=parser_version,
+                    resolver_version=resolver_version,
+                    claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
+                    behavior_claims_allowed=False,
+                    fingerprints=FunctionGraphFingerprints(
+                        function_body=f"sha256:source-{graph_fingerprint[-1]}",
+                        graph=graph_fingerprint,
+                        file="sha256:file",
+                        symbol_index="sha256:symbols",
+                        module_visibility="sha256:modules",
+                    ),
+                    edges=(
+                        FunctionGraphEdge(
+                            from_symbol_id=f"fn-{graph_fingerprint[-1]}",
+                            edge_kind="calls_candidate",
+                            to_text="Helper",
+                            to_symbol_id="fn-helper",
+                            resolution_status="probable",
+                            confidence=0.82,
+                            basis=("same_file",),
+                        ),
+                    ),
+                )
+
+            old_result = make_result("sha256:graph-a", "parser-old", "resolver-old")
+            current_result = make_result("sha256:graph-b", "parser-current", "resolver-current")
+            for result in (old_result, current_result):
+                storage.store_graph_result(
+                    graph_cache_key_for_result(
+                        result,
+                        file_fingerprint="sha256:file",
+                        symbol_index_fingerprint="sha256:symbols",
+                        module_visibility_fingerprint="sha256:modules",
+                    ),
+                    result,
+                )
+
+            before = storage.cache_stats()
+            pruned = storage.prune_cache_versions(
+                keep_parser_versions={"parser-current"},
+                keep_resolver_versions={"resolver-current"},
+            )
+            after = storage.cache_stats()
+
+        self.assertEqual(before["graphResults"], 2)
+        self.assertEqual(before["graphEdges"], 2)
+        self.assertEqual(pruned["graphResultsPruned"], 1)
+        self.assertEqual(pruned["graphEdgesPruned"], 1)
+        self.assertEqual(after["graphResults"], 1)
+        self.assertEqual(after["graphEdges"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

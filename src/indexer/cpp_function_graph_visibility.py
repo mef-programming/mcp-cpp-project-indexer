@@ -24,9 +24,9 @@ def build_function_visibility_context(
     imported_modules = _module_names_for_file(index, source.file_id)
     visible_exported_symbols = _visible_module_symbols(index, imported_modules, source.file_id)
     member_data = _member_data(file_data, current_class_name)
-    using_declarations = _scope_items_for_file(index, "using_declarations", source.file_id, source.start_line)
-    using_directives = _scope_items_for_file(index, "using_directives", source.file_id, source.start_line)
-    namespace_aliases = _scope_items_for_file(index, "namespace_aliases", source.file_id, source.start_line)
+    using_declarations = _scope_items_for_file(index, "using_declarations", "usingDeclarations", source.file_id, source.start_line)
+    using_directives = _scope_items_for_file(index, "using_directives", "usingDirectives", source.file_id, source.start_line)
+    namespace_aliases = _scope_items_for_file(index, "namespace_aliases", "namespaceAliases", source.file_id, source.start_line)
 
     return FunctionVisibilityContext(
         file_id=source.file_id,
@@ -167,11 +167,25 @@ def _member_data(file_data: list[dict[str, Any]], current_class_name: str | None
     return result
 
 
-def _scope_items_for_file(index: Any, attr_name: str, file_id: str, line: int) -> list[dict[str, Any]]:
+def _scope_items_for_file(index: Any, attr_name: str, file_index_key: str, file_id: str, line: int) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    for item in getattr(index, attr_name, []) or []:
-        if str(item.get("fileId") or "") != file_id:
+    loaded_from_file_index = False
+    source_items = list(getattr(index, attr_name, []) or [])
+
+    if not source_items and hasattr(index, "load_file_index"):
+        try:
+            file_index = index.load_file_index(file_id)
+        except (OSError, ValueError, KeyError, TypeError):
+            file_index = {}
+        source_items = list(file_index.get(file_index_key, []) or [])
+        loaded_from_file_index = True
+
+    for item in source_items:
+        item_file_id = str(item.get("fileId") or "")
+        if item_file_id and item_file_id != file_id:
             continue
+        if loaded_from_file_index and not item_file_id:
+            item = {**item, "fileId": file_id}
         active_from = int(item.get("activeFromLine") or item.get("startLine") or 1)
         active_to = int(item.get("activeToLine") or item.get("endLine") or 2**31 - 1)
         if active_from <= line <= active_to:

@@ -11,6 +11,9 @@ from cpp_function_graph_cache import (
     FunctionAstCacheKey,
     FunctionGraphCacheKey,
     ast_cache_key_for_extract,
+    graph_cache_options_fingerprint,
+    graph_cache_options_for_request,
+    graph_cache_options_payload,
     stable_json_fingerprint,
 )
 from cpp_function_graph_extract import EXTRACTOR_VERSION, LightweightFunctionBodyParser
@@ -194,6 +197,8 @@ class FunctionGraphSourceService:
             else request_or_symbol_id
         )
         source = self.extract_function_source(request.symbol_id)
+        cache_options = graph_cache_options_for_request(request)
+        cache_options_fingerprint = graph_cache_options_fingerprint(cache_options)
         cache_resolver_version = _cache_resolver_version(request)
         graph_key = FunctionGraphCacheKey(
             function_symbol_id=source.symbol_id,
@@ -229,6 +234,7 @@ class FunctionGraphSourceService:
                             "parser": self.parser.parser_id,
                             "resolver": RESOLVER_VERSION,
                             "cacheResolver": cache_resolver_version,
+                            "graphOptionsFingerprint": cache_options_fingerprint,
                         }
                     ),
                     file=file_fingerprint,
@@ -284,6 +290,8 @@ class FunctionGraphSourceService:
                 },
                 "resolverVersion": RESOLVER_VERSION,
                 "cacheResolverVersion": cache_resolver_version,
+                "graphOptions": graph_cache_options_payload(cache_options),
+                "graphOptionsFingerprint": cache_options_fingerprint,
                 "edges": [asdict(edge) for edge in edges],
             }
         )
@@ -496,10 +504,5 @@ def _unique_edge_symbol_ids(edges: tuple[dict[str, Any], ...], *, key: str) -> t
 
 
 def _cache_resolver_version(request: FunctionGraphRequest) -> str:
-    return (
-        f"{RESOLVER_VERSION};"
-        f"cf={int(request.include_control_flow)};"
-        f"da={int(request.include_data_access)};"
-        f"ex={int(request.include_external)};"
-        f"max={request.max_edges}"
-    )
+    options = graph_cache_options_for_request(request)
+    return f"{RESOLVER_VERSION};options={graph_cache_options_fingerprint(options)}"
