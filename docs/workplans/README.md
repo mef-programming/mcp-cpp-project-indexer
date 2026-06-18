@@ -2,7 +2,7 @@
 
 ## Active
 
-None.
+- [Function Graph Runtime Quality / Parser Adapter vNext](function-graph-runtime-quality-parser-adapter-vnext.md) - active follow-up for parser adapter readiness, runtime smoke coverage, and cache guardrails.
 
 ## Completed
 

@@ -18,6 +18,8 @@ from cpp_function_graph_model import (
     SOURCE_STRUCTURE_CLAIM_STRENGTH,
     FunctionGraphRequest,
 )
+from cpp_function_graph_extract import LightweightFunctionBodyParser
+from cpp_function_graph_parser import ParserCapabilityStatus
 from cpp_function_graph_service import FunctionGraphSourceError, FunctionGraphSourceService, text_fingerprint
 
 
@@ -78,6 +80,21 @@ class FakeIndex:
         }
         self.data = []
         self.modules = {}
+
+
+class StatusTaggedParser(LightweightFunctionBodyParser):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def parser_status(self) -> ParserCapabilityStatus:
+        base = super().parser_status()
+        return ParserCapabilityStatus(
+            parser_id=base.parser_id,
+            parser_version=base.parser_version,
+            available=base.available,
+            reason=self.reason,
+            capabilities=base.capabilities,
+        )
 
 
 class FunctionGraphSourceServiceTests(unittest.TestCase):
@@ -304,6 +321,60 @@ class FunctionGraphSourceServiceTests(unittest.TestCase):
         self.assertEqual({edge.to_text for edge in first.edges}, {"Helper"})
         self.assertEqual(second.status, "cache_miss")
         self.assertFalse(second.from_cache)
+
+    def test_parser_status_change_causes_cache_miss(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir)
+            index_root = project_root / ".mcp-cpp-project-indexer"
+            (project_root / "sample.cpp").write_text(
+                "\n".join(
+                    [
+                        "#include <windows.h>",
+                        "",
+                        "int add(int lhs, int rhs)",
+                        "{",
+                        "    return lhs + rhs;",
+                        "}",
+                        "",
+                        "void Helper();",
+                        "",
+                        "void Paint()",
+                        "{",
+                        "    Helper();",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            first_service = FunctionGraphSourceService(
+                project_root=project_root,
+                index=FakeIndex(),
+                index_root=index_root,
+                parser=StatusTaggedParser("baseline_capabilities"),
+            )
+            second_service = FunctionGraphSourceService(
+                project_root=project_root,
+                index=FakeIndex(),
+                index_root=index_root,
+                parser=StatusTaggedParser("changed_capabilities"),
+            )
+
+            first = first_service.get_function_body_graph(
+                FunctionGraphRequest(symbol_id="fn-paint", mode="compute_if_missing"),
+                file_fingerprint="sha256:file",
+                symbol_index_fingerprint="sha256:symbols",
+                module_visibility_fingerprint="sha256:modules",
+            )
+            second = second_service.get_function_body_graph(
+                FunctionGraphRequest(symbol_id="fn-paint", mode="cache_only"),
+                file_fingerprint="sha256:file",
+                symbol_index_fingerprint="sha256:symbols",
+                module_visibility_fingerprint="sha256:modules",
+            )
+
+        self.assertEqual(first.status, "computed")
+        self.assertEqual(second.status, "cache_miss")
 
 
 if __name__ == "__main__":

@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 
 from cpp_function_graph_model import FunctionAstExtract
+from cpp_function_graph_parser import ParserCapabilityStatus
 
 
-EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.2"
+EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.3"
 LIGHTWEIGHT_PARSER_ID = "cpp-lightweight-function-parser"
-LIGHTWEIGHT_PARSER_VERSION = "v0.2"
+LIGHTWEIGHT_PARSER_VERSION = "v0.3"
 
 CONTROL_FLOW_WORDS = {
     "if",
@@ -26,6 +27,7 @@ CALL_EXCLUDE_WORDS = CONTROL_FLOW_WORDS | {
     "sizeof",
     "alignof",
     "decltype",
+    "noexcept",
     "static_cast",
     "reinterpret_cast",
     "const_cast",
@@ -97,6 +99,9 @@ def _extract_calls(line: str, *, line_number: int, byte_cursor: int) -> list[dic
     result: list[dict] = []
     stripped = _strip_line_comment(line)
     seen: set[tuple[str, int]] = set()
+    if _looks_like_preprocessor_line(stripped):
+        return result
+
     for match in CALL_RE.finditer(stripped):
         if match.start("callee") > 0 and stripped[match.start("callee") - 1] in {".", ">"}:
             continue
@@ -142,6 +147,9 @@ def _extract_calls(line: str, *, line_number: int, byte_cursor: int) -> list[dic
 
 def _extract_member_accesses(line: str, *, line_number: int, byte_cursor: int) -> list[dict]:
     stripped = _strip_line_comment(line)
+    if _looks_like_preprocessor_line(stripped):
+        return []
+
     writes = {
         match.group("lhs"): match
         for match in ASSIGNMENT_RE.finditer(stripped)
@@ -171,6 +179,9 @@ def _extract_member_accesses(line: str, *, line_number: int, byte_cursor: int) -
 
 def _extract_local_declarations(line: str, *, line_number: int, byte_cursor: int) -> list[dict]:
     stripped = _strip_line_comment(line)
+    if _looks_like_preprocessor_line(stripped):
+        return []
+
     match = LOCAL_DECL_RE.match(stripped)
     if match is None:
         return []
@@ -195,7 +206,11 @@ def _extract_local_declarations(line: str, *, line_number: int, byte_cursor: int
 
 def _extract_control_flow(line: str, *, line_number: int, byte_cursor: int) -> list[dict]:
     result: list[dict] = []
-    for match in CONTROL_RE.finditer(_strip_line_comment(line)):
+    stripped = _strip_line_comment(line)
+    if _looks_like_preprocessor_line(stripped):
+        return result
+
+    for match in CONTROL_RE.finditer(stripped):
         result.append(
             {
                 "marker": match.group(1),
@@ -259,9 +274,30 @@ def _looks_like_macro_invocation(name: str) -> bool:
     return name.isupper() or name.startswith(("ASSERT_", "VERIFY_", "TRACE_"))
 
 
+def _looks_like_preprocessor_line(line: str) -> bool:
+    return line.lstrip().startswith("#")
+
+
 class LightweightFunctionBodyParser:
     parser_id = LIGHTWEIGHT_PARSER_ID
     parser_version = LIGHTWEIGHT_PARSER_VERSION
+
+    def parser_status(self) -> ParserCapabilityStatus:
+        return ParserCapabilityStatus(
+            parser_id=self.parser_id,
+            parser_version=self.parser_version,
+            available=True,
+            reason="default_lightweight_parser",
+            capabilities=(
+                "calls",
+                "member_accesses",
+                "local_declarations",
+                "control_flow_markers",
+                "macro_noise_filter",
+                "template_call_candidates",
+                "chained_member_call_candidates",
+            ),
+        )
 
     def parse_function(
         self,

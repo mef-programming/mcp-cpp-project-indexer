@@ -64,6 +64,8 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                     [
                         "namespace App {",
                         "void Helper();",
+                        "namespace Detail { void StaticHelper(); }",
+                        "using namespace Detail;",
                         "class Renderer {",
                         "public:",
                         "    void Draw();",
@@ -72,7 +74,13 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                         "{",
                         "    renderer.Draw();",
                         "    Helper();",
+                        "    StaticHelper();",
                         "    std::move(renderer);",
+                        "}",
+                        "namespace Detail {",
+                        "void StaticHelper()",
+                        "{",
+                        "}",
                         "}",
                         "}",
                         "",
@@ -189,8 +197,9 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
         blend_statuses = {edge["toText"]: edge["resolutionStatus"] for edge in blend_graph["edges"]}
         self.assertIn(blend_statuses["renderer.Draw"], {"probable", "unresolved"})
         self.assertIn(blend_statuses["Helper"], {"exact", "probable", "ambiguous"})
+        self.assertIn(blend_statuses["StaticHelper"], {"exact", "probable", "ambiguous"})
         self.assertEqual(blend_statuses["std::move"], "external")
-        self.assertGreaterEqual(blend_xrefs["returnedEdges"], 2)
+        self.assertGreaterEqual(blend_xrefs["returnedEdges"], 3)
         self.assertEqual(blend_neighborhood["target"]["symbolId"], blend_symbol_id)
         self.assertFalse(blend_neighborhood["behaviorClaimsAllowed"])
         self.assertNotIn("reads_data_candidate", filtered_edge_kinds)
