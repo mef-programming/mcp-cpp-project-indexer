@@ -6,9 +6,9 @@ from cpp_function_graph_model import FunctionAstExtract
 from cpp_function_graph_parser import ParserCapabilityStatus
 
 
-EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.3"
+EXTRACTOR_VERSION = "cpp-function-graph-raw-extractor-v0.4"
 LIGHTWEIGHT_PARSER_ID = "cpp-lightweight-function-parser"
-LIGHTWEIGHT_PARSER_VERSION = "v0.3"
+LIGHTWEIGHT_PARSER_VERSION = "v0.4"
 
 CONTROL_FLOW_WORDS = {
     "if",
@@ -44,10 +44,11 @@ CHAINED_RESULT_CALL_RE = re.compile(
 CONTROL_RE = re.compile(r"\b(if|switch|for|while|return|throw|try|catch|co_await|co_return)\b")
 LOCAL_DECL_RE = re.compile(
     r"^\s*(?P<type>(?:const\s+)?(?:auto|[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?)(?:\s*<[^;=(){}]*>)?(?:\s*[*&])?)\s+"
-    r"(?P<name>[A-Za-z_]\w*)\s*(?:[=;({])"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?P<tail>[=;({].*)?$"
 )
 MEMBER_TOKEN_RE = re.compile(r"\b(?P<member>this->\w+(?:(?:->|\.)\w+)*|[A-Za-z_]\w*(?:(?:->|\.)\w+)+|_\w+)\b")
 ASSIGNMENT_RE = re.compile(r"(?P<lhs>this->\w+(?:(?:->|\.)\w+)*|[A-Za-z_]\w*(?:(?:->|\.)\w+)+|_\w+)\s*=")
+SUBSCRIPT_RE = re.compile(r"\b(?P<object>[A-Za-z_]\w*)\s*\[")
 
 
 def extract_raw_function_ast(
@@ -142,6 +143,25 @@ def _extract_calls(line: str, *, line_number: int, byte_cursor: int) -> list[dic
             }
         )
 
+    for match in SUBSCRIPT_RE.finditer(stripped):
+        object_name = match.group("object")
+        key = (f"{object_name}.operator[]", match.start("object"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(
+            {
+                "callee": f"{object_name}.operator[]",
+                "callKind": "member",
+                "argumentCount": 1,
+                "line": line_number,
+                "column": match.start("object"),
+                "byte": byte_cursor + len(line[:match.start("object")].encode("utf-8")),
+                "kind": "operator_call_expression",
+                "operatorKind": "operator[]",
+            }
+        )
+
     return result
 
 
@@ -192,16 +212,21 @@ def _extract_local_declarations(line: str, *, line_number: int, byte_cursor: int
 
     name = match.group("name")
     name_column = stripped.find(name)
-    return [
-        {
-            "name": name,
-            "typeText": type_text,
-            "line": line_number,
-            "column": name_column,
-            "byte": byte_cursor + len(line[:name_column].encode("utf-8")),
-            "kind": "local_declaration",
-        }
-    ]
+    result = {
+        "name": name,
+        "typeText": type_text,
+        "line": line_number,
+        "column": name_column,
+        "byte": byte_cursor + len(line[:name_column].encode("utf-8")),
+        "kind": "local_declaration",
+    }
+    initializer = _local_initializer(stripped, match)
+    if initializer:
+        result["initializer"] = initializer
+        initializer_callee = _initializer_callee(initializer)
+        if initializer_callee:
+            result["initializerCallee"] = initializer_callee
+    return [result]
 
 
 def _extract_control_flow(line: str, *, line_number: int, byte_cursor: int) -> list[dict]:
@@ -265,6 +290,31 @@ def _find_close_paren(line: str, open_paren_index: int) -> int | None:
     return None
 
 
+def _local_initializer(line: str, match: re.Match[str]) -> str | None:
+    tail = (match.group("tail") or "").strip()
+    if not tail or tail[0] not in {"=", "(", "{"}:
+        return None
+    if tail[0] == "=":
+        text = tail[1:].strip()
+    elif tail[0] == "(":
+        text = tail.strip()
+    else:
+        text = tail[1:].strip()
+    text = text.rstrip(";").strip()
+    return text or None
+
+
+def _initializer_callee(initializer: str) -> str | None:
+    match = CALL_RE.search(initializer)
+    if match is None:
+        return None
+    callee = match.group("callee")
+    tail = callee.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+    if tail in CALL_EXCLUDE_WORDS or _looks_like_macro_invocation(tail):
+        return None
+    return callee
+
+
 def _strip_line_comment(line: str) -> str:
     index = line.find("//")
     return line if index < 0 else line[:index]
@@ -296,6 +346,8 @@ class LightweightFunctionBodyParser:
                 "macro_noise_filter",
                 "template_call_candidates",
                 "chained_member_call_candidates",
+                "local_initializer_call_hints",
+                "operator_subscript_candidates",
             ),
         )
 

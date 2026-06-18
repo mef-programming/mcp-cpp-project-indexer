@@ -92,6 +92,8 @@ class FunctionVisibilityContext:
     using_directives: tuple[dict, ...] = ()
     namespace_aliases: tuple[dict, ...] = ()
     local_declarations: tuple[dict, ...] = ()
+    nested_type_symbols: tuple[dict, ...] = ()
+    base_type_symbols: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

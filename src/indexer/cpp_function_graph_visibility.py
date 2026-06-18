@@ -27,6 +27,9 @@ def build_function_visibility_context(
     using_declarations = _scope_items_for_file(index, "using_declarations", "usingDeclarations", source.file_id, source.start_line)
     using_directives = _scope_items_for_file(index, "using_directives", "usingDirectives", source.file_id, source.start_line)
     namespace_aliases = _scope_items_for_file(index, "namespace_aliases", "namespaceAliases", source.file_id, source.start_line)
+    project_symbols = [*file_symbols, *visible_exported_symbols]
+    nested_type_symbols = _nested_type_symbols(project_symbols, current_class_name)
+    base_type_symbols = _base_type_symbols(project_symbols, current_class_symbol)
 
     return FunctionVisibilityContext(
         file_id=source.file_id,
@@ -48,6 +51,8 @@ def build_function_visibility_context(
         using_directives=tuple(_compact_scope_item(item) for item in using_directives),
         namespace_aliases=tuple(_compact_scope_item(item) for item in namespace_aliases),
         local_declarations=tuple(ast_extract.local_declarations) if ast_extract is not None else (),
+        nested_type_symbols=tuple(_compact_symbol(item) for item in nested_type_symbols),
+        base_type_symbols=tuple(_compact_symbol(item) for item in base_type_symbols),
     )
 
 
@@ -165,6 +170,82 @@ def _member_data(file_data: list[dict[str, Any]], current_class_name: str | None
         if container.casefold() in {current_class_folded, current_class_tail} or container.casefold().endswith("::" + current_class_tail):
             result.append(item)
     return result
+
+
+def _nested_type_symbols(
+    symbols: list[dict[str, Any]],
+    current_class_name: str | None,
+) -> list[dict[str, Any]]:
+    if not current_class_name:
+        return []
+
+    prefix = current_class_name.casefold() + "::"
+    result: list[dict[str, Any]] = []
+    for symbol in symbols:
+        if str(symbol.get("type") or "") not in CODE_ENTITY_TYPE_SYMBOL_TYPES:
+            continue
+        qualified_name = str(symbol.get("qualifiedName") or "")
+        container = str(symbol.get("container") or "")
+        if qualified_name.casefold().startswith(prefix) or container.casefold().startswith(prefix):
+            result.append(symbol)
+    return result
+
+
+def _base_type_symbols(
+    symbols: list[dict[str, Any]],
+    current_class_symbol: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if current_class_symbol is None:
+        return []
+
+    base_names = _base_names_from_signature(str(current_class_symbol.get("signature") or ""))
+    if not base_names:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for symbol in symbols:
+        if str(symbol.get("type") or "") not in CODE_ENTITY_TYPE_SYMBOL_TYPES:
+            continue
+        short_name = str(symbol.get("shortName") or "")
+        qualified_name = str(symbol.get("qualifiedName") or "")
+        for base_name in base_names:
+            if _type_name_matches(base_name, short_name, qualified_name):
+                result.append(symbol)
+                break
+    return result
+
+
+def _base_names_from_signature(signature: str) -> list[str]:
+    if ":" not in signature:
+        return []
+    tail = signature.split(":", 1)[1]
+    tail = tail.split("{", 1)[0].strip()
+    if not tail:
+        return []
+
+    result: list[str] = []
+    for raw_item in tail.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        tokens = [
+            token
+            for token in item.replace("virtual", " ").replace("public", " ")
+            .replace("protected", " ").replace("private", " ").split()
+            if token
+        ]
+        if tokens:
+            result.append(tokens[-1].strip())
+    return result
+
+
+def _type_name_matches(base_name: str, short_name: str, qualified_name: str) -> bool:
+    base = base_name.casefold()
+    return (
+        bool(short_name and short_name.casefold() == base)
+        or bool(qualified_name and qualified_name.casefold() == base)
+        or bool(qualified_name and qualified_name.casefold().endswith("::" + base))
+    )
 
 
 def _scope_items_for_file(index: Any, attr_name: str, file_index_key: str, file_id: str, line: int) -> list[dict[str, Any]]:

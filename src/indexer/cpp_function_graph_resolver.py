@@ -11,7 +11,7 @@ from cpp_function_graph_model import (
 )
 
 
-RESOLVER_VERSION = "cpp-function-graph-resolver-v0.3"
+RESOLVER_VERSION = "cpp-function-graph-resolver-v0.4"
 EXTERNAL_QUALIFIER_PREFIXES = ("std::", "wil::", "ATL::", "Microsoft::WRL::")
 
 
@@ -54,26 +54,46 @@ def resolve_call(
     visibility: FunctionVisibilityContext,
     include_external: bool = True,
 ) -> FunctionGraphEdge | None:
-    callee = str(call.get("callee") or "")
-    call_kind = str(call.get("callKind") or _call_kind(callee))
-    if not callee:
+    raw_callee = str(call.get("callee") or "")
+    if not raw_callee:
         return None
+
+    callee = _normalize_callee_name(raw_callee)
+    call_kind = str(call.get("callKind") or _call_kind(callee))
+    call_for_scoring = {**call, "callee": callee}
+    normalization_basis = ("template_name_normalized",) if callee != raw_callee else ()
+
+    operator_kind = str(call.get("operatorKind") or "")
+    if not operator_kind and call_kind == "unqualified" and _local_type_hints_for_object(callee, visibility):
+        operator_kind = "operator()"
+        callee = f"{callee}.operator()"
+        call_kind = "member"
+        call_for_scoring = {**call_for_scoring, "callee": callee, "operatorKind": operator_kind}
 
     if call_kind == "qualified":
         candidates = _qualified_candidates(callee, visibility)
-        basis = ("qualified_name",)
+        basis = ("qualified_name", *normalization_basis)
     elif callee.startswith("this->"):
         candidates = _this_member_candidates(callee, visibility)
-        basis = ("this_scope", "current_class")
+        basis = ("this_scope", "current_class", *normalization_basis)
     elif call_kind == "member":
         candidates = _typed_member_candidates(callee, call, visibility)
-        basis = ("member_call_without_object_type",)
+        basis = (
+            *(
+                ("operator_call_syntax", operator_kind)
+                if operator_kind
+                else ("member_call_without_object_type",)
+            ),
+            *normalization_basis,
+        )
     else:
         candidates = _unqualified_candidates(callee, visibility)
-        basis = ("unqualified_lookup",)
+        basis = ("unqualified_lookup", *normalization_basis)
 
-    if len(candidates) == 1:
-        candidate = candidates[0]
+    scored_candidates = _score_candidates(candidates, call_for_scoring)
+
+    if len(scored_candidates) == 1:
+        candidate = scored_candidates[0]
         status = "exact" if call_kind == "qualified" or callee.startswith("this->") else "probable"
         return FunctionGraphEdge(
             from_symbol_id=visibility.function_symbol_id,
@@ -82,22 +102,22 @@ def resolve_call(
             to_symbol_id=str(candidate.get("symbolId") or ""),
             resolution_status=status,
             confidence=0.95 if status == "exact" else 0.82,
-            basis=tuple(_candidate_basis(candidate, basis)),
+            basis=tuple(_merge_basis((candidate,), basis)),
             candidates=(_candidate_ref(candidate),),
             claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
             behavior_claims_allowed=BEHAVIOR_CLAIMS_ALLOWED,
         )
 
-    if len(candidates) > 1:
+    if len(scored_candidates) > 1:
         return FunctionGraphEdge(
             from_symbol_id=visibility.function_symbol_id,
             edge_kind="calls_ambiguous",
             to_text=callee,
             to_symbol_id=None,
             resolution_status="ambiguous",
-            confidence=max(float(candidate.get("_score") or 0.5) for candidate in candidates),
-            basis=tuple(_merge_basis(candidates, basis)),
-            candidates=tuple(_candidate_ref(candidate) for candidate in _score_candidates(candidates, call)),
+            confidence=max(float(candidate.get("_score") or 0.5) for candidate in scored_candidates),
+            basis=tuple(_merge_basis(scored_candidates, basis)),
+            candidates=tuple(_candidate_ref(candidate) for candidate in scored_candidates),
             claim_strength=SOURCE_STRUCTURE_CLAIM_STRENGTH,
             behavior_claims_allowed=BEHAVIOR_CLAIMS_ALLOWED,
         )
@@ -178,20 +198,28 @@ def resolve_control_flow_marker(
 
 def _qualified_candidates(callee: str, visibility: FunctionVisibilityContext) -> tuple[dict[str, Any], ...]:
     expanded = _expand_namespace_alias(callee, visibility)
+    normalized = _normalize_callee_name(expanded)
     return _dedupe_candidates(
-        _with_basis(symbol, ("qualified_name", "namespace_alias" if expanded != callee else ""))
+        _with_basis(
+            symbol,
+            (
+                "qualified_name",
+                "namespace_alias" if expanded != callee else "",
+                "template_name_normalized" if normalized != expanded else "",
+            ),
+        )
         for symbol in _all_project_symbols(visibility)
-        if str(symbol.get("qualifiedName") or "") == expanded
+        if _normalize_callee_name(str(symbol.get("qualifiedName") or "")) == normalized
     )
 
 
 def _this_member_candidates(callee: str, visibility: FunctionVisibilityContext) -> tuple[dict[str, Any], ...]:
-    member_name = callee.rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+    member_name = _normalize_callee_name(callee.rsplit("->", 1)[-1].rsplit(".", 1)[-1])
     return _dedupe_candidates(
-        _with_basis(symbol, ("this_scope", "current_class"))
+        _with_basis(symbol, ("this_scope", "current_class", *_member_container_basis(symbol, visibility)))
         for symbol in visibility.same_file_symbols
         if _short_name(symbol) == member_name
-        and _same_container(symbol, visibility.current_class_name)
+        and _matches_member_container(symbol, visibility)
     )
 
 
@@ -207,21 +235,23 @@ def _typed_member_candidates(
     else:
         return ()
 
-    type_name = _local_type_for_object(object_name, visibility)
-    if not type_name:
+    member_name = _normalize_callee_name(member_name)
+    type_hints = _local_type_hints_for_object(object_name, visibility)
+    if not type_hints:
         return ()
 
     candidates = []
     for symbol in _all_project_symbols(visibility):
         if _short_name(symbol) != member_name:
             continue
-        if _same_container(symbol, type_name):
-            candidates.append(_with_basis(symbol, ("local_type_hint", "member_call")))
+        for type_name, type_basis in type_hints:
+            if _same_container(symbol, type_name):
+                candidates.append(_with_basis(symbol, (*type_basis, "member_call")))
     return _dedupe_candidates(_score_candidates(candidates, call))
 
 
 def _unqualified_candidates(callee: str, visibility: FunctionVisibilityContext) -> tuple[dict[str, Any], ...]:
-    tail = _callee_tail(callee)
+    tail = _normalize_callee_name(_callee_tail(callee))
     same_scope_candidates: list[dict[str, Any]] = []
     using_candidates: list[dict[str, Any]] = []
     same_file_candidates: list[dict[str, Any]] = []
@@ -229,9 +259,9 @@ def _unqualified_candidates(callee: str, visibility: FunctionVisibilityContext) 
     for symbol in visibility.same_file_symbols:
         if _short_name(symbol) != tail:
             continue
-        if _same_container(symbol, visibility.current_class_name):
+        if _matches_member_container(symbol, visibility):
             candidate = dict(symbol)
-            candidate["_basis"] = ("same_class", "same_file")
+            candidate["_basis"] = (*_member_container_basis(symbol, visibility), "same_file")
             same_scope_candidates.append(candidate)
         elif _same_namespace(symbol, visibility):
             candidate = dict(symbol)
@@ -335,10 +365,16 @@ def _score_candidates(candidates: Any, call: dict[str, Any]) -> tuple[dict[str, 
             "using_declaration": 0.16,
             "using_namespace": 0.1,
             "local_type_hint": 0.22,
+            "auto_initializer_call_hint": 0.2,
+            "return_type_hint": 0.16,
+            "nested_type_context": 0.12,
+            "base_class_context": 0.14,
+            "operator_call_syntax": 0.06,
             "member_call": 0.08,
             "same_file": 0.05,
             "module_visible": 0.03,
             "namespace_alias": 0.04,
+            "template_name_normalized": 0.04,
         }
         for item in basis:
             score += basis_weights.get(str(item), 0.0)
@@ -417,7 +453,7 @@ def _data_candidate_ref(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _short_name(symbol: dict[str, Any]) -> str:
-    return str(symbol.get("shortName") or symbol.get("name") or "")
+    return _normalize_callee_name(str(symbol.get("shortName") or symbol.get("name") or ""))
 
 
 def _same_container(symbol: dict[str, Any], container: str | None) -> bool:
@@ -431,6 +467,30 @@ def _same_container(symbol: dict[str, Any], container: str | None) -> bool:
         or symbol_container_folded.endswith("::" + container_folded)
         or container_folded.endswith("::" + symbol_container_folded)
     )
+
+
+def _matches_member_container(symbol: dict[str, Any], visibility: FunctionVisibilityContext) -> bool:
+    if _same_container(symbol, visibility.current_class_name):
+        return True
+    for type_symbol in (*visibility.nested_type_symbols, *visibility.base_type_symbols):
+        type_name = str(type_symbol.get("qualifiedName") or type_symbol.get("shortName") or "")
+        if _same_container(symbol, type_name):
+            return True
+    return False
+
+
+def _member_container_basis(symbol: dict[str, Any], visibility: FunctionVisibilityContext) -> tuple[str, ...]:
+    if _same_container(symbol, visibility.current_class_name):
+        return ("same_class",)
+    for type_symbol in visibility.nested_type_symbols:
+        type_name = str(type_symbol.get("qualifiedName") or type_symbol.get("shortName") or "")
+        if _same_container(symbol, type_name):
+            return ("nested_type_context",)
+    for type_symbol in visibility.base_type_symbols:
+        type_name = str(type_symbol.get("qualifiedName") or type_symbol.get("shortName") or "")
+        if _same_container(symbol, type_name):
+            return ("base_class_context",)
+    return ("member_container_candidate",)
 
 
 def _same_namespace(symbol: dict[str, Any], visibility: FunctionVisibilityContext) -> bool:
@@ -503,25 +563,77 @@ def _merge_basis(candidates: tuple[dict[str, Any], ...], fallback: tuple[str, ..
     return tuple(result)
 
 
-def _local_type_for_object(object_name: str, visibility: FunctionVisibilityContext) -> str | None:
+def _local_type_hints_for_object(
+    object_name: str,
+    visibility: FunctionVisibilityContext,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
     normalized = object_name.strip("*& ")
+    result: list[tuple[str, tuple[str, ...]]] = []
     for item in visibility.local_declarations:
         if str(item.get("name") or "") == normalized:
-            return _normalize_type_name(str(item.get("typeText") or ""))
-    return None
+            type_name = _normalize_type_name(str(item.get("typeText") or ""))
+            if type_name and type_name != "auto":
+                result.append((type_name, ("local_type_hint",)))
+            if type_name == "auto":
+                result.extend(_auto_initializer_type_hints(item, visibility))
+    return tuple(_dedupe_type_hints(result))
+
+
+def _auto_initializer_type_hints(
+    item: dict[str, Any],
+    visibility: FunctionVisibilityContext,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    initializer_callee = _normalize_callee_name(str(item.get("initializerCallee") or ""))
+    if not initializer_callee:
+        return ()
+    candidates = (
+        _qualified_candidates(initializer_callee, visibility)
+        if "::" in initializer_callee
+        else _unqualified_candidates(initializer_callee, visibility)
+    )
+    result: list[tuple[str, tuple[str, ...]]] = []
+    for candidate in candidates:
+        return_type = _return_type_from_signature(str(candidate.get("signature") or ""), initializer_callee)
+        if return_type:
+            result.append((return_type, ("auto_initializer_call_hint", "return_type_hint")))
+    return tuple(_dedupe_type_hints(result))
+
+
+def _dedupe_type_hints(hints: list[tuple[str, tuple[str, ...]]]) -> list[tuple[str, tuple[str, ...]]]:
+    result: list[tuple[str, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    for type_name, basis in hints:
+        normalized = _normalize_type_name(type_name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append((normalized, basis))
+    return result
 
 
 def _normalize_type_name(type_text: str) -> str | None:
-    text = type_text.replace("const ", "").replace("*", "").replace("&", "").strip()
+    text = _strip_template_arguments(type_text)
+    text = text.replace("const ", "").replace("*", "").replace("&", "").strip()
     for prefix in ("class ", "struct "):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
     return text or None
 
 
-def _signature_arity(signature: str) -> int | None:
+def _return_type_from_signature(signature: str, callee: str) -> str | None:
     open_index = signature.find("(")
+    if open_index < 0:
+        return None
+    prefix = signature[:open_index].strip()
+    name = _callee_tail(callee)
+    if name and prefix.endswith(name):
+        prefix = prefix[: -len(name)].strip()
+    return _normalize_type_name(prefix)
+
+
+def _signature_arity(signature: str) -> int | None:
     close_index = signature.rfind(")")
+    open_index = signature.rfind("(", 0, close_index)
     if open_index < 0 or close_index < open_index:
         return None
     args = signature[open_index + 1:close_index].strip()
@@ -541,6 +653,25 @@ def _signature_arity(signature: str) -> int | None:
 
 def _callee_tail(callee: str) -> str:
     return callee.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _normalize_callee_name(callee: str) -> str:
+    return _strip_template_arguments(callee.strip())
+
+
+def _strip_template_arguments(text: str) -> str:
+    result: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "<":
+            depth += 1
+            continue
+        if char == ">" and depth > 0:
+            depth -= 1
+            continue
+        if depth == 0:
+            result.append(char)
+    return "".join(result).strip()
 
 
 def _member_tail(text: str) -> str:

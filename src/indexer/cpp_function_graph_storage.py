@@ -303,12 +303,17 @@ class FunctionGraphStorage:
 
         return tuple(_edge_row_to_dict(row) for row in rows)
 
-    def cache_stats(self) -> dict[str, int]:
+    def cache_stats(self) -> dict[str, Any]:
         with self.connect() as connection:
             return {
                 "astExtracts": _count_rows(connection, "function_ast_extract_cache"),
                 "graphResults": _count_rows(connection, "function_graph_cache"),
                 "graphEdges": _count_rows(connection, "function_graph_edges"),
+                "parserVersions": _version_counts(connection, "parser_version"),
+                "resolverVersions": _version_counts(connection, "resolver_version"),
+                "oldestUpdatedAt": _oldest_cache_timestamp(connection),
+                "newestUpdatedAt": _newest_cache_timestamp(connection),
+                "edgeCountsByGraph": _edge_counts_by_graph(connection),
             }
 
     def prune_cache_versions(
@@ -316,33 +321,20 @@ class FunctionGraphStorage:
         *,
         keep_parser_versions: set[str] | None = None,
         keep_resolver_versions: set[str] | None = None,
+        dry_run: bool = False,
     ) -> dict[str, int]:
         keep_parser_versions = set(keep_parser_versions or ())
         keep_resolver_versions = set(keep_resolver_versions or ())
 
         with self.connect() as connection:
             before = self._cache_counts(connection)
-            stale_graphs = connection.execute(
-                """
-                SELECT graph_fingerprint
-                FROM function_graph_cache
-                WHERE (? = 1 OR parser_version NOT IN (%s))
-                   OR (? = 1 OR resolver_version NOT IN (%s))
-                """
-                % (
-                    _placeholders(keep_parser_versions),
-                    _placeholders(keep_resolver_versions),
-                ),
-                (
-                    1 if not keep_parser_versions else 0,
-                    *sorted(keep_parser_versions),
-                    1 if not keep_resolver_versions else 0,
-                    *sorted(keep_resolver_versions),
-                ),
-            ).fetchall()
-            stale_fingerprints = [str(row["graph_fingerprint"]) for row in stale_graphs]
+            stale_fingerprints = self._stale_graph_fingerprints(
+                connection,
+                keep_parser_versions=keep_parser_versions,
+                keep_resolver_versions=keep_resolver_versions,
+            )
 
-            if stale_fingerprints:
+            if stale_fingerprints and not dry_run:
                 connection.execute(
                     "DELETE FROM function_graph_edges WHERE graph_fingerprint IN (%s)"
                     % _placeholders(stale_fingerprints),
@@ -354,7 +346,11 @@ class FunctionGraphStorage:
                     stale_fingerprints,
                 )
 
-            if keep_parser_versions:
+            stale_ast_extracts = self._stale_ast_extract_count(
+                connection,
+                keep_parser_versions=keep_parser_versions,
+            )
+            if keep_parser_versions and not dry_run:
                 connection.execute(
                     "DELETE FROM function_ast_extract_cache WHERE parser_version NOT IN (%s)"
                     % _placeholders(keep_parser_versions),
@@ -364,10 +360,76 @@ class FunctionGraphStorage:
             after = self._cache_counts(connection)
 
         return {
-            "astExtractsPruned": before["astExtracts"] - after["astExtracts"],
-            "graphResultsPruned": before["graphResults"] - after["graphResults"],
-            "graphEdgesPruned": before["graphEdges"] - after["graphEdges"],
+            "astExtractsPruned": stale_ast_extracts if dry_run else before["astExtracts"] - after["astExtracts"],
+            "graphResultsPruned": len(stale_fingerprints) if dry_run else before["graphResults"] - after["graphResults"],
+            "graphEdgesPruned": (
+                self._stale_edge_count(stale_fingerprints, connection) if dry_run else before["graphEdges"] - after["graphEdges"]
+            ),
         }
+
+    def resolver_versions_with_prefix(self, prefix: str) -> set[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT resolver_version
+                FROM function_graph_cache
+                WHERE resolver_version LIKE ?
+                """,
+                (f"{prefix}%",),
+            ).fetchall()
+        return {str(row["resolver_version"]) for row in rows}
+
+    def _stale_graph_fingerprints(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        keep_parser_versions: set[str],
+        keep_resolver_versions: set[str],
+    ) -> list[str]:
+        stale_graphs = connection.execute(
+            """
+            SELECT graph_fingerprint
+            FROM function_graph_cache
+            WHERE (? = 1 OR parser_version NOT IN (%s))
+               OR (? = 1 OR resolver_version NOT IN (%s))
+            """
+            % (
+                _placeholders(keep_parser_versions),
+                _placeholders(keep_resolver_versions),
+            ),
+            (
+                1 if not keep_parser_versions else 0,
+                *sorted(keep_parser_versions),
+                1 if not keep_resolver_versions else 0,
+                *sorted(keep_resolver_versions),
+            ),
+        ).fetchall()
+        return [str(row["graph_fingerprint"]) for row in stale_graphs]
+
+    def _stale_ast_extract_count(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        keep_parser_versions: set[str],
+    ) -> int:
+        if not keep_parser_versions:
+            return 0
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM function_ast_extract_cache WHERE parser_version NOT IN (%s)"
+            % _placeholders(keep_parser_versions),
+            sorted(keep_parser_versions),
+        ).fetchone()
+        return int(row["count"] or 0)
+
+    def _stale_edge_count(self, stale_fingerprints: list[str], connection: sqlite3.Connection) -> int:
+        if not stale_fingerprints:
+            return 0
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM function_graph_edges WHERE graph_fingerprint IN (%s)"
+            % _placeholders(stale_fingerprints),
+            stale_fingerprints,
+        ).fetchone()
+        return int(row["count"] or 0)
 
     def _cache_counts(self, connection: sqlite3.Connection) -> dict[str, int]:
         return {
@@ -468,6 +530,143 @@ def _count_rows(connection: sqlite3.Connection, table: str) -> int:
     if table not in {"function_ast_extract_cache", "function_graph_cache", "function_graph_edges"}:
         raise ValueError("Invalid function graph storage table.")
     return int(connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
+
+
+def _version_counts(connection: sqlite3.Connection, column: str) -> list[dict[str, Any]]:
+    if column == "parser_version":
+        rows_by_version = {
+            str(row["version"]): row
+            for row in connection.execute(
+            """
+            SELECT parser_version AS version, COUNT(*) AS graphResults,
+                   MIN(created_at) AS oldestUpdatedAt,
+                   MAX(created_at) AS newestUpdatedAt
+            FROM function_graph_cache
+            GROUP BY parser_version
+            """
+            ).fetchall()
+        }
+        ast_rows = {
+            str(row["version"]): row
+            for row in connection.execute(
+                """
+                SELECT parser_version AS version, COUNT(*) AS astExtracts,
+                       MIN(created_at) AS oldestUpdatedAt,
+                       MAX(created_at) AS newestUpdatedAt
+                FROM function_ast_extract_cache
+                GROUP BY parser_version
+                """
+            ).fetchall()
+        }
+        result: list[dict[str, Any]] = []
+        for version in sorted(set(rows_by_version) | set(ast_rows)):
+            graph_row = rows_by_version.get(version)
+            ast_row = ast_rows.get(version)
+            oldest_values = [
+                value
+                for value in (
+                    graph_row["oldestUpdatedAt"] if graph_row is not None else None,
+                    ast_row["oldestUpdatedAt"] if ast_row is not None else None,
+                )
+                if value is not None
+            ]
+            newest_values = [
+                value
+                for value in (
+                    graph_row["newestUpdatedAt"] if graph_row is not None else None,
+                    ast_row["newestUpdatedAt"] if ast_row is not None else None,
+                )
+                if value is not None
+            ]
+            result.append(
+                {
+                    "version": version,
+                    "astExtracts": int(ast_row["astExtracts"] or 0) if ast_row is not None else 0,
+                    "graphResults": int(graph_row["graphResults"] or 0) if graph_row is not None else 0,
+                    "oldestUpdatedAt": min(oldest_values) if oldest_values else None,
+                    "newestUpdatedAt": max(newest_values) if newest_values else None,
+                }
+            )
+        return sorted(
+            result,
+            key=lambda item: (int(item["graphResults"]) + int(item["astExtracts"]), str(item["version"])),
+            reverse=True,
+        )
+
+    if column == "resolver_version":
+        rows = connection.execute(
+            """
+            SELECT resolver_version AS version, COUNT(*) AS graphResults,
+                   MIN(created_at) AS oldestUpdatedAt,
+                   MAX(created_at) AS newestUpdatedAt
+            FROM function_graph_cache
+            GROUP BY resolver_version
+            ORDER BY graphResults DESC, version
+            """
+        ).fetchall()
+        return [
+            {
+                "version": str(row["version"]),
+                "graphResults": int(row["graphResults"] or 0),
+                "oldestUpdatedAt": row["oldestUpdatedAt"],
+                "newestUpdatedAt": row["newestUpdatedAt"],
+            }
+            for row in rows
+        ]
+
+    raise ValueError("Invalid function graph version column.")
+
+
+def _oldest_cache_timestamp(connection: sqlite3.Connection) -> str | None:
+    row = connection.execute(
+        """
+        SELECT MIN(created_at) AS value FROM (
+            SELECT created_at FROM function_ast_extract_cache
+            UNION ALL
+            SELECT created_at FROM function_graph_cache
+        )
+        """
+    ).fetchone()
+    return row["value"] if row is not None else None
+
+
+def _newest_cache_timestamp(connection: sqlite3.Connection) -> str | None:
+    row = connection.execute(
+        """
+        SELECT MAX(created_at) AS value FROM (
+            SELECT created_at FROM function_ast_extract_cache
+            UNION ALL
+            SELECT created_at FROM function_graph_cache
+        )
+        """
+    ).fetchone()
+    return row["value"] if row is not None else None
+
+
+def _edge_counts_by_graph(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT c.function_symbol_id, c.graph_fingerprint, c.parser_version,
+               c.resolver_version, c.created_at, COUNT(e.graph_fingerprint) AS edgeCount
+        FROM function_graph_cache c
+        LEFT JOIN function_graph_edges e
+          ON e.graph_fingerprint = c.graph_fingerprint
+        GROUP BY c.function_symbol_id, c.graph_fingerprint, c.parser_version,
+                 c.resolver_version, c.created_at
+        ORDER BY c.created_at DESC, c.function_symbol_id
+        """
+    ).fetchall()
+    return [
+        {
+            "functionSymbolId": str(row["function_symbol_id"]),
+            "graphFingerprint": str(row["graph_fingerprint"]),
+            "parserVersion": str(row["parser_version"]),
+            "resolverVersion": str(row["resolver_version"]),
+            "updatedAt": row["created_at"],
+            "edgeCount": int(row["edgeCount"] or 0),
+        }
+        for row in rows
+    ]
 
 
 def _placeholders(values: set[str] | list[str]) -> str:

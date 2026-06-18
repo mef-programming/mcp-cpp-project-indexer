@@ -40,7 +40,7 @@ def tree_sitter_cpp_dependency_status() -> dict[str, str | bool]:
 
 class TreeSitterCppFunctionBodyParser:
     parser_id = "tree-sitter-cpp"
-    parser_version = "ast-extractor-v0.1"
+    parser_version = "ast-extractor-v0.2"
 
     def __init__(self) -> None:
         status = tree_sitter_cpp_dependency_status()
@@ -64,6 +64,8 @@ class TreeSitterCppFunctionBodyParser:
                 "local_declarations",
                 "control_flow_markers",
                 "macro_noise_filter",
+                "local_initializer_call_hints",
+                "operator_subscript_candidates",
             ),
             dependency_status=tree_sitter_cpp_dependency_status(),
         )
@@ -127,6 +129,15 @@ class _TreeSitterFunctionAstExtractor:
         result: list[dict] = []
         seen: set[tuple[str, int]] = set()
         for node in _walk(root):
+            if node.type == "subscript_expression":
+                item = self._operator_subscript_call(node)
+                if item is not None:
+                    key = (str(item["callee"]), int(item["byte"]))
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(item)
+                continue
+
             if node.type != "call_expression":
                 continue
 
@@ -251,13 +262,45 @@ class _TreeSitterFunctionAstExtractor:
             return None
 
         location = self._location(name_node)
-        return {
+        result = {
             "name": name,
             "typeText": type_text,
             "line": location["line"],
             "column": location["column"],
             "byte": location["byte"],
             "kind": "local_declaration",
+        }
+        initializer = _initializer_text_from_declaration(declaration_text, name)
+        if initializer:
+            result["initializer"] = initializer
+            initializer_callee = _initializer_callee(initializer)
+            if initializer_callee:
+                result["initializerCallee"] = initializer_callee
+        return result
+
+    def _operator_subscript_call(self, node: Any) -> dict | None:
+        children = list(getattr(node, "named_children", ()))
+        object_node = children[0] if children else None
+        argument_node = _child_by_field_name(node, "argument")
+        if argument_node is None:
+            argument_node = children[1] if len(children) > 1 else None
+        if object_node is None:
+            return None
+
+        object_text = _normalise_member_text(_node_text(object_node, self.source_bytes))
+        if not _IDENTIFIER_RE.fullmatch(object_text):
+            return None
+
+        location = self._location(object_node)
+        return {
+            "callee": f"{object_text}.operator[]",
+            "callKind": "member",
+            "argumentCount": 1 if argument_node is not None else 0,
+            "line": location["line"],
+            "column": location["column"],
+            "byte": location["byte"],
+            "kind": "operator_call_expression",
+            "operatorKind": "operator[]",
         }
 
     def _location(self, node: Any) -> dict[str, int]:
@@ -339,6 +382,37 @@ def _normalise_type_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
     text = text.removesuffix("=").strip()
     return text
+
+
+def _initializer_text_from_declaration(declaration_text: str, name: str) -> str | None:
+    if name not in declaration_text:
+        return None
+    tail = declaration_text.split(name, 1)[1].strip()
+    if not tail or tail[0] not in {"=", "(", "{"}:
+        return None
+    if tail[0] == "=":
+        text = tail[1:].strip()
+    elif tail[0] == "(":
+        text = tail.strip()
+    else:
+        text = tail[1:].strip()
+    text = text.rstrip(";").strip()
+    return text or None
+
+
+def _initializer_callee(initializer: str) -> str | None:
+    match = re.search(
+        r"(?P<callee>\b[A-Za-z_]\w*(?:(?:::|->|\.)[A-Za-z_]\w*)*)"
+        r"(?:\s*<[^;{}()]*>)?\s*\(",
+        initializer,
+    )
+    if match is None:
+        return None
+    callee = _normalise_callee(match.group("callee"))
+    tail = re.split(r"::|->|\.", callee)[-1]
+    if tail in CALL_EXCLUDE_WORDS or _looks_like_macro_invocation(tail):
+        return None
+    return callee
 
 
 def _strip_trailing_template_args(text: str) -> str:
