@@ -55,6 +55,44 @@
         <div class="command-state" id="commandState">Command idle</div>
       </section>
 
+      <section class="panel" id="functionGraphCachePanel">
+        <div class="panel-header">
+          <h2>Function Graph Cache</h2>
+          <div class="panel-actions">
+            <button id="refreshFunctionGraphCache">Refresh</button>
+            <button id="previewFunctionGraphPrune">Dry Run Prune</button>
+            <button class="danger" id="commitFunctionGraphPrune" disabled>Commit Prune</button>
+          </div>
+        </div>
+        <section class="cache-stats" aria-label="Function graph cache stats">
+          <article><span>AST Extracts</span><strong id="fgAstExtracts">-</strong></article>
+          <article><span>Graph Results</span><strong id="fgGraphResults">-</strong></article>
+          <article><span>Graph Edges</span><strong id="fgGraphEdges">-</strong></article>
+          <article><span>Oldest</span><strong id="fgOldestCache">-</strong></article>
+          <article><span>Newest</span><strong id="fgNewestCache">-</strong></article>
+        </section>
+        <div class="cache-controls">
+          <label class="checkbox-control"><input id="fgKeepCurrent" type="checkbox" checked /> Keep current versions</label>
+          <label>Keep parser versions <input id="fgKeepParserVersions" type="text" placeholder="comma separated" /></label>
+          <label>Keep resolver versions <input id="fgKeepResolverVersions" type="text" placeholder="comma separated" /></label>
+        </div>
+        <div class="cache-grid">
+          <article>
+            <h3>Parser Versions</h3>
+            <div class="table-scroll"><table id="fgParserVersions"></table></div>
+          </article>
+          <article>
+            <h3>Resolver Versions</h3>
+            <div class="table-scroll"><table id="fgResolverVersions"></table></div>
+          </article>
+          <article>
+            <h3>Graph Edges</h3>
+            <div class="table-scroll"><table id="fgEdgeCounts"></table></div>
+          </article>
+        </div>
+        <div class="command-state" id="functionGraphCacheState">Cache stats not loaded</div>
+      </section>
+
       <section class="grid">
         <article class="panel" id="detailsPanel">
           <div class="panel-header">

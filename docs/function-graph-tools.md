@@ -59,6 +59,8 @@ Example management command payloads:
 
 Prune requests without explicit keep versions and without `keepCurrent=true` are rejected.
 
+The bundled Management UI exposes the same workflow in the Function Graph Cache panel. It uses `keepCurrent=true` by default and enables the destructive prune button only after a successful dry-run preview.
+
 ## Claim Contract
 
 Function graph output may say a source structure was observed or a project-local candidate was found. It must not claim runtime behavior, side effects, alias certainty, dynamic dispatch certainty, or external API semantics.

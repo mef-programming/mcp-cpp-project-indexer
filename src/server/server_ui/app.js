@@ -11,6 +11,7 @@ const state = {
   commandEvents: [],
   serverEvents: [],
   previousProcessStats: null,
+  functionGraphPrunePreview: null,
 };
 
 function initializeTokenFromHash() {
@@ -54,6 +55,20 @@ function formatNumber(value) {
   return Number(value).toLocaleString();
 }
 
+function escapeHtml(value) {
+  return String(value ?? "-")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function shortHash(value) {
+  const text = String(value || "");
+  if (text.length <= 18) return text || "-";
+  return `${text.slice(0, 12)}...${text.slice(-6)}`;
+}
+
 function formatBytes(bytes) {
   const value = Number(bytes);
   if (!Number.isFinite(value)) return "-";
@@ -71,7 +86,7 @@ function formatDuration(seconds) {
 
 function normalizeProcess(status) {
   const dashboardServer = (status.dashboard && status.dashboard.server) || {};
-  const server = status.server || {};
+  const server = status.server || (status.status && status.status.server) || {};
   const process = server.process || {};
   const cpuUser = Number(process.cpuUserSeconds);
   const cpuSystem = Number(process.cpuSystemSeconds);
@@ -147,7 +162,7 @@ function renderProcessStats(status) {
 }
 
 function renderDetails(status) {
-  const server = status.server || {};
+  const server = status.server || (status.status && status.status.server) || {};
   const security = status.security || {};
   const dashboard = status.dashboard || {};
   const processStats = normalizeProcess(status);
@@ -229,6 +244,136 @@ async function refreshStatus() {
     $("#statusPill").textContent = "offline";
     $("#statusPill").classList.remove("online");
     setText("#commandState", error.message);
+  }
+}
+
+function parseVersionList(selector) {
+  const value = ($(selector)?.value || "").trim();
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function functionGraphPrunePayload({ dryRun }) {
+  return {
+    command: "function_graph_cache_prune_versions",
+    keepCurrent: Boolean($("#fgKeepCurrent")?.checked),
+    dryRun,
+    keepParserVersions: parseVersionList("#fgKeepParserVersions"),
+    keepResolverVersions: parseVersionList("#fgKeepResolverVersions"),
+  };
+}
+
+function renderFunctionGraphVersionTable(selector, rows, columns) {
+  const table = $(selector);
+  if (!table) return;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    table.innerHTML = `<tbody><tr><td class="empty-cell" colspan="${columns.length}">No cache entries</td></tr></tbody>`;
+    return;
+  }
+  table.innerHTML = `
+    <thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+    <tbody>
+      ${rows.map((row) => `
+        <tr>
+          ${columns.map((column) => `<td title="${escapeHtml(row[column.key])}">${escapeHtml(column.format ? column.format(row[column.key], row) : row[column.key])}</td>`).join("")}
+        </tr>
+      `).join("")}
+    </tbody>
+  `;
+}
+
+function renderFunctionGraphCacheStats(payload) {
+  const cache = payload.functionGraphCache || payload;
+  const stats = cache.stats || {};
+  setText("#fgAstExtracts", formatNumber(stats.astExtracts));
+  setText("#fgGraphResults", formatNumber(stats.graphResults));
+  setText("#fgGraphEdges", formatNumber(stats.graphEdges));
+  setText("#fgOldestCache", stats.oldestUpdatedAt || "-");
+  setText("#fgNewestCache", stats.newestUpdatedAt || "-");
+  renderFunctionGraphVersionTable("#fgParserVersions", stats.parserVersions || [], [
+    { key: "version", label: "Version", format: shortHash },
+    { key: "astExtracts", label: "AST", format: formatNumber },
+    { key: "graphResults", label: "Graphs", format: formatNumber },
+    { key: "newestUpdatedAt", label: "Newest" },
+  ]);
+  renderFunctionGraphVersionTable("#fgResolverVersions", stats.resolverVersions || [], [
+    { key: "version", label: "Version", format: shortHash },
+    { key: "graphResults", label: "Graphs", format: formatNumber },
+    { key: "newestUpdatedAt", label: "Newest" },
+  ]);
+  renderFunctionGraphVersionTable("#fgEdgeCounts", stats.edgeCountsByGraph || [], [
+    { key: "functionSymbolId", label: "Symbol", format: shortHash },
+    { key: "graphFingerprint", label: "Graph", format: shortHash },
+    { key: "edgeCount", label: "Edges", format: formatNumber },
+    { key: "updatedAt", label: "Updated" },
+  ]);
+}
+
+async function refreshFunctionGraphCacheStats(statusMessage = "Cache stats loaded") {
+  try {
+    const payload = await requestJson("/server/management/command", {
+      method: "POST",
+      body: JSON.stringify({ command: "function_graph_cache_stats" }),
+    });
+    renderFunctionGraphCacheStats(payload);
+    state.functionGraphPrunePreview = null;
+    $("#commitFunctionGraphPrune").disabled = true;
+    setText("#functionGraphCacheState", statusMessage);
+  } catch (error) {
+    state.functionGraphPrunePreview = null;
+    $("#commitFunctionGraphPrune").disabled = true;
+    setText("#functionGraphCacheState", `Function graph cache not available: ${error.message}`);
+  }
+}
+
+function renderFunctionGraphPruneResult(payload, label) {
+  const cache = payload.functionGraphCache || {};
+  const pruned = cache.pruned || {};
+  setText(
+    "#functionGraphCacheState",
+    `${label}: AST ${formatNumber(pruned.astExtractsPruned)}, graphs ${formatNumber(pruned.graphResultsPruned)}, edges ${formatNumber(pruned.graphEdgesPruned)}`,
+  );
+}
+
+async function previewFunctionGraphCachePrune() {
+  const payload = functionGraphPrunePayload({ dryRun: true });
+  try {
+    const result = await requestJson("/server/management/command", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.functionGraphPrunePreview = payload;
+    $("#commitFunctionGraphPrune").disabled = false;
+    renderFunctionGraphPruneResult(result, "Dry run");
+    await refreshLogs();
+  } catch (error) {
+    state.functionGraphPrunePreview = null;
+    $("#commitFunctionGraphPrune").disabled = true;
+    setText("#functionGraphCacheState", error.message);
+  }
+}
+
+async function commitFunctionGraphCachePrune() {
+  if (!state.functionGraphPrunePreview) return;
+  const payload = { ...state.functionGraphPrunePreview, dryRun: false };
+  $("#commitFunctionGraphPrune").disabled = true;
+  try {
+    const result = await requestJson("/server/management/command", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    renderFunctionGraphPruneResult(result, "Pruned");
+    state.functionGraphPrunePreview = null;
+    const pruned = (result.functionGraphCache || {}).pruned || {};
+    await refreshFunctionGraphCacheStats(
+      `Pruned: AST ${formatNumber(pruned.astExtractsPruned)}, graphs ${formatNumber(pruned.graphResultsPruned)}, edges ${formatNumber(pruned.graphEdgesPruned)}`,
+    );
+    await refreshLogs();
+  } catch (error) {
+    setText("#functionGraphCacheState", error.message);
   }
 }
 
@@ -353,6 +498,7 @@ document.querySelectorAll("[data-command]").forEach((button) => {
 $("#refreshButton").addEventListener("click", () => {
   void refreshStatus();
   void refreshLogs();
+  void refreshFunctionGraphCacheStats();
 });
 
 $("#clearCommandLog").addEventListener("click", () => {
@@ -367,11 +513,32 @@ $("#clearServerLog").addEventListener("click", () => {
 
 $("#serverLogLevelFilter").addEventListener("change", renderLogs);
 $("#serverLogTextFilter").addEventListener("input", renderLogs);
+$("#refreshFunctionGraphCache").addEventListener("click", () => {
+  void refreshFunctionGraphCacheStats();
+});
+$("#previewFunctionGraphPrune").addEventListener("click", () => {
+  void previewFunctionGraphCachePrune();
+});
+$("#commitFunctionGraphPrune").addEventListener("click", () => {
+  void commitFunctionGraphCachePrune();
+});
+
+for (const selector of ["#fgKeepCurrent", "#fgKeepParserVersions", "#fgKeepResolverVersions"]) {
+  $(selector).addEventListener("change", () => {
+    state.functionGraphPrunePreview = null;
+    $("#commitFunctionGraphPrune").disabled = true;
+  });
+  $(selector).addEventListener("input", () => {
+    state.functionGraphPrunePreview = null;
+    $("#commitFunctionGraphPrune").disabled = true;
+  });
+}
 
 function startPolling() {
   window.clearInterval(state.statusTimer);
   void refreshStatus();
   void refreshLogs();
+  void refreshFunctionGraphCacheStats();
   state.statusTimer = window.setInterval(() => {
     void refreshStatus();
     void refreshLogs();

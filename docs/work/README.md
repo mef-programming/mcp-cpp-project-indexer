@@ -51,3 +51,4 @@ This folder records implemented or prepared work slices for function graph workp
 - [P44 Real Project Resolver Cache Smoke](P44-real-project-resolver-cache-smoke.md) - resolver/cache smoke coverage and SmartFTP follow-up note.
 - [P45 Cache Maintenance Stats Breakdown](P45-cache-maintenance-stats-breakdown.md) - richer management cache stats with version and edge breakdowns.
 - [P46 Cache Maintenance Dry-Run Prune](P46-cache-maintenance-dry-run-prune.md) - dry-run-first prune flow with keep-current support.
+- [P47 Management UI Function Graph Cache](P47-management-ui-function-graph-cache.md) - Management UI panel for cache stats, dry-run prune, and commit prune.
