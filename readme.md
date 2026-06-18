@@ -379,7 +379,7 @@ It is stream/token based, not regex based.
 
 Intentionally not included:
 
-- no call graph
+- no compiler-accurate whole-program call graph
 - no `find_references`
 - no type resolution
 - no template-instantiation resolution
@@ -2000,6 +2000,41 @@ semantic reference resolution. Source-level claims still require
 compiler-resolved type. Treat it as a hint for further symbol/source lookup, not
 as proof of semantic type identity.
 
+### Function graph tools
+
+```text
+get_function_body_graph(symbolId, mode?)
+get_call_xrefs_from(symbolId)
+get_call_xrefs_to(symbolId)
+get_symbol_neighborhood(symbolId)
+```
+
+Use `get_function_body_graph` after locating a callable symbol when the AI needs
+direct source-structure edges from that function body: project-local call
+candidates, unresolved/external calls, data/member accesses, and control-flow
+markers. It is on-demand and cache-aware; it does not change the normal index
+build path.
+
+Useful modes:
+
+- `compute_if_missing`: reuse a compatible cached graph or compute it.
+- `cache_only`: return only compatible cached graph data.
+- `refresh`: recompute the graph for that symbol and replace persisted edges.
+
+The xref and neighborhood tools read persisted graph edges only:
+
+- `get_call_xrefs_from`: outgoing stored call edges from a function.
+- `get_call_xrefs_to`: incoming stored call edges to a function.
+- `get_symbol_neighborhood`: compact target/caller/callee neighborhood.
+
+Compute or refresh `get_function_body_graph` for relevant callers before relying
+on xref completeness. Function graph output is structural navigation evidence
+only: `claimStrength=source_structure_allowed` and
+`behaviorClaimsAllowed=false`. It is not behavior analysis, external API
+semantics, dynamic dispatch proof, or compiler-accurate overload resolution.
+
+More detail is in [Function Graph MCP Tools](docs/function-graph-tools.md).
+
 ---
 
 ## Recommended AI usage rules
@@ -2011,7 +2046,7 @@ Use mcp-cpp-project-indexer as a deterministic source-range locator.
 Read source before making implementation claims.
 Use query as the canonical argument for symbol lookup tools.
 Do not ask for analyze_symbol.
-Do not ask for a precomputed call graph.
+Use function graph tools only as structural navigation evidence.
 Do not treat module metadata as implementation behavior.
 ```
 
