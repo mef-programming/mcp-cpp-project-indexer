@@ -37,3 +37,8 @@ This folder records implemented or prepared work slices for function graph workp
 - [P30 Tree-sitter Parity Spike](P30-tree-sitter-parity-spike.md) - optional dependency-gated parse probe through the existing parser protocol.
 - [P31 Runtime Accuracy Smoke Matrix](P31-runtime-accuracy-smoke-matrix.md) - expanded real-index Function Graph smoke coverage.
 - [P32 Resolver Cache Guardrails](P32-resolver-cache-guardrails.md) - parser status/capability cache compatibility guardrails.
+- [P33 Tree-sitter Integration Preflight](P33-tree-sitter-integration-preflight.md) - PR #8 merge, fresh branch, and active Tree-sitter workplan.
+- [P34 Tree-sitter Optional Packaging](P34-tree-sitter-optional-packaging.md) - optional dependency requirements without changing normal install behavior.
+- [P35 Tree-sitter AST Extractor](P35-tree-sitter-ast-extractor.md) - AST traversal extraction for calls, member access, locals, and control flow.
+- [P36 Tree-sitter Parser Selection Gate](P36-tree-sitter-parser-selection-gate.md) - explicit parser injection only; Lightweight remains default.
+- [P37 Tree-sitter Parity And Accuracy](P37-tree-sitter-parity-and-accuracy.md) - dependency-gated Tree-sitter parity and accuracy coverage.
