@@ -1,7 +1,6 @@
 name: C++ project / MCP client feedback
 description: Share compatibility, setup, or token-reduction feedback from a real project
 title: "Feedback: "
-labels: [feedback]
 body:
   - type: markdown
     attributes:
