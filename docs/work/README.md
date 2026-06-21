@@ -52,3 +52,4 @@ This folder records implemented or prepared work slices for function graph workp
 - [P45 Cache Maintenance Stats Breakdown](P45-cache-maintenance-stats-breakdown.md) - richer management cache stats with version and edge breakdowns.
 - [P46 Cache Maintenance Dry-Run Prune](P46-cache-maintenance-dry-run-prune.md) - dry-run-first prune flow with keep-current support.
 - [P47 Management UI Function Graph Cache](P47-management-ui-function-graph-cache.md) - Management UI panel for cache stats, dry-run prune, and commit prune.
+- [P48 Context Pack Bounded Sequences](P48-context-pack-bounded-sequences.md) - curated `get_context_pack` tool with fixed primitive steps and no nested sequence execution.

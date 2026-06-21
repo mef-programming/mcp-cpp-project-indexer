@@ -2,6 +2,12 @@
 
 The function graph tools expose project-local source structure from indexed C++ function bodies. They are for navigation and structural review, not behavior proof.
 
+## Context Pack Entry Point
+
+`get_context_pack(kind=function_context)` is the curated first-call workflow when an LLM needs a compact function inspection packet. It can locate a callable symbol from `query`, read its source range, compute or read `get_function_body_graph`, and read `get_symbol_neighborhood`.
+
+This is not a generic tool sequence executor. The preset is fixed server-side, uses at most four primitive steps today, has a hard maximum of six primitive steps, rejects arbitrary step/tool lists, and never calls `get_context_pack` or another sequence tool from inside the pack.
+
 ## `get_function_body_graph`
 
 Use this first when you need the calls, data accesses, and control-flow markers inside one indexed callable symbol.

@@ -294,6 +294,7 @@ def read_messages():
 # ---------------------------------------------------------------------------
 
 PACKABLE_TOOL_NAMES = {
+    "get_context_pack",
     "get_project_summary",
     "get_index_fingerprint",
     "get_file_fingerprint",
@@ -337,6 +338,45 @@ PACKABLE_TOOL_NAMES = {
     "get_file_structure",
 }
 
+CONTEXT_PACK_TOOL_NAMES = {"get_context_pack", "tool_sequence"}
+CONTEXT_PACK_MAX_STEPS = 6
+CONTEXT_PACK_ALLOWED_STEPS = {
+    "find_symbol",
+    "read_symbol",
+    "get_function_body_graph",
+    "get_symbol_neighborhood",
+}
+CONTEXT_PACK_PRESETS: dict[str, tuple[str, ...]] = {
+    "function_context": (
+        "find_symbol",
+        "read_symbol",
+        "get_function_body_graph",
+        "get_symbol_neighborhood",
+    ),
+}
+
+
+def validate_context_pack_presets() -> None:
+    for preset_name, steps in CONTEXT_PACK_PRESETS.items():
+        if len(steps) > CONTEXT_PACK_MAX_STEPS:
+            raise RuntimeError(
+                f"context pack preset {preset_name!r} has more than {CONTEXT_PACK_MAX_STEPS} steps"
+            )
+
+        for step in steps:
+            if step in CONTEXT_PACK_TOOL_NAMES:
+                raise RuntimeError(
+                    f"context pack preset {preset_name!r} must not call sequence tool {step!r}"
+                )
+
+            if step not in CONTEXT_PACK_ALLOWED_STEPS:
+                raise RuntimeError(
+                    f"context pack preset {preset_name!r} contains non-primitive step {step!r}"
+                )
+
+
+validate_context_pack_presets()
+
 PACKING_SCHEMA_PROPERTIES = {
     "responseFormat": {
         "type": "string",
@@ -358,6 +398,7 @@ PACKING_SCHEMA_PROPERTIES = {
 
 
 CAPABILITY_INTENTS: dict[str, list[str]] = {
+    "function_context": ["context_pack"],
     "symbol_behavior": ["locator", "source_reader"],
     "type_resolution": ["locator", "source_reader", "member"],
     "module_structure": ["module"],
@@ -375,6 +416,7 @@ CAPABILITY_INTENTS: dict[str, list[str]] = {
 
 
 CAPABILITY_CATEGORIES: dict[str, list[str]] = {
+    "context_pack": ["get_context_pack"],
     "locator": [
         "find_symbol",
         "find_declaration",
@@ -445,6 +487,15 @@ CAPABILITY_CATEGORIES: dict[str, list[str]] = {
 
 
 CAPABILITY_TOOL_METADATA: dict[str, dict[str, Any]] = {
+    "get_context_pack": {
+        "category": "context_pack",
+        "claimStrength": "source_structure_allowed",
+        "preFetchAllowed": False,
+        "evidenceKind": "bounded_context_pack",
+        "sourceBehaviorAllowed": False,
+        "maxPrimitiveSteps": CONTEXT_PACK_MAX_STEPS,
+        "allowsNestedSequences": False,
+    },
     "get_project_summary": {"category": "metadata", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_index_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
     "get_file_fingerprint": {"category": "fingerprint", "claimStrength": "metadata_only", "preFetchAllowed": True},
@@ -683,6 +734,87 @@ ORIENTATION_TOOL_NAMES = {
 
 def tool_definitions(*, include_orientation: bool = True) -> list[dict[str, Any]]:
     tools = [
+        {
+            "name": "get_context_pack",
+            "description": (
+                "[ContextPack] Return a bounded, curated navigation pack for an indexed C++ target. "
+                "This is not a generic tool sequence: presets are fixed server-side, execute at most six "
+                "primitive indexer steps, never call get_context_pack/tool_sequence, and never dispatch "
+                "through the MCP tool loop. Output is structural navigation evidence only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["function_context"],
+                        "default": "function_context",
+                        "description": "Curated context pack preset to run.",
+                    },
+                    "sequence": {
+                        "type": "string",
+                        "enum": ["function_context"],
+                        "description": "Compatibility alias for kind; arbitrary tool lists are not accepted.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Symbol query used when symbolId is not supplied.",
+                    },
+                    "symbolId": {
+                        "type": "string",
+                        "description": "Callable symbol id. Skips the find_symbol step when provided.",
+                    },
+                    "budget": {
+                        "type": "string",
+                        "enum": ["compact", "normal"],
+                        "default": "compact",
+                    },
+                    "includeSource": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "includeGraph": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "includeNeighborhood": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["cache_only", "compute_if_missing", "refresh"],
+                        "default": "compute_if_missing",
+                        "description": "Function graph cache mode when includeGraph is true.",
+                    },
+                    "includeControlFlow": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "includeDataAccess": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "includeExternal": {
+                        "type": "boolean",
+                        "default": True,
+                    },
+                    "maxSourceLines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 160,
+                    },
+                    "maxEdges": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 300,
+                        "default": 120,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
         # Project/cache tools
         {
             "name": "get_project_summary",
@@ -3367,6 +3499,234 @@ class CodeIndexTools:
         }
         return self.json_result(arguments, result)
 
+    def get_context_pack(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        kind = arguments.get("kind", arguments.get("sequence", "function_context"))
+        if kind not in CONTEXT_PACK_PRESETS:
+            raise McpError(-32602, "kind/sequence must be function_context")
+
+        if "steps" in arguments or "tools" in arguments:
+            raise McpError(-32602, "get_context_pack accepts only fixed server-side presets")
+
+        budget = optional_enum(arguments, "budget", {"compact", "normal"}, "compact")
+        include_source = optional_bool(arguments, "includeSource", True)
+        include_graph = optional_bool(arguments, "includeGraph", True)
+        include_neighborhood = optional_bool(arguments, "includeNeighborhood", True)
+        mode = optional_enum(
+            arguments,
+            "mode",
+            {"cache_only", "compute_if_missing", "refresh"},
+            "compute_if_missing",
+        )
+        include_control_flow = optional_bool(arguments, "includeControlFlow", True)
+        include_data_access = optional_bool(arguments, "includeDataAccess", True)
+        include_external = optional_bool(arguments, "includeExternal", True)
+        max_source_default = 80 if budget == "compact" else 160
+        max_edges_default = 80 if budget == "compact" else 120
+        max_source_lines = clamp_int(
+            arguments.get("maxSourceLines", max_source_default),
+            minimum=1,
+            maximum=500,
+        )
+        max_edges = clamp_int(
+            arguments.get("maxEdges", max_edges_default),
+            minimum=0,
+            maximum=300,
+        )
+
+        symbol_id = optional_string(arguments, "symbolId")
+        query = optional_string(arguments, "query")
+        steps_executed: list[str] = []
+        steps_skipped: list[dict[str, str]] = []
+        selected_symbol: dict[str, Any] | None = None
+        candidates: list[dict[str, Any]] = []
+
+        if symbol_id is None:
+            if query is None:
+                raise McpError(-32602, "get_context_pack requires query or symbolId")
+
+            candidates = self.index.find_symbol(
+                query,
+                limit=8,
+                exact_only=False,
+                hide_namespaces=True,
+                compact=True,
+            )
+            steps_executed.append("find_symbol")
+            selected_symbol = self._select_context_pack_callable(candidates)
+
+            if selected_symbol is None:
+                return self.json_result(
+                    arguments,
+                    {
+                        "schema": "cpp.context_pack.v0.1",
+                        "kind": kind,
+                        "status": "symbol_not_found",
+                        "query": query,
+                        "candidates": candidates[:5],
+                        "stepsExecuted": steps_executed,
+                        "maxPrimitiveSteps": CONTEXT_PACK_MAX_STEPS,
+                        "nestedSequencesAllowed": False,
+                        "claimStrength": "source_structure_allowed",
+                        "behaviorClaimsAllowed": False,
+                    },
+                    is_error=True,
+                )
+
+            symbol_id = str(selected_symbol["symbolId"])
+        else:
+            selected_symbol = self.index.symbol_by_id.get(symbol_id)
+            if selected_symbol is None:
+                return self.json_result(
+                    arguments,
+                    {
+                        "schema": "cpp.context_pack.v0.1",
+                        "kind": kind,
+                        "status": "symbol_not_found",
+                        "symbolId": symbol_id,
+                        "stepsExecuted": steps_executed,
+                        "maxPrimitiveSteps": CONTEXT_PACK_MAX_STEPS,
+                        "nestedSequencesAllowed": False,
+                        "claimStrength": "source_structure_allowed",
+                        "behaviorClaimsAllowed": False,
+                    },
+                    is_error=True,
+                )
+            steps_skipped.append({"step": "find_symbol", "reason": "symbolId supplied"})
+
+        assert symbol_id is not None
+        symbol_fingerprint = self.symbol_fingerprint_payload(symbol_id)
+        source_text: str | None = None
+        source_error: str | None = None
+        graph: dict[str, Any] | None = None
+        graph_error: str | None = None
+        neighborhood: dict[str, Any] | None = None
+        neighborhood_error: str | None = None
+
+        if include_source:
+            source_result = self.read_symbol(
+                {
+                    "symbolId": symbol_id,
+                    "maxLines": max_source_lines,
+                }
+            )
+            steps_executed.append("read_symbol")
+            if source_result.get("isError"):
+                source_error = self._context_pack_text(source_result)
+            else:
+                source_text = self._context_pack_text(source_result)
+        else:
+            steps_skipped.append({"step": "read_symbol", "reason": "includeSource=false"})
+
+        if include_graph:
+            graph_result = self.get_function_body_graph(
+                {
+                    "symbolId": symbol_id,
+                    "mode": mode,
+                    "includeControlFlow": include_control_flow,
+                    "includeDataAccess": include_data_access,
+                    "includeExternal": include_external,
+                    "maxEdges": max_edges,
+                    "responseFormat": "minified",
+                }
+            )
+            steps_executed.append("get_function_body_graph")
+            if graph_result.get("isError"):
+                graph_error = self._context_pack_text(graph_result)
+            else:
+                graph = self._context_pack_json(graph_result)
+        else:
+            steps_skipped.append({"step": "get_function_body_graph", "reason": "includeGraph=false"})
+
+        if include_neighborhood:
+            neighborhood_result = self.get_symbol_neighborhood(
+                {
+                    "symbolId": symbol_id,
+                    "incomingLimit": 20 if budget == "compact" else 50,
+                    "outgoingLimit": 20 if budget == "compact" else 50,
+                    "responseFormat": "minified",
+                }
+            )
+            steps_executed.append("get_symbol_neighborhood")
+            if neighborhood_result.get("isError"):
+                neighborhood_error = self._context_pack_text(neighborhood_result)
+            else:
+                neighborhood = self._context_pack_json(neighborhood_result)
+        else:
+            steps_skipped.append({"step": "get_symbol_neighborhood", "reason": "includeNeighborhood=false"})
+
+        if len(steps_executed) > CONTEXT_PACK_MAX_STEPS:
+            raise McpError(-32603, "context pack preset exceeded max primitive step count")
+
+        payload = {
+            "schema": "cpp.context_pack.v0.1",
+            "kind": kind,
+            "status": "ok",
+            "budget": budget,
+            "query": query,
+            "symbolId": symbol_id,
+            "selectedSymbol": self._context_pack_symbol_summary(selected_symbol),
+            "candidateCount": len(candidates),
+            "candidates": candidates[:5],
+            "source": source_text,
+            "sourceError": source_error,
+            "graph": graph,
+            "graphError": graph_error,
+            "neighborhood": neighborhood,
+            "neighborhoodError": neighborhood_error,
+            "stepsExecuted": steps_executed,
+            "stepsSkipped": steps_skipped,
+            "stepCount": len(steps_executed),
+            "maxPrimitiveSteps": CONTEXT_PACK_MAX_STEPS,
+            "allowedPrimitiveSteps": sorted(CONTEXT_PACK_ALLOWED_STEPS),
+            "nestedSequencesAllowed": False,
+            "forbiddenSequenceTools": sorted(CONTEXT_PACK_TOOL_NAMES),
+            "dispatchesThroughMcpToolLoop": False,
+            "fingerprints": {
+                "index": self.index_fingerprint_payload().get("projectFingerprint"),
+                "symbol": symbol_fingerprint.get("fingerprint"),
+                "file": symbol_fingerprint.get("fileFingerprint"),
+                "graph": (graph or {}).get("fingerprints", {}).get("graph"),
+            },
+            "claimStrength": "source_structure_allowed",
+            "behaviorClaimsAllowed": False,
+        }
+        return self.json_result(arguments, payload)
+
+    def _select_context_pack_callable(self, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+        callable_types = {"function", "method", "constructor", "destructor", "operator"}
+        for item in candidates:
+            if str(item.get("type") or "") in callable_types:
+                return item
+        return None
+
+    def _context_pack_symbol_summary(self, symbol: dict[str, Any] | None) -> dict[str, Any] | None:
+        if symbol is None:
+            return None
+        return {
+            "symbolId": symbol.get("symbolId") or symbol.get("id"),
+            "type": symbol.get("type"),
+            "qualifiedName": symbol.get("qualifiedName"),
+            "shortName": symbol.get("shortName"),
+            "relativePath": symbol.get("relativePath"),
+            "fileId": symbol.get("fileId"),
+            "startLine": symbol.get("startLine"),
+            "endLine": symbol.get("endLine"),
+        }
+
+    def _context_pack_text(self, result: dict[str, Any]) -> str:
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            text = content[0].get("text") if isinstance(content[0], dict) else None
+            if isinstance(text, str):
+                return text
+        return ""
+
+    def _context_pack_json(self, result: dict[str, Any]) -> dict[str, Any]:
+        text = self._context_pack_text(result)
+        if not text:
+            return {}
+        return json.loads(text)
+
     def validate_fingerprints(self, arguments: dict[str, Any]) -> dict[str, Any]:
         items = arguments.get("items")
 
@@ -5000,6 +5360,9 @@ class McpServer:
         self.watch_include_extensionless_headers = watch_include_extensionless_headers
         self.watch_git_ignore = watch_git_ignore
         self.tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            # Bounded context pack tools
+            "get_context_pack": self.tools.get_context_pack,
+
             # Project/cache tools
             "get_project_summary": self.tools.get_project_summary,
             "get_index_fingerprint": self.tools.get_index_fingerprint,

@@ -13,3 +13,4 @@
 - [Function Graph Parser and Ranking](completed/function-graph-parser-ranking.md) - completed slices for PR #6 merge, parser fixtures, real-project smoke expansion, resolver ranking, and cache UX docs, 2026-06-18.
 - [Function Graph Runtime Quality / Parser Adapter vNext](completed/function-graph-runtime-quality-parser-adapter-vnext.md) - completed parser status, cache guardrails, and runtime smoke coverage, 2026-06-18.
 - [Tree-sitter Function Graph Adapter](completed/tree-sitter-function-graph-adapter.md) - completed optional Tree-sitter AST adapter integration, 2026-06-18.
+- [Context Pack Bounded Sequences](completed/context-pack-bounded-sequences.md) - completed curated `get_context_pack` tool with fixed primitive steps and no recursive sequencing, 2026-06-19.

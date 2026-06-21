@@ -162,6 +162,16 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
                         }
                     )
                 )
+                context_pack = self._call_json(
+                    tools.get_context_pack(
+                        {
+                            "kind": "function_context",
+                            "query": "Blend",
+                            "budget": "compact",
+                            "responseFormat": "minified",
+                        }
+                    )
+                )
                 filtered = self._call_json(
                     tools.get_function_body_graph(
                         {
@@ -202,6 +212,26 @@ class FunctionGraphMcpSmokeTests(unittest.TestCase):
         self.assertGreaterEqual(blend_xrefs["returnedEdges"], 3)
         self.assertEqual(blend_neighborhood["target"]["symbolId"], blend_symbol_id)
         self.assertFalse(blend_neighborhood["behaviorClaimsAllowed"])
+        self.assertEqual(context_pack["schema"], "cpp.context_pack.v0.1")
+        self.assertEqual(context_pack["kind"], "function_context")
+        self.assertEqual(context_pack["stepsExecuted"], [
+            "find_symbol",
+            "read_symbol",
+            "get_function_body_graph",
+            "get_symbol_neighborhood",
+        ])
+        self.assertLessEqual(context_pack["stepCount"], 4)
+        self.assertLessEqual(context_pack["stepCount"], context_pack["maxPrimitiveSteps"])
+        self.assertFalse(context_pack["nestedSequencesAllowed"])
+        self.assertFalse(context_pack["dispatchesThroughMcpToolLoop"])
+        self.assertFalse(context_pack["behaviorClaimsAllowed"])
+        self.assertEqual(context_pack["claimStrength"], "source_structure_allowed")
+        self.assertEqual(context_pack["selectedSymbol"]["symbolId"], blend_symbol_id)
+        self.assertIn("SOURCE:", context_pack["source"])
+        self.assertEqual(context_pack["graph"]["symbolId"], blend_symbol_id)
+        self.assertEqual(context_pack["neighborhood"]["target"]["symbolId"], blend_symbol_id)
+        self.assertNotIn("get_context_pack", context_pack["allowedPrimitiveSteps"])
+        self.assertIn("get_context_pack", context_pack["forbiddenSequenceTools"])
         self.assertNotIn("reads_data_candidate", filtered_edge_kinds)
         self.assertNotIn("writes_data_candidate", filtered_edge_kinds)
         self.assertNotIn("control_flow_marker", filtered_edge_kinds)

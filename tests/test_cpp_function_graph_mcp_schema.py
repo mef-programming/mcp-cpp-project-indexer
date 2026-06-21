@@ -17,6 +17,50 @@ import code_index_mcp_server as server
 
 
 class FunctionGraphMcpSchemaTests(unittest.TestCase):
+    def test_context_pack_schema_is_bounded_and_non_recursive(self) -> None:
+        tools = {
+            item["name"]: item
+            for item in server.tool_definitions(include_orientation=False)
+        }
+
+        self.assertIn("get_context_pack", tools)
+        self.assertIn("get_context_pack", server.PACKABLE_TOOL_NAMES)
+        self.assertNotIn("get_context_pack", server.CONTEXT_PACK_ALLOWED_STEPS)
+        self.assertNotIn("tool_sequence", server.CONTEXT_PACK_ALLOWED_STEPS)
+        self.assertLessEqual(
+            len(server.CONTEXT_PACK_PRESETS["function_context"]),
+            server.CONTEXT_PACK_MAX_STEPS,
+        )
+        self.assertEqual(
+            server.CAPABILITY_TOOL_METADATA["get_context_pack"]["claimStrength"],
+            "source_structure_allowed",
+        )
+        self.assertFalse(
+            server.CAPABILITY_TOOL_METADATA["get_context_pack"]["sourceBehaviorAllowed"]
+        )
+        self.assertFalse(
+            server.CAPABILITY_TOOL_METADATA["get_context_pack"]["allowsNestedSequences"]
+        )
+
+        schema = tools["get_context_pack"]["inputSchema"]
+        self.assertEqual(schema["properties"]["kind"]["enum"], ["function_context"])
+        self.assertEqual(schema["properties"]["maxEdges"]["maximum"], 300)
+        self.assertIn("responseFormat", schema["properties"])
+
+        for preset_steps in server.CONTEXT_PACK_PRESETS.values():
+            self.assertLessEqual(len(preset_steps), 6)
+            self.assertTrue(set(preset_steps).issubset(server.CONTEXT_PACK_ALLOWED_STEPS))
+            self.assertTrue(set(preset_steps).isdisjoint(server.CONTEXT_PACK_TOOL_NAMES))
+
+    def test_context_pack_rejects_model_supplied_tool_lists(self) -> None:
+        tools = server.CodeIndexTools.__new__(server.CodeIndexTools)
+
+        with self.assertRaises(server.McpError):
+            tools.get_context_pack({"kind": "function_context", "steps": ["find_symbol"]})
+
+        with self.assertRaises(server.McpError):
+            tools.get_context_pack({"sequence": "tool_sequence", "query": "Paint"})
+
     def test_get_function_body_graph_schema_is_registered_and_packable(self) -> None:
         tools = {
             item["name"]: item
