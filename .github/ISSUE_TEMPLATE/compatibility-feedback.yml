@@ -1,0 +1,106 @@
+name: C++ project / MCP client feedback
+description: Share compatibility, setup, or token-reduction feedback from a real project
+title: "Feedback: "
+labels: [feedback]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying `mcp-cpp-project-indexer` on a real project.
+
+        Early compatibility feedback is useful even when nothing crashed. Reports about MCP clients, C++ project shape, parser misses, setup friction, and source-read/token reduction are all welcome.
+
+  - type: input
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: Which client or agent runtime did you use?
+      placeholder: LM Studio, Codex, Claude Desktop, custom MCP client, Relay, etc.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - HTTP
+        - both
+        - not sure
+    validations:
+      required: false
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows 11, Ubuntu, macOS, WSL, etc.
+    validations:
+      required: false
+
+  - type: input
+    id: project-shape
+    attributes:
+      label: Project shape
+      placeholder: CMake, MSBuild/Visual Studio, custom build, mixed, SDK-heavy, generated files, etc.
+    validations:
+      required: false
+
+  - type: input
+    id: cpp-style
+    attributes:
+      label: C++ style
+      placeholder: headers, C++20 modules, partitions, templates, generated files, legacy/native Windows, etc.
+    validations:
+      required: false
+
+  - type: textarea
+    id: scale
+    attributes:
+      label: Approximate project scale
+      description: Files, source lines, modules, symbols, or index build time if known.
+      placeholder: |
+        Files:
+        Lines:
+        C++20 modules:
+        Symbols:
+        Build time:
+    validations:
+      required: false
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What worked?
+      description: What was useful or successful?
+      placeholder: Symbol lookup worked, read_symbol reduced source reads, module map helped, HTTP transport worked, etc.
+    validations:
+      required: false
+
+  - type: textarea
+    id: friction
+    attributes:
+      label: What failed or felt unclear?
+      description: Setup friction, parser misses, MCP client issues, confusing docs, wrong source ranges, performance problems, etc.
+    validations:
+      required: false
+
+  - type: textarea
+    id: token-reduction
+    attributes:
+      label: Source-read / token-reduction result
+      description: Optional measured or approximate before/after context reduction.
+      placeholder: |
+        Before: whole file / approx lines / approx tokens
+        After: read_symbol/read_range / approx lines / approx tokens
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
+      description: Anything else that would help us improve real-world compatibility.
+    validations:
+      required: false
