@@ -3,3 +3,7 @@
 .vs/
 __pycache__/
 *.pyc
+.mcp-python-project-indexer
+.kiro
+/chromium.bat
+/smartftp.bat
