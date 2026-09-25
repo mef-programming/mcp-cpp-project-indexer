@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,13 @@ from cpp_index_lock import IndexLockError, index_update_lock
 
 
 MODULE_MAP_SCHEMA = "cpp.module_map.v1"
+DEFAULT_READ_JOBS = 0
+
+
+def normalize_read_jobs(jobs: int | None) -> int:
+    if jobs is None or jobs == 0:
+        return min(16, max(4, (os.cpu_count() or 4) * 2))
+    return max(1, jobs)
 
 
 def load_json(path: Path) -> Any:
@@ -56,13 +65,30 @@ def load_file_index(index_root: Path, file_id: str) -> dict[str, Any]:
     return load_json(index_root / "files" / f"{file_id}.json")
 
 
-def module_entry_from_file_index(
+def load_file_indexes(
     *,
     index_root: Path,
+    file_ids: list[str],
+    jobs: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    unique_ids = list(dict.fromkeys(file_ids))
+    if not unique_ids:
+        return {}
+    resolved_jobs = normalize_read_jobs(jobs)
+    if resolved_jobs == 1:
+        loaded = [load_file_index(index_root, file_id) for file_id in unique_ids]
+    else:
+        with ThreadPoolExecutor(max_workers=resolved_jobs) as pool:
+            loaded = list(pool.map(lambda file_id: load_file_index(index_root, file_id), unique_ids))
+    return dict(zip(unique_ids, loaded))
+
+
+def module_entry_from_file_index(
+    *,
     file_item: dict[str, Any],
+    file_index: dict[str, Any],
 ) -> tuple[str | None, dict[str, Any] | None]:
     file_id = file_item["fileId"]
-    file_index = load_file_index(index_root, file_id)
     module = file_index.get("module", {})
     full_module_name = normalize_module_name(module.get("fullModuleName"))
 
@@ -283,14 +309,20 @@ def add_reverse_imports(modules: dict[str, dict[str, Any]]) -> list[dict[str, An
     return unresolved
 
 
-def build_module_map(index_root: Path) -> dict[str, Any]:
+def build_module_map(index_root: Path, *, jobs: int | None = None) -> dict[str, Any]:
     manifest = load_json(index_root / "manifest.json")
+    manifest_files = list(manifest.get("files", []))
+    file_index_by_id = load_file_indexes(
+        index_root=index_root,
+        file_ids=[file_item["fileId"] for file_item in manifest_files],
+        jobs=jobs,
+    )
     modules: dict[str, dict[str, Any]] = {}
 
-    for file_item in manifest.get("files", []):
+    for file_item in manifest_files:
         module_name, entry = module_entry_from_file_index(
-            index_root=index_root,
             file_item=file_item,
+            file_index=file_index_by_id[file_item["fileId"]],
         )
 
         if not module_name or entry is None:
@@ -345,13 +377,19 @@ def main() -> None:
         action="store_true",
         help="Print only a compact summary JSON to stdout.",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=DEFAULT_READ_JOBS,
+        help="Threads for reading per-file indexes (0: auto, 1: sequential).",
+    )
 
     args = parser.parse_args()
     output = args.output or (args.index_root / "module_map.json")
 
     try:
         with index_update_lock(args.index_root):
-            module_map = build_module_map(args.index_root)
+            module_map = build_module_map(args.index_root, jobs=args.jobs)
             save_json(output, module_map)
     except IndexLockError as exc:
         raise SystemExit(str(exc)) from exc

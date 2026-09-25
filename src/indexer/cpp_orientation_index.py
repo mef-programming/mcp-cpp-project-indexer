@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 
 from pathlib import Path
@@ -30,6 +31,14 @@ DEFAULT_ORIENTATION_EXCLUDED_DIRS = {
     "dist",
     "build",
     "out",
+    "Intermediate",
+    "Binaries",
+    "Saved",
+    "DerivedDataCache",
+    "Library",
+    "Temp",
+    "Logs",
+    "obj",
 }
 
 LABEL_SECTION_NAMES = (
@@ -349,18 +358,26 @@ def build_orientation_node(root: Path, doc_path: Path) -> dict[str, Any] | None:
 def discover_orientation_documents(root: Path, *, doc_files: tuple[str, ...] = DEFAULT_ORIENTATION_FILES) -> list[Path]:
     doc_names = {name.casefold() for name in doc_files}
     result: list[Path] = []
+    pending = [root]
 
-    for path in root.rglob("*"):
-        if not path.is_file():
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = os.scandir(directory)
+        except OSError:
             continue
 
-        relative_parts = path.relative_to(root).parts
-
-        if any(part in DEFAULT_ORIENTATION_EXCLUDED_DIRS for part in relative_parts[:-1]):
-            continue
-
-        if path.name.casefold() in doc_names or "topology" in path.stem.casefold():
-            result.append(path)
+        with entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name not in DEFAULT_ORIENTATION_EXCLUDED_DIRS:
+                            pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        if entry.name.casefold() in doc_names or "topology" in Path(entry.name).stem.casefold():
+                            result.append(Path(entry.path))
+                except OSError:
+                    continue
 
     result.sort(key=lambda item: normalize_doc_path(item.relative_to(root)).casefold())
     return result

@@ -818,6 +818,7 @@ def aggregate_project_index_incremental(
 
     modules = rebuild_modules(manifest_files)
     phase_started = record_phase(timings, "rebuild modules", phase_started)
+    # Markdown docs are outside the source file change set, so refresh orientation on every update.
     orientation = build_orientation_index(root)
     phase_started = record_phase(timings, "rebuild orientation docs", phase_started)
 
