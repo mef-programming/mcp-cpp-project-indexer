@@ -15,7 +15,7 @@ from cpp_file_index import build_file_index
 from cpp_index_lock import IndexLockError, index_update_lock
 from cpp_index_sqlite import build_sqlite_index, replace_file_lookup_rows, replace_orientation_nodes, sqlite_index_path
 from cpp_index_utils import save_json
-from cpp_orientation_index import build_orientation_index, orientation_document_stamps
+from cpp_orientation_index import ORIENTATION_SCHEMA, build_orientation_index, orientation_document_stamps
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -757,7 +757,8 @@ def aggregate_project_index_incremental(
     changed_file_indexes: list[dict[str, Any]],
     extra_diagnostics: list[dict[str, Any]] | None = None,
     timings: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    force_orientation: bool = False,
+) -> tuple[dict[str, Any], bool]:
     phase_started = time.perf_counter()
     manifest = load_manifest(index_root)
 
@@ -838,9 +839,22 @@ def aggregate_project_index_incremental(
 
     modules = rebuild_modules(manifest_files)
     phase_started = record_phase(timings, "rebuild modules", phase_started)
-    # Markdown docs are outside the source file change set, so refresh orientation on every update.
-    orientation = build_orientation_index(root)
-    phase_started = record_phase(timings, "rebuild orientation docs", phase_started)
+    saved_orientation = load_json_or_none(index_root / "orientation.json")
+    document_stamps = orientation_document_stamps(root)
+    orientation_rebuilt = not (
+        not force_orientation
+        and isinstance(saved_orientation, dict)
+        and saved_orientation.get("schema") == ORIENTATION_SCHEMA
+        and saved_orientation.get("root") == root.resolve().as_posix()
+        and saved_orientation.get("documentStamps") == document_stamps
+        and isinstance(saved_orientation.get("nodes"), list)
+        and len(saved_orientation["nodes"]) == manifest.get("counts", {}).get("orientationNodes")
+    )
+    phase_started = record_phase(timings, "check orientation docs", phase_started)
+    orientation = build_orientation_index(root) if orientation_rebuilt else saved_orientation
+    phase_started = record_phase(
+        timings, "rebuild orientation docs" if orientation_rebuilt else "reuse orientation docs", phase_started
+    )
 
     if not sqlite_index_path(index_root).exists():
         raise SystemExit("SQLite lookup index missing during incremental aggregation. Rebuild the index.")
@@ -855,7 +869,8 @@ def aggregate_project_index_incremental(
         data_items=changed_data_items,
         data_names=changed_data_names,
     )
-    replace_orientation_nodes(index_root=index_root, orientation_nodes=orientation.get("nodes", []))
+    if orientation_rebuilt:
+        replace_orientation_nodes(index_root=index_root, orientation_nodes=orientation.get("nodes", []))
     phase_started = record_phase(timings, "update sqlite lookup index", phase_started)
 
     manifest = {
@@ -886,10 +901,11 @@ def aggregate_project_index_incremental(
     save_index_json(index_root / "diagnostics.json", diagnostics)
     phase_started = record_phase(timings, "write diagnostics", phase_started)
 
-    save_index_json(index_root / "orientation.json", orientation)
-    record_phase(timings, "write orientation docs", phase_started)
+    if orientation_rebuilt:
+        save_index_json(index_root / "orientation.json", orientation)
+    record_phase(timings, "write orientation docs" if orientation_rebuilt else "skip orientation write", phase_started)
 
-    return manifest
+    return manifest, orientation_rebuilt
 
 
 # ---------------------------------------------------------------------------
@@ -1125,7 +1141,7 @@ def run_update(
                 structural_unchanged = False
                 break
 
-    if structural_unchanged:
+    if structural_unchanged and not force:
         orientation_updated = refresh_orientation_if_changed(root=root, index_root=index_root)
         new_state_files: dict[str, dict[str, Any]] = {}
 
@@ -1190,12 +1206,13 @@ def run_update(
     ):
         progress.status("Aggregating changed file indexes")
         incremental_aggregation_timings: list[dict[str, Any]] = []
-        manifest = aggregate_project_index_incremental(
+        manifest, orientation_rebuilt = aggregate_project_index_incremental(
             root=root,
             index_root=index_root,
             changed_file_indexes=changed_file_indexes,
             extra_diagnostics=changed_file_diagnostics,
             timings=incremental_aggregation_timings,
+            force_orientation=force,
         )
         new_state_files: dict[str, dict[str, Any]] = {}
 
@@ -1257,7 +1274,7 @@ def run_update(
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=incremental_aggregation_timings,
             structural_unchanged=False,
-            orientation_updated=True,
+            orientation_updated=orientation_rebuilt,
         )
 
     current_file_indexes: list[dict[str, Any]] = []

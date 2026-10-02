@@ -2620,6 +2620,13 @@ class ServerIndexWatcher:
         if orientation_only:
             return 0, True
 
+        try:
+            update_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            update_summary = {}
+        if update_summary.get("structuralUnchanged") is True:
+            return 0, True
+
         if not self.module_map:
             return 0, True
 

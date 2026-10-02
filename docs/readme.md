@@ -618,6 +618,12 @@ update_project_index.py --known-files-only --changed-file <path>
 This hashes only the changed candidate file. If the content hash did not change,
 the watcher skips module-map rebuild and MCP cache reload work.
 
+The watcher also detects orientation-document changes. A document-only change
+refreshes `orientation.json` and its SQLite nodes without scanning C++ files.
+For a C++-only modification, the updater checks document stamps and reuses the
+existing orientation result when they match. Added/deleted source paths and
+`--force` still rebuild orientation because document links may change.
+
 Only one watcher should own an index root. The watcher uses `.watcher.lock` and
 exits if another watcher is already active for the same index.
 
