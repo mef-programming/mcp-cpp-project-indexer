@@ -63,6 +63,8 @@ from watch_project_index import (
     SnapshotEntry,
     diff_snapshots,
     snapshot_source_files,
+    snapshot_orientation_files,
+    orientation_snapshot_matches_index,
 )
 
 
@@ -2542,6 +2544,8 @@ class ServerIndexWatcher:
         except (OSError, json.JSONDecodeError):
             return True
 
+        if summary.get("orientationUpdated") is True:
+            return True
         if summary.get("structuralUnchanged") is True:
             return False
 
@@ -2550,7 +2554,9 @@ class ServerIndexWatcher:
             for key in ("added", "modified", "deleted")
         )
 
-    def _run_update(self, *, known_files_only: bool, changed_files: list[Path]) -> tuple[int, bool]:
+    def _run_update(
+        self, *, known_files_only: bool, changed_files: list[Path], orientation_only: bool = False
+    ) -> tuple[int, bool]:
         summary_path = self.tools.index_root / WATCH_UPDATE_SUMMARY_NAME
         update_args = [
             sys.executable,
@@ -2565,7 +2571,9 @@ class ServerIndexWatcher:
             str(summary_path),
         ]
 
-        if known_files_only:
+        if orientation_only:
+            update_args.append("--orientation-only")
+        elif known_files_only:
             update_args.append("--known-files-only")
 
             for path in changed_files:
@@ -2609,6 +2617,9 @@ class ServerIndexWatcher:
             )
             return 0, False
 
+        if orientation_only:
+            return 0, True
+
         if not self.module_map:
             return 0, True
 
@@ -2635,6 +2646,20 @@ class ServerIndexWatcher:
     def _run(self) -> None:
         try:
             snapshot = self._snapshot()
+            orientation_snapshot = snapshot_orientation_files(self.tools.project_root)
+            if not orientation_snapshot_matches_index(
+                self.tools.index_root, self.tools.project_root, orientation_snapshot
+            ):
+                with self.tools.locked_index_write():
+                    result, changed = self._run_update(
+                        known_files_only=True, changed_files=[], orientation_only=True
+                    )
+                    if result != 0:
+                        raise RuntimeError(f"Initial orientation refresh failed: {result}")
+                    if changed:
+                        self.tools.reload_index_cache_from_disk(
+                            reason="Server index watcher refreshed orientation documents."
+                        )
             print(
                 f"[mcp-cpp-project-indexer] watcher initial files: {len(snapshot)}",
                 file=sys.stderr,
@@ -2646,13 +2671,19 @@ class ServerIndexWatcher:
                 with self.status_lock:
                     self.last_scan_at = now_iso()
                 diff = diff_snapshots(snapshot, current, root=self.tools.project_root)
+                current_orientation = snapshot_orientation_files(self.tools.project_root)
+                orientation_diff = diff_snapshots(
+                    orientation_snapshot, current_orientation, root=self.tools.project_root
+                )
 
-                if not diff.changed:
+                if not diff.changed and not orientation_diff.changed:
                     continue
 
                 pending_since = time.monotonic()
                 pending_snapshot = current
                 pending_diff = diff
+                pending_orientation_snapshot = current_orientation
+                pending_orientation_diff = orientation_diff
 
                 while not self.stop_event.wait(self.poll_interval):
                     current = self._snapshot()
@@ -2661,13 +2692,25 @@ class ServerIndexWatcher:
                         current,
                         root=self.tools.project_root,
                     )
+                    current_orientation = snapshot_orientation_files(self.tools.project_root)
+                    next_orientation_diff = diff_snapshots(
+                        pending_orientation_snapshot,
+                        current_orientation,
+                        root=self.tools.project_root,
+                    )
 
-                    if next_diff.changed:
+                    if next_diff.changed or next_orientation_diff.changed:
                         pending_since = time.monotonic()
                         pending_snapshot = current
                         pending_diff = diff_snapshots(
                             snapshot,
                             current,
+                            root=self.tools.project_root,
+                        )
+                        pending_orientation_snapshot = current_orientation
+                        pending_orientation_diff = diff_snapshots(
+                            orientation_snapshot,
+                            current_orientation,
                             root=self.tools.project_root,
                         )
 
@@ -2682,7 +2725,8 @@ class ServerIndexWatcher:
                         "[mcp-cpp-project-indexer] watcher changes "
                         f"added={len(pending_diff.added)} "
                         f"modified={len(pending_diff.modified)} "
-                        f"deleted={len(pending_diff.deleted)}"
+                        f"deleted={len(pending_diff.deleted)} "
+                        f"orientation={len(pending_orientation_diff.added) + len(pending_orientation_diff.modified) + len(pending_orientation_diff.deleted)}"
                     ),
                     file=sys.stderr,
                     flush=True,
@@ -2697,6 +2741,7 @@ class ServerIndexWatcher:
                     result, index_changed = self._run_update(
                         known_files_only=not pending_diff.requires_full_discovery_update,
                         changed_files=pending_diff.modified,
+                        orientation_only=not pending_diff.changed,
                     )
 
                     if result != 0:
@@ -2712,6 +2757,7 @@ class ServerIndexWatcher:
                         continue
 
                     snapshot = pending_snapshot
+                    orientation_snapshot = pending_orientation_snapshot
                     with self.status_lock:
                         self.last_update_at = now_iso()
                         self.last_update_result = (

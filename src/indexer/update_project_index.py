@@ -15,7 +15,7 @@ from cpp_file_index import build_file_index
 from cpp_index_lock import IndexLockError, index_update_lock
 from cpp_index_sqlite import build_sqlite_index, replace_file_lookup_rows, replace_orientation_nodes, sqlite_index_path
 from cpp_index_utils import save_json
-from cpp_orientation_index import build_orientation_index
+from cpp_orientation_index import build_orientation_index, orientation_document_stamps
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -109,6 +109,7 @@ class UpdateResult:
     state_initialized: bool
     incremental_aggregation_timings: list[dict[str, Any]]
     structural_unchanged: bool
+    orientation_updated: bool = False
 
 
 class UpdateProgress:
@@ -291,6 +292,25 @@ def save_update_state(
 
 def load_manifest(index_root: Path) -> dict[str, Any] | None:
     return load_json_or_none(index_root / "manifest.json")
+
+
+def refresh_orientation_if_changed(*, root: Path, index_root: Path) -> bool:
+    saved = load_json_or_none(index_root / "orientation.json")
+    stamps = orientation_document_stamps(root)
+    if isinstance(saved, dict) and saved.get("root") == root.resolve().as_posix() and saved.get("documentStamps") == stamps:
+        return False
+
+    if not sqlite_index_path(index_root).exists():
+        raise SystemExit("SQLite lookup index missing during orientation refresh. Rebuild the index.")
+    orientation = build_orientation_index(root)
+    replace_orientation_nodes(index_root=index_root, orientation_nodes=orientation["nodes"])
+    save_index_json(index_root / "orientation.json", orientation)
+    manifest = load_manifest(index_root)
+    if manifest is None:
+        raise SystemExit("Manifest missing during orientation refresh.")
+    manifest["counts"]["orientationNodes"] = len(orientation["nodes"])
+    save_index_json(index_root / "manifest.json", manifest)
+    return True
 
 
 def existing_manifest_by_relative_path(
@@ -918,10 +938,26 @@ def run_update(
     changed_files: list[Path] | None,
     progress_enabled: bool,
     jobs: int,
+    orientation_only: bool = False,
 ) -> UpdateResult:
     if not (index_root / "manifest.json").exists():
         raise SystemExit(
             "No existing project index found. Run build_project_index.py first."
+        )
+
+    if orientation_only:
+        if dry_run:
+            raise SystemExit("--orientation-only cannot be combined with --dry-run.")
+        orientation_updated = refresh_orientation_if_changed(root=root, index_root=index_root)
+        counts = (load_manifest(index_root) or {"counts": {}})["counts"]
+        return UpdateResult(
+            added=0, modified=0, deleted=0, unchanged=counts.get("files", 0),
+            files=counts.get("files", 0), symbols=counts.get("symbols", 0),
+            names=counts.get("names", 0), data=counts.get("data", 0),
+            data_names=counts.get("dataNames", 0), modules=counts.get("modules", 0),
+            diagnostics=counts.get("diagnostics", 0), state_initialized=False,
+            incremental_aggregation_timings=[], structural_unchanged=False,
+            orientation_updated=orientation_updated,
         )
 
     progress = UpdateProgress(root=root, enabled=progress_enabled)
@@ -996,6 +1032,7 @@ def run_update(
         )
 
     if not plan.added and not plan.modified and not plan.deleted_relative_paths:
+        orientation_updated = refresh_orientation_if_changed(root=root, index_root=index_root)
         manifest = load_manifest(index_root) or {"counts": {}}
         counts = manifest.get("counts", {})
         return UpdateResult(
@@ -1013,6 +1050,7 @@ def run_update(
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=[],
             structural_unchanged=False,
+            orientation_updated=orientation_updated,
         )
 
     index_root.mkdir(parents=True, exist_ok=True)
@@ -1088,6 +1126,7 @@ def run_update(
                 break
 
     if structural_unchanged:
+        orientation_updated = refresh_orientation_if_changed(root=root, index_root=index_root)
         new_state_files: dict[str, dict[str, Any]] = {}
 
         for key, path in sorted(current_by_key.items(), key=lambda item: item[0].casefold()):
@@ -1141,6 +1180,7 @@ def run_update(
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=[],
             structural_unchanged=True,
+            orientation_updated=orientation_updated,
         )
 
     if (
@@ -1217,6 +1257,7 @@ def run_update(
             state_initialized=plan.state_initialized,
             incremental_aggregation_timings=incremental_aggregation_timings,
             structural_unchanged=False,
+            orientation_updated=True,
         )
 
     current_file_indexes: list[dict[str, Any]] = []
@@ -1287,6 +1328,7 @@ def run_update(
         state_initialized=plan.state_initialized,
         incremental_aggregation_timings=[],
         structural_unchanged=False,
+        orientation_updated=True,
     )
 
 
@@ -1440,6 +1482,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--orientation-only",
+        action="store_true",
+        help="Refresh orientation documents without scanning C++ source files.",
+    )
+    parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1482,6 +1529,7 @@ def main() -> int:
                 changed_files=args.changed_file,
                 progress_enabled=args.progress and not args.print_summary_json,
                 jobs=args.jobs,
+                orientation_only=args.orientation_only,
             )
         else:
             with index_update_lock(index_root):
@@ -1501,6 +1549,7 @@ def main() -> int:
                     changed_files=args.changed_file,
                     progress_enabled=args.progress and not args.print_summary_json,
                     jobs=args.jobs,
+                    orientation_only=args.orientation_only,
                 )
     except IndexLockError as exc:
         raise SystemExit(str(exc)) from exc
@@ -1535,6 +1584,7 @@ def main() -> int:
         "totalTokens": index_stats["totalTokens"],
         "incrementalAggregationTimings": result.incremental_aggregation_timings,
         "structuralUnchanged": result.structural_unchanged,
+        "orientationUpdated": result.orientation_updated,
     }
 
     if args.summary_json_file is not None:

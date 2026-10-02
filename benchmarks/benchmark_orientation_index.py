@@ -69,7 +69,7 @@ def compare_orientation_builds(root: Path, *, runs: int = 1) -> dict[str, object
             timings[version].append(round((time.perf_counter() - started) * 1000, 3))
             results[version] = result
 
-    equivalent = results["legacy"] == results["current"]
+    equivalent = results["legacy"]["nodes"] == results["current"]["nodes"]
     legacy_median = statistics.median(timings["legacy"])
     current_median = statistics.median(timings["current"])
     return {

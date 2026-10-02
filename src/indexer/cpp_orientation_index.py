@@ -383,6 +383,15 @@ def discover_orientation_documents(root: Path, *, doc_files: tuple[str, ...] = D
     return result
 
 
+def orientation_document_stamps(root: Path, paths: list[Path] | None = None) -> dict[str, list[int]]:
+    documents = paths if paths is not None else discover_orientation_documents(root)
+    stamps: dict[str, list[int]] = {}
+    for path in documents:
+        stat = path.stat()
+        stamps[normalize_doc_path(path.relative_to(root))] = [stat.st_mtime_ns, stat.st_size]
+    return stamps
+
+
 
 
 def annotate_orientation_targets(nodes: list[dict[str, Any]]) -> None:
@@ -414,9 +423,11 @@ def annotate_orientation_targets(nodes: list[dict[str, Any]]) -> None:
                 annotate(entry)
 
 def build_orientation_index(root: Path) -> dict[str, Any]:
+    documents = discover_orientation_documents(root)
+    document_stamps = orientation_document_stamps(root, documents)
     nodes = [
         node
-        for node in (build_orientation_node(root, path) for path in discover_orientation_documents(root))
+        for node in (build_orientation_node(root, path) for path in documents)
         if node is not None
     ]
     annotate_orientation_targets(nodes)
@@ -441,5 +452,6 @@ def build_orientation_index(root: Path) -> dict[str, Any]:
         "schema": ORIENTATION_SCHEMA,
         "root": root.resolve().as_posix(),
         "counts": {"nodes": len(nodes)},
+        "documentStamps": document_stamps,
         "nodes": nodes,
     }

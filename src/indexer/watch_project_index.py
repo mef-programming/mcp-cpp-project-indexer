@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cpp_index_lock import IndexLockError, index_watcher_lock
+from cpp_orientation_index import discover_orientation_documents
 from cpp_project_index import (
     DEFAULT_EXCLUDED_DIR_NAMES,
     DEFAULT_SOURCE_EXTENSIONS,
@@ -146,6 +147,30 @@ def snapshot_source_files(
     return result
 
 
+def snapshot_orientation_files(root: Path) -> dict[str, SnapshotEntry]:
+    result: dict[str, SnapshotEntry] = {}
+    for path in discover_orientation_documents(root):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        result[path.relative_to(root).as_posix()] = SnapshotEntry(
+            path=path, stamp=FileStamp(mtime_ns=stat.st_mtime_ns, size=stat.st_size)
+        )
+    return result
+
+
+def orientation_snapshot_matches_index(
+    index_root: Path, root: Path, snapshot: dict[str, SnapshotEntry]
+) -> bool:
+    try:
+        saved = json.loads((index_root / "orientation.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    stamps = {path: [entry.stamp.mtime_ns, entry.stamp.size] for path, entry in snapshot.items()}
+    return saved.get("root") == root.resolve().as_posix() and saved.get("documentStamps") == stamps
+
+
 def diff_snapshots(
     before: dict[str, SnapshotEntry],
     after: dict[str, SnapshotEntry],
@@ -213,6 +238,7 @@ def run_update(
     emit_debug_file_indexes: bool,
     include_extensionless_headers: bool,
     use_git_ignore: bool,
+    orientation_only: bool = False,
 ) -> int:
     update_args = [
         str(sys.executable),
@@ -227,7 +253,10 @@ def run_update(
     summary_path = index_root / WATCH_UPDATE_SUMMARY_NAME
     update_args.extend(["--summary-json-file", str(summary_path)])
 
-    if known_files_only:
+    if orientation_only:
+        update_args.append("--orientation-only")
+
+    if known_files_only and not orientation_only:
         update_args.append("--known-files-only")
 
         for path in changed_files:
@@ -413,6 +442,18 @@ def main() -> int:
             case_insensitive_paths=args.case_insensitive_paths,
         )
         print("Initial source files:", len(snapshot))
+        orientation_snapshot = snapshot_orientation_files(root)
+        if not orientation_snapshot_matches_index(index_root, root, orientation_snapshot):
+            result = run_update(
+                root=root, index_root=index_root, jobs=args.jobs,
+                known_files_only=True, changed_files=[], build_module_map=False,
+                indexer_root=indexer_root,
+                emit_debug_file_indexes=args.emit_debug_file_indexes,
+                include_extensionless_headers=args.include_extensionless_headers,
+                use_git_ignore=args.git_ignore, orientation_only=True,
+            )
+            if result != 0:
+                raise SystemExit(f"Initial orientation refresh failed with exit code {result}.")
 
         pending_since: float | None = None
         pending_snapshot: dict[str, SnapshotEntry] | None = None
@@ -430,13 +471,17 @@ def main() -> int:
                 case_insensitive_paths=args.case_insensitive_paths,
             )
             diff = diff_snapshots(snapshot, current, root=root)
+            current_orientation = snapshot_orientation_files(root)
+            orientation_diff = diff_snapshots(orientation_snapshot, current_orientation, root=root)
 
-            if not diff.changed:
+            if not diff.changed and not orientation_diff.changed:
                 continue
 
             pending_since = time.monotonic()
             pending_snapshot = current
             pending_diff = diff
+            pending_orientation_snapshot = current_orientation
+            pending_orientation_diff = orientation_diff
 
             while True:
                 time.sleep(max(0.1, args.poll_interval))
@@ -449,11 +494,19 @@ def main() -> int:
                     case_insensitive_paths=args.case_insensitive_paths,
                 )
                 next_diff = diff_snapshots(pending_snapshot, current, root=root)
+                current_orientation = snapshot_orientation_files(root)
+                next_orientation_diff = diff_snapshots(
+                    pending_orientation_snapshot, current_orientation, root=root
+                )
 
-                if next_diff.changed:
+                if next_diff.changed or next_orientation_diff.changed:
                     pending_since = time.monotonic()
                     pending_snapshot = current
                     pending_diff = diff_snapshots(snapshot, current, root=root)
+                    pending_orientation_snapshot = current_orientation
+                    pending_orientation_diff = diff_snapshots(
+                        orientation_snapshot, current_orientation, root=root
+                    )
 
                 if pending_since is not None and time.monotonic() - pending_since >= args.debounce:
                     break
@@ -462,6 +515,9 @@ def main() -> int:
                 continue
 
             print_diff(pending_diff, root)
+            print("Orientation documents changed:",
+                  len(pending_orientation_diff.added) + len(pending_orientation_diff.modified)
+                  + len(pending_orientation_diff.deleted))
             result = run_update(
                 root=root,
                 index_root=index_root,
@@ -473,10 +529,12 @@ def main() -> int:
                 emit_debug_file_indexes=args.emit_debug_file_indexes,
                 include_extensionless_headers=args.include_extensionless_headers,
                 use_git_ignore=args.git_ignore,
+                orientation_only=not pending_diff.changed,
             )
 
             if result == 0:
                 snapshot = pending_snapshot
+                orientation_snapshot = pending_orientation_snapshot
                 print()
                 print("Watch update complete.")
             else:
